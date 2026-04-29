@@ -1,0 +1,12 @@
+# Editor backups
+*~
+.#*
+\#*\#
+*.swp
+*.swo
+
+# Cadence
+*.cdslck
+.cdslck
+CDS.log*
+panic*.log
