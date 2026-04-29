@@ -5,8 +5,8 @@ cell's pins. Each enabled pin becomes a CDF parameter on the Dreg instance;
 the user fills 1/0 (digital), output voltage = `value × DVDD`. Bus pins
 (`D<7:0>`) collapse to one integer parameter, bit-decomposed in Verilog-A.
 
-**Status:** Steps 1–4 + 7 complete and validated on IC6.1.8 / `sim_yusheng/Test_cell`.
-Steps 5 (GUI dialog), 6 (Ctrl+Shift+D bindkey), 8 (packaging) are pending.
+**Status:** Steps 1–5 + 7 complete and validated on IC6.1.8 / `sim_yusheng/Test_cell`.
+Steps 6 (Ctrl+Shift+D bindkey), 8 (packaging) are pending.
 
 ## Files and public functions
 
@@ -18,6 +18,8 @@ Steps 5 (GUI dialog), 6 (Ctrl+Shift+D bindkey), 8 (packaging) are pending.
 | `dgenVerilogA.il` | `dgenWriteVerilogA(spec [outLib outCell])` | Write `veriloga.va` + `master.tag` into the cell's `veriloga/` dir, refresh lib via `ddUpdateLibList`, add cell to "dreg" category. |
 | `dgenCDF.il` | `dgenWriteCDF(spec [outLib outCell])` | Build cell-level base CDF (`cdfCreateBaseCellCDF` + `cdfCreateParam` × N + `cdfSaveCDF`). 5 `defaultMode` options. |
 | `dgenRun.il` | `dgenRun(spec)` | End-to-end orchestrator: calls symbol → .va → CDF in mandatory order, fail-fast on any substep nil-return. No lib/cell overrides — set `spec~>target` instead. |
+| `dgenGui.il` | `dgenOpenGUI(dutLib dutCell)` | Modeless form: source RO + target editable + DVDD/mode/pattern + per-pin enable/value. Buttons OK / Cancel / Defaults / Apply. Last-state remembered across sessions; pin "value" fields auto-grey when mode ≠ literal. |
+| `test_step5_auto.il` | (loadable test) | End-to-end smoke test for the GUI that bypasses display so it doesn't trap the skillbridge evaluator. Loads through `ws['load'](...)`. |
 
 ## Spec plist format
 
@@ -81,9 +83,16 @@ load(strcat(base "dgenSymbol.il"))
 load(strcat(base "dgenVerilogA.il"))
 load(strcat(base "dgenCDF.il"))
 load(strcat(base "dgenRun.il"))
+load(strcat(base "dgenGui.il"))
 ```
 
-End-to-end orchestrated call:
+Open the GUI for a DUT (modeless; remembers last-state):
+
+```skill
+dgenOpenGUI("sim_yusheng" "Test_cell")
+```
+
+End-to-end orchestrated call (skips GUI, useful for scripting):
 
 ```skill
 pins = dgenScanPins("sim_yusheng" "Test_cell" "symbol")
