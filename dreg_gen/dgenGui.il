@@ -524,11 +524,27 @@
         ?buttonLayout 'Close)
       nil)
     (t
-      (let (spec ok msg srcPlist)
+      (let (spec msg srcPlist tgtLib tgtCell cellOk)
         (setq spec (dgen_readForm form dgen_currentPins))
-        (setq ok (errset (dgenRun spec) t))
+        (setq tgtLib  (get (get spec 'target) 'lib))
+        (setq tgtCell (get (get spec 'target) 'cell))
+        ; Run the orchestrator -- errset suppresses the inner-error
+        ; cascade so the form callback context survives, but we do NOT
+        ; trust its return value as a success/failure signal. Site-level
+        ; cellview-save hooks (e.g. Calibre RT save messenger fired by
+        ; schPinListToSymbolGen / amsUpdateTextviews) may raise on every
+        ; save, which errset captures as nil despite the cell having
+        ; landed cleanly on disk. The ground-truth check below is the
+        ; actual success criterion.
+        (errset (dgenRun spec) t)
+        ; Ground-truth: did both required views materialize?
+        ; ddGetObj returns nil for missing lib/cell/view (non-throwing
+        ; per skdfref.pdf p.1760), so a plain (and ...) suffices.
+        (setq cellOk
+          (and (ddGetObj tgtLib tgtCell "symbol")
+               (ddGetObj tgtLib tgtCell "veriloga")))
         (cond
-          ((and ok (car ok))
+          (cellOk
             ; B5 integration: pass current source plist so the saved file
             ; gets v2 lastDutLib/Cell/View. The source plist shape is
             ; (nil 'lib X 'cell Y 'view Z) -- matches dgenStore.il's
@@ -538,8 +554,7 @@
                       (dgen_specToLastState spec dgen_currentDutCell)
                       srcPlist) t)
             (setq msg (sprintf nil "Generated %s/%s successfully."
-              (get (get spec 'target) 'lib)
-              (get (get spec 'target) 'cell)))
+              tgtLib tgtCell))
             (hiDisplayAppDBox
               ?name 'dgen_resultDBox
               ?dboxBanner "Dreg Generator"
@@ -549,8 +564,7 @@
             t)
           (t
             (setq msg (sprintf nil "Failed to generate %s/%s. See CIW for details."
-              (get (get spec 'target) 'lib)
-              (get (get spec 'target) 'cell)))
+              tgtLib tgtCell))
             (hiDisplayAppDBox
               ?name 'dgen_resultDBox
               ?dboxBanner "Dreg Generator"
