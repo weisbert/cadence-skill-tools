@@ -18,6 +18,20 @@
 (unless (boundp 'dreg_genDir)
   (setq dreg_genDir "/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/"))
 
+; Auto-fix trailing slash (common typo).
+(unless (rexMatchp "/$" dreg_genDir)
+  (setq dreg_genDir (strcat dreg_genDir "/")))
+
+; Existence check: bail with a clear error rather than the cryptic
+; "load: error while loading file" if dreg_genDir is wrong.
+(unless (isFile (strcat dreg_genDir "dgenPinScan.il"))
+  (error
+    (strcat
+      "dreg_gen.il: dreg_genDir=" dreg_genDir
+      " does not contain dgenPinScan.il. Set dreg_genDir (or skillTools_root "
+      "via the umbrella) to the directory that DIRECTLY contains the seven "
+      "dgen*.il files, with a trailing slash.")))
+
 (let ((d dreg_genDir))
   (load (strcat d "dgenPinScan.il"))    ; data layer: scan DUT pins
   (load (strcat d "dgenStore.il"))      ; spec serialization + last-state

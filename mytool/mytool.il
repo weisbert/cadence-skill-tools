@@ -18,6 +18,20 @@
 (unless (boundp 'mt_dir)
   (setq mt_dir "/home/yusheng/cadence_work/Test/workarea/skill_tools/mytool/"))
 
+; Auto-fix trailing slash (common typo).
+(unless (rexMatchp "/$" mt_dir)
+  (setq mt_dir (strcat mt_dir "/")))
+
+; Existence check: bail with a clear error rather than the cryptic
+; "load: error while loading file" if mt_dir is wrong.
+(unless (isFile (strcat mt_dir "mtCore.il"))
+  (error
+    (strcat
+      "mytool.il: mt_dir=" mt_dir
+      " does not contain mtCore.il. Set mt_dir (or skillTools_root via the umbrella) "
+      "to the directory that DIRECTLY contains mtCore.il, mtUtil.il, and "
+      "mtInstall.il, with a trailing slash.")))
+
 (let ((d mt_dir))
   (load (strcat d "mtCore.il"))     ; registry + menu construction
   (load (strcat d "mtUtil.il"))     ; window classifiers (depends on nothing in mtCore)
