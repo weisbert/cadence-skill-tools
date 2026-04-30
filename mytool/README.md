@@ -62,18 +62,34 @@ Currently shipped:
 |---|---|---|---|
 | **Dreg Generator** | `dgenOpenGUI` | `dreg_gen/dgenGui.il` | Opens the Dreg-Generator form in DUT-less mode (user picks the DUT in-form via 3 pickers). See `dreg_gen/README.md`. |
 
-Recommended `.cdsinit` (one line — the top-level `skill_tools.il` umbrella
-sources mytool + every plugin's loader in the right order):
+Recommended `.cdsinit` — the top-level `skill_tools.il` umbrella sources
+mytool + every plugin's loader in the right order. Three deployment styles
+(do NOT edit any tracked .il file; pick whichever fits your shell setup):
 
 ```skill
-load("/home/yusheng/cadence_work/Test/workarea/skill_tools/skill_tools.il")
+; Option 1 -- shell env var SKILL_TOOLS_ROOT (most portable):
+;   export SKILL_TOOLS_ROOT=/path/to/cadence-skill-tools/  in your shell rc
+load(strcat(getShellEnvVar("SKILL_TOOLS_ROOT") "skill_tools.il"))
+
+; Option 2 -- compose from another env var (e.g. $WORK_ROOT2):
+setq( skillTools_root strcat(getShellEnvVar("WORK_ROOT2")
+                             "/workarea/cadence-skill-tools/") )
+load( strcat(skillTools_root "skill_tools.il") )
+
+; Option 3 -- absolute path:
+setq( skillTools_root "/abs/path/to/cadence-skill-tools/" )
+load( strcat(skillTools_root "skill_tools.il") )
 ```
 
-Or, if you want only the framework + a specific plugin:
+`skillTools_root` MUST end with a trailing `/`. The umbrella propagates it
+into `mt_dir` and `dreg_genDir` before loading the children, so a single
+setting reaches every loader.
+
+If you want only the framework + a specific plugin (skip the umbrella):
 
 ```skill
-load("/home/yusheng/cadence_work/Test/workarea/skill_tools/mytool/mytool.il")
-load("/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/dreg_gen.il")
+load("<root>/mytool/mytool.il")
+load("<root>/dreg_gen/dreg_gen.il")
 ```
 
 The framework's `mt_pollArmed` poll picks up newly opened windows within ~2s,

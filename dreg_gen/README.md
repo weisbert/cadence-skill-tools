@@ -76,20 +76,34 @@ user knows the field accepts a multi-bit integer (0..2^N-1).
 
 ## Loading and using in CIW
 
-**Recommended (one line)** — sources MyTool framework + every dgen module:
+**Recommended (`.cdsinit`)** — set the install root in one of three styles
+and load the umbrella; it sources MyTool + every dgen module in the right
+order. Do NOT edit any tracked `.il` file — overrides go in `.cdsinit`.
 
 ```skill
-load("/home/yusheng/cadence_work/Test/workarea/skill_tools/skill_tools.il")
+; Option 1 -- shell env var (export SKILL_TOOLS_ROOT in your shell rc):
+load(strcat(getShellEnvVar("SKILL_TOOLS_ROOT") "skill_tools.il"))
+
+; Option 2 -- compose from another env var (e.g. $WORK_ROOT2):
+setq( skillTools_root strcat(getShellEnvVar("WORK_ROOT2")
+                             "/workarea/cadence-skill-tools/") )
+load( strcat(skillTools_root "skill_tools.il") )
+
+; Option 3 -- absolute path:
+setq( skillTools_root "/abs/path/to/cadence-skill-tools/" )
+load( strcat(skillTools_root "skill_tools.il") )
 ```
 
-Or, to load just dreg_gen (without the MyTool menu wire-up):
+`skillTools_root` MUST end with a trailing `/`. See `mytool/README.md`
+for the full priority order (explicit setq > env var > dev fallback).
+
+To load just dreg_gen without MyTool menu wire-up (the menu hook silently
+no-ops when `mtRegister` is undefined):
 
 ```skill
-load("/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/dreg_gen.il")
+setq( dreg_genDir "/abs/path/to/cadence-skill-tools/dreg_gen/" )
+load( strcat(dreg_genDir "dreg_gen.il") )
 ```
-
-Both loaders are idempotent and honor an override variable for non-default
-paths — see the loader file headers for the override pattern.
 
 Manual (if you need to skip a module):
 
