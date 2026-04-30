@@ -486,20 +486,29 @@
 ; -------- Picker callbacks ---------------------------------------------
 
 ; B2: [Load Pins] button callback. Reads the three top-section combo
-; values, validates, saves transient state, closes the form, and
-; re-opens it with the new DUT. The reopen path runs the full
-; dgen_buildFields again so per-pin rows reflect the new DUT.
+; values, validates, saves transient state, then DEFERS the form
+; close+reopen to a hiRegTimer tick so we don't trigger
+;   "*WARNING* hiDeleteForm: Cannot delete a form that is mapped or
+;    from within the form's callback"
+; (which is exactly what happens if you call hiFormCancel/dgenOpenGUI
+; while still inside dgen_btnLoad's stringly-typed callback).
 ;
 ; Validation rules:
 ;   * lib non-empty (else warn)
 ;   * cell non-empty (else warn)
 ;   * view defaults to "symbol" if blank
 ;
-; The save-before-close protects the user's transient edits to
-; target/DVDD/mode/pattern (per-pin rows are tied to the current DUT and
-; naturally don't restore).
+; The save-before-close runs SYNCHRONOUSLY here -- the form is still
+; alive at this point so dgen_readForm can read the per-pin rows.
+;
+; The actual close+reopen lives in dgenGui_deferredReopen, scheduled
+; via hiRegTimer (1 = 100ms; arg unit is tenths of seconds per
+; skuiref.pdf p.84) so it runs AFTER this callback returns and the
+; form's mapped/callback context has cleared.
+;
+; Ref: skuiref.pdf p.84 (hiRegTimer).
 (defun dgenGui_loadCB (form "g")
-  (let (lib cell view spec srcPlist)
+  (let (lib cell view)
     (setq lib  (dgen_fieldVal form 'dgen_srcLib))
     (setq cell (dgen_fieldVal form 'dgen_srcCell))
     (setq view (dgen_fieldVal form 'dgen_srcView))
@@ -524,7 +533,8 @@
       (t
         ; Save transient state ONLY when a DUT is currently loaded
         ; (otherwise dgen_currentPins is nil and there's nothing
-        ; meaningful to read from per-pin rows).
+        ; meaningful to read from per-pin rows). MUST happen before
+        ; the deferred reopen tears down the form record.
         (when dgen_currentPins
           (errset
             (let (sp src)
@@ -534,10 +544,29 @@
                 (dgen_specToLastState sp dgen_currentDutCell)
                 src))
             t))
-        ; Close current form, then reopen targeting the new DUT.
-        ; hiFormCancel takes the form RECORD (not the symbol).
-        (errset (hiFormCancel form) t)
-        (dgenOpenGUI lib cell view)))))
+        ; Schedule close+reopen for the next event-loop tick.
+        ; sprintf yields a one-line callback string (per skillbridge
+        ; evalstring/hiRegTimer multi-line gotcha).
+        (hiRegTimer
+          (sprintf nil "(dgenGui_deferredReopen \"%s\" \"%s\" \"%s\")"
+                   lib cell view)
+          1)
+        t))))
+
+; Deferred close+reopen. Called from a hiRegTimer tick AFTER the load
+; callback (or any caller) returns, so we're no longer inside the form's
+; mapped/callback context and hiFormCancel will succeed.
+;
+; Both calls are wrapped in errset so a transient failure (e.g. user
+; X-closed dgen_form between the timer arming and firing -- so the
+; record is already gone) doesn't cascade.
+;
+; Ref: skuiref.pdf p.84 (hiRegTimer fires the registered string from
+;       the event loop, not from the originating callback's call chain).
+(defun dgenGui_deferredReopen (lib cell view "ttt")
+  (when (and (boundp 'dgen_form) dgen_form)
+    (errset (hiFormCancel dgen_form) t))
+  (errset (dgenOpenGUI lib cell view) t))
 
 ; Wave 3 [Select from Schematic]: interactive-pick mode. User clicks
 ; the button FIRST, then clicks an instance in any open schematic.
@@ -570,25 +599,40 @@
 ;   (window done points)
 ; - window : the graphics window where the click happened (nil on Esc)
 ; - done   : t if user clicked, nil if Esc / cancel
-; - points : list of picked points (we don't use them; we read the
-;            window's selection set after the click)
+; - points : list of picked points -- car is the click coordinate
+;            (xCoord/yCoord are aliases for car/cadr per sklangref.pdf
+;            p.71-72, so the point is a (x y) list).
 ;
-; The pick on a schematic instance updates the window's selection set;
-; we read it back via geGetSelSet and dispatch into the same
-; combo-population / loadCB path that the old retroactive callback
-; used.
+; enterPoint captures only the COORDINATE -- it does NOT mutate the
+; window's selection set (that's geSelectPoint's job, and geSelectPoint
+; can't be combined with a doneProc-style callback). The previous
+; revision read geGetSelSet here, which only ever returned whatever the
+; user had pre-selected before clicking [Select from Schematic] --
+; typically nil -- producing the spurious "No instance was picked"
+; dialog seen in CDS.log on user's live test.
+;
+; Fix: hit-test the captured point against the schematic via
+; dbGetOverlaps with a tiny bbox around the click. This returns ALL
+; figures whose bbox overlaps the search box; we filter to objType
+; "inst" so wires / pins / shapes are reported as "not an instance".
+;
+; Ref: skdfref.pdf p.1317-1319 (dbGetOverlaps),
+;      skuiref.pdf p.1197 (enterPoint doneProc signature),
+;      sklangref.pdf p.71-72 (xCoord/yCoord = car/cadr aliases).
 (defun dgenGui_selSchemDone (w done pts "ggg")
   (cond
     ((null done) nil)        ; Esc / cancel -- silent no-op
     ((null w)    nil)        ; defensive
     ; If the user X-closed the dreg form mid-pick, dgen_form is unbound
-    ; (or rebound to garbage). Bail silently rather than crash on the
-    ; combo-write evalstrings further down.
+    ; (or rebound to garbage). Bail silently rather than crash.
     ((or (null (boundp 'dgen_form)) (null dgen_form))
       (printf "[dreg-gen] pick fired but dreg form is gone -- ignoring.\n")
       nil)
+    ((null pts)
+      (printf "[dreg-gen] pick fired with no point -- ignoring.\n")
+      nil)
     (t
-      (let (cvOk cv selOk sel)
+      (let (cvOk cv pt eps bbox objsOk objs insts)
         ; Defensive cellview check: enterPoint should only fire on
         ; graphics windows, but some non-schematic windows (layout,
         ; symbol editor, etc.) also have CVs -- gate on schematic.
@@ -612,84 +656,114 @@
                   ?dialogType hicWarningDialog
                   ?buttonLayout 'Close))
               (t
-                (setq selOk (errset (geGetSelSet w) t))
+                ; Build a tiny epsilon-bbox around the click for hit-test.
+                ; 0.01 user units is comfortably below typical schematic
+                ; symbol dimensions (DUT bodies are O(1.0) units) and
+                ; well above floating-point noise.
+                (setq pt (car pts))
+                (setq eps 0.01)
+                (setq bbox (list
+                             (list (difference (xCoord pt) eps)
+                                   (difference (yCoord pt) eps))
+                             (list (plus       (xCoord pt) eps)
+                                   (plus       (yCoord pt) eps))))
+                (setq objsOk (errset (dbGetOverlaps cv bbox) t))
                 (cond
-                  ((or (null selOk) (null (car selOk)))
+                  ((or (null objsOk) (null (car objsOk)))
+                    ; dbGetOverlaps errored or no overlap returned --
+                    ; clicked on empty schematic space.
                     (hiDisplayAppDBox
                       ?name 'dgenSelEmpty
                       ?dboxBanner "Select from Schematic"
-                      ?dboxText "No instance was picked. Try again -- click directly on an instance body."
+                      ?dboxText "No instance at click point. Try again -- click directly on an instance body."
                       ?dialogType hicWarningDialog
                       ?buttonLayout 'Close))
                   (t
-                    (setq sel (car selOk))
-                    (dgen_applyPickedSelection 'dgen_form sel)))))))))))
+                    (setq objs (car objsOk))
+                    ; dbGetOverlaps may include nested-list entries for
+                    ; objects deeper in the hierarchy (skdfref.pdf
+                    ; p.1317). Filter to flat top-level objects whose
+                    ; objType is "inst". errset around o~>objType
+                    ; defends against nested-list entries that don't
+                    ; respond to ~>objType.
+                    (setq insts
+                      (setof o objs
+                        (and (not (listp o))
+                             (equal (errset o~>objType t) (list "inst")))))
+                    (cond
+                      ((null insts)
+                        (hiDisplayAppDBox
+                          ?name 'dgen_selErrDBox
+                          ?dboxBanner "Dreg Generator"
+                          ?dboxText "Selected object is not an instance. Click an instance body and try again."
+                          ?dialogType hicErrorDialog
+                          ?buttonLayout 'Close))
+                      (t
+                        ; Hit test naturally yields at most one instance
+                        ; under a sub-grid eps-bbox in practice; if more
+                        ; than one (overlapping symbols), pick the
+                        ; first.
+                        (dgen_applyPickedSelection 'dgen_form
+                          (car insts))))))))))))))
 
-; Helper: validate the picked selection set, populate the top-section
-; combos with the first instance's master lib/cell, and trigger the
-; load flow. Lifted from the OLD dgenGui_selSchemCB body so the same
-; edge-case handling (non-instance, missing master, multi-select warn)
-; is preserved.
+; Helper: from a single picked instance, populate the top-section
+; combos with the master lib/cell and kick off the load flow. The old
+; (multi-select selSet) signature is gone because the new hit-test path
+; in dgenGui_selSchemDone naturally yields at most one instance.
 ;
-; formSym is the form's symbol (e.g. 'dgen_form) so the evalstring
-; combo-write lines match the rest of the codebase.
-(defun dgen_applyPickedSelection (formSym selSet "sl")
-  (let (chosen master lib cell)
+; formSym is the form's symbol (e.g. 'dgen_form) -- preserved to keep
+; the evalstring infix `=` lines parseable identically to the rest of
+; the codebase.
+;
+; Ref: feedback_skill_gotchas (setq cannot write through ~>; use infix `=`
+;      via evalstring), reference_skillbridge_evalstring (one-line strings).
+(defun dgen_applyPickedSelection (formSym chosen "sg")
+  (let (master lib cell)
     (cond
-      ((null selSet)
+      ((null chosen)
         (hiDisplayAppDBox
           ?name 'dgenSelEmpty
           ?dboxBanner "Select from Schematic"
-          ?dboxText "No instance was picked. Try again -- click directly on an instance body."
+          ?dboxText "No instance at click point. Try again -- click directly on an instance body."
           ?dialogType hicWarningDialog
           ?buttonLayout 'Close)
         nil)
+      ((not (equal chosen~>objType "inst"))
+        (hiDisplayAppDBox
+          ?name 'dgen_selErrDBox
+          ?dboxBanner "Dreg Generator"
+          ?dboxText (strcat "Selected object is not an instance "
+                            "(got " (or chosen~>objType "?")
+                            "). Click an instance and try again.")
+          ?dialogType hicErrorDialog
+          ?buttonLayout 'Close)
+        nil)
       (t
-        (setq chosen (car selSet))
-        (when (greaterp (length selSet) 1)
-          (hiDisplayAppDBox
-            ?name 'dgen_selWarnDBox
-            ?dboxBanner "Dreg Generator"
-            ?dboxText "Multiple objects selected -- using the first."
-            ?dialogType hicInformationDialog
-            ?buttonLayout 'Close))
+        (setq master chosen~>master)
+        (setq lib    (and master master~>libName))
+        (setq cell   (and master master~>cellName))
         (cond
-          ((not (equal chosen~>objType "inst"))
+          ((or (null lib) (null cell))
             (hiDisplayAppDBox
               ?name 'dgen_selErrDBox
               ?dboxBanner "Dreg Generator"
-              ?dboxText (strcat "Selected object is not an instance "
-                                "(got " (or chosen~>objType "?")
-                                "). Click an instance and try again.")
+              ?dboxText "Selected instance has no master lib/cell."
               ?dialogType hicErrorDialog
               ?buttonLayout 'Close)
             nil)
           (t
-            (setq master chosen~>master)
-            (setq lib    (and master master~>libName))
-            (setq cell   (and master master~>cellName))
-            (cond
-              ((or (null lib) (null cell))
-                (hiDisplayAppDBox
-                  ?name 'dgen_selErrDBox
-                  ?dboxBanner "Dreg Generator"
-                  ?dboxText "Selected instance has no master lib/cell."
-                  ?dialogType hicErrorDialog
-                  ?buttonLayout 'Close)
-                nil)
-              (t
-                ; Populate combos via infix `=` (setq cannot write
-                ; through ~> per skill-gotchas). evalstring strings
-                ; MUST be one-liners (per reference_skillbridge_evalstring).
-                (evalstring (sprintf nil "dgen_form->dgen_srcLib->value = \"%s\"" lib))
-                (evalstring (sprintf nil "dgen_form->dgen_srcCell->value = \"%s\"" cell))
-                (evalstring "dgen_form->dgen_srcView->value = \"symbol\"")
-                ; Trigger load flow. dgen_form is a top-level symbol
-                ; bound to the live form record by hiCreateAppForm
-                ; (?name 'dgen_form), so evaluating it yields the
-                ; record dgenGui_loadCB expects.
-                (dgenGui_loadCB dgen_form)
-                t))))))))
+            ; Populate combos via infix `=` (setq cannot write through
+            ; ~> per skill-gotchas). evalstring strings MUST be
+            ; one-liners (per reference_skillbridge_evalstring).
+            (evalstring (sprintf nil "dgen_form->dgen_srcLib->value = \"%s\"" lib))
+            (evalstring (sprintf nil "dgen_form->dgen_srcCell->value = \"%s\"" cell))
+            (evalstring "dgen_form->dgen_srcView->value = \"symbol\"")
+            ; Trigger load flow. dgenGui_loadCB now defers the actual
+            ; close+reopen via hiRegTimer (Bug 3 fix), so calling it
+            ; from this enterPoint-doneProc context is safe -- no risk
+            ; of "delete a form from within its callback" warnings.
+            (dgenGui_loadCB dgen_form)
+            t))))))
 
 ; Wave 3 [Browse Library...]: link the existing Library Manager into
 ; "linked" mode against our form's top-section combos. User browses
@@ -701,19 +775,33 @@
 ; open it gets re-routed into linked mode (per director decision #2 --
 ; matches Cadence's own dialog behavior).
 ;
+; Bug fix (live test, dgenBrowseFail dialog -- CDS.log):
+;   "*WARNING* ddsSyncWithForm: dgen_srcLib not a field on form nil"
+; Root cause: we were passing 'dgen_form (a quoted symbol). The
+; documented example (skdfref.pdf p.1905-1906, "Example 1") passes the
+; form RECORD itself (unquoted, e.g. exampleOpenForm), not its name.
+; Resolving the symbol's value yields the live form record, which is
+; what ddsSyncWithForm expects per the g_form arg description.
+;
+; The action remains 'browse: per skdfref.pdf p.1904 'browse is one of
+; the documented values for s_action (alongside 'design/'open/'place/
+; 'other), and Example 1 in the same chapter uses
+;   ddsSyncWithForm( exampleOpenForm 'browse ... )
+; verbatim for the [Browse...] button. So the action was never the bug.
+;
 ; Ref: skdfref.pdf p.1904-1907 (ddsSyncWithForm),
-;      p.1875 (ddsEndSyncWithForm).
+;      p.1909 (ddsEndSyncWithForm).
 (defun dgenGui_browseCB (form "g")
   (let (rc)
     ; Signature (skdfref.pdf p.1904):
     ;   ddsSyncWithForm(g_form s_action s_libField
     ;                   [s_cellField] [s_viewField] [l_viewTypes])
-    ; Returns t/nil. We pass the form symbol, action 'browse, the three
-    ; field name symbols, and a viewTypes filter so the tree only shows
-    ; schematic/symbol leaves (matches the dgen DUT-pick semantics).
+    ; Pass the form RECORD as the first arg (per Example 1, p.1905-1906)
+    ; -- the caller already received this as `form`. The field args
+    ; remain quoted symbols (their on-form names).
     (setq rc (errset
                (ddsSyncWithForm
-                 'dgen_form
+                 form
                  'browse
                  'dgen_srcLib
                  'dgen_srcCell
