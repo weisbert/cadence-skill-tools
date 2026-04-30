@@ -148,6 +148,85 @@
       (t fallback))))
 
 ; ---------------------------------------------------------------------------
+; Preview helpers
+; ---------------------------------------------------------------------------
+
+; Build a one-line example of how the chosen defaultMode + pattern will
+; resolve into CDF defValue strings at instantiation. Read-only string
+; shown in the "Preview" row below the pattern field. Pure function --
+; takes a spec plist, returns a string.
+;
+; Pin substitution: pick the FIRST scalar pin (isBus = nil) for a clean
+; example. Falls back to first pin overall, then to literal "<pin>" if
+; spec has no pins yet (DUT-less form mode).
+(defun dgen_renderPreview (spec "g")
+  (let (mode pattern dvdd pins examplePin pinName customResolved)
+    (setq mode    (or (get spec 'defaultMode)    "literal"))
+    (setq pattern (or (get spec 'defaultPattern) ""))
+    (setq dvdd    (or (get spec 'dvddDefault)    "0.9"))
+    (setq pins    (get spec 'pins))
+    (setq examplePin nil)
+    (foreach p pins
+      (when (and (null examplePin) (null (get p 'isBus)))
+        (setq examplePin p)))
+    (when (and (null examplePin) pins)
+      (setq examplePin (car pins)))
+    (setq pinName (cond
+                    (examplePin (get examplePin 'name))
+                    (t          "<pin>")))
+    (cond
+      ((equal mode "literal")
+        (sprintf nil "Example: DVDD=\"%s\", d_%s=(from per-pin row below)"
+                 dvdd pinName))
+      ((equal mode "empty")
+        "All defValues empty -- user fills at instantiation")
+      ((equal mode "variable")
+        (sprintf nil "Example: DVDD=\"DVDD\", d_%s=\"d_%s\"" pinName pinName))
+      ((equal mode "variable_pin")
+        (sprintf nil "Example: DVDD=\"DVDD\", d_%s=\"%s\"" pinName pinName))
+      ((equal mode "custom")
+        (cond
+          ((or (null pattern) (equal pattern ""))
+            "Example: pattern required (defaultPattern field above)")
+          (t
+            (rexCompile "\\*")
+            (setq customResolved (rexReplace pattern pinName 0))
+            (sprintf nil "Example: DVDD=\"DVDD\", d_%s=\"%s\""
+                     pinName customResolved))))
+      (t (sprintf nil "Example: (unknown mode %s)" mode)))))
+
+; Re-render the Preview row from the live form's current field values.
+; Called from dgenGui_modeCB and dgenGui_patternCB. Defensive: errset
+; around the slot write so a missing form (X-closed) doesn't crash the
+; callback chain.
+;
+; setq cannot write through ~> so we route the slot assignment through
+; evalstring with infix `=`. We stage the rendered text in a global
+; symbol (dgen_tmpPreviewTxt) and have evalstring reference that symbol,
+; rather than splicing the text into a string literal -- the text itself
+; contains embedded double quotes (e.g. "Example: DVDD=\"0.9\", ...")
+; which would terminate the literal early and cause a SKILL parse error
+; (caught in dev). Symbol-reference path sidesteps quote-escaping
+; entirely.
+(defun dgen_updatePreview ()
+  (let (mode pattern dvdd minSpec txt)
+    (when (and (boundp 'dgen_form) dgen_form)
+      (setq mode    (dgen_fieldVal dgen_form 'dgen_mode))
+      (setq pattern (dgen_fieldVal dgen_form 'dgen_pattern))
+      (setq dvdd    (dgen_fieldVal dgen_form 'dgen_dvdd))
+      (setq minSpec (list nil
+        'defaultMode    (or mode    "literal")
+        'defaultPattern (or pattern "")
+        'dvddDefault    (or dvdd    "0.9")
+        'pins           dgen_currentPins))
+      (setq txt (dgen_renderPreview minSpec))
+      (setq dgen_tmpPreviewTxt txt)
+      (errset
+        (evalstring "dgen_form->dgen_preview->value = dgen_tmpPreviewTxt")
+        t))
+    t))
+
+; ---------------------------------------------------------------------------
 ; Top-section field builders (built unconditionally on every form open)
 ; ---------------------------------------------------------------------------
 
@@ -176,7 +255,7 @@
 (defun dgen_buildTopFields (preLib preCell preView baseY rowH "tttng")
   (let (fields y libF cellF viewF btnSel btnBrowse btnLoad fieldW promptW
         sizePt btnW btnH btnY)
-    (setq fieldW 240)
+    (setq fieldW 360)
     (setq promptW 130)
     (setq sizePt (list fieldW rowH))
     (setq btnW 140)
@@ -237,12 +316,12 @@
 ; Ref: skuiref.pdf p.502 (hiCreateAppForm), p.650 (hiCreateStringField),
 ;      p.521 (hiCreateBooleanButton), p.536 (hiCreateCyclicField).
 (defun dgen_buildMiddleFields (factorySpec currentSpec startY rowH "ggng")
-  (let (fTgt cTgt pins cPins fields i y fieldW promptW sizePt)
+  (let (fTgt cTgt pins cPins fields i y fieldW promptW sizePt previewTxt)
     (setq fTgt (get factorySpec 'target))
     (setq cTgt (get currentSpec 'target))
     (setq pins  (get factorySpec 'pins))
     (setq cPins (get currentSpec 'pins))
-    (setq fieldW 240)
+    (setq fieldW 360)
     (setq promptW 130)
     (setq fields nil)
     (setq y startY)
@@ -285,7 +364,21 @@
     (setq fields (cons
       (list (hiCreateStringField ?name 'dgen_pattern ?prompt "defaultPattern"
               ?defValue (or (get factorySpec 'defaultPattern) "*_ls")
-              ?value    (or (get currentSpec 'defaultPattern) "*_ls"))
+              ?value    (or (get currentSpec 'defaultPattern) "*_ls")
+              ?enabled  (equal (or (get currentSpec 'defaultMode) "literal") "custom")
+              ?callback 'dgenGui_patternCB)
+            (list 0 y) sizePt promptW)
+      fields))
+    (setq y (plus y rowH))
+    ; Preview row -- read-only one-line example of how defValue strings
+    ; will be emitted given the current mode/pattern/dvdd. Updated live
+    ; on mode/pattern change via dgenGui_modeCB / dgenGui_patternCB.
+    (setq previewTxt (dgen_renderPreview currentSpec))
+    (setq fields (cons
+      (list (hiCreateStringField ?name 'dgen_preview ?prompt "Preview"
+              ?defValue ""
+              ?value    previewTxt
+              ?editable nil)
             (list 0 y) sizePt promptW)
       fields))
     (setq y (plus y rowH))
@@ -329,7 +422,7 @@
 ; button row).
 (defun dgen_buildFields (factorySpec currentSpec "gg")
   (let (rowH fSrc preLib preCell preView topResult topFields nextY midFields)
-    (setq rowH 25)
+    (setq rowH 30)
     (setq fSrc (get factorySpec 'source))
     (setq preLib  (or (get fSrc 'lib) ""))
     (setq preCell (or (get fSrc 'cell) ""))
@@ -478,13 +571,31 @@
 ; setter rather than slot assignment because Lisp-form
 ; (setq rec->enabled v) is rejected (setq's first arg must be a symbol).
 (defun dgenGui_modeCB (field scope item "ggg")
-  (let ((isLit (equal item "literal")) i rec)
+  (let (isLit isCustom i rec patRec)
+    (setq isLit    (equal item "literal"))
+    (setq isCustom (equal item "custom"))
     (setq i 0)
     (foreach p dgen_currentPins
       (setq rec (get dgen_form (dgen_pinDefaultId i)))
       (when rec (hiSetFieldEnabled rec isLit))
       (setq i (add1 i)))
+    ; Pattern field is only meaningful when mode = "custom"; gray it
+    ; out otherwise so the user isn't tempted to type a pattern that
+    ; will be ignored.
+    (when (and (boundp 'dgen_form) dgen_form)
+      (setq patRec (get dgen_form 'dgen_pattern))
+      (when patRec (hiSetFieldEnabled patRec isCustom)))
+    ; Live-update the Preview row to match the new mode.
+    (dgen_updatePreview)
     t))
+
+; defaultPattern-edit callback. String-field callback signature is
+; (field scope newValue) per skuiref.pdf p.650. We just refresh the
+; preview -- the actual pattern value is stored in the field itself
+; and read at OK time by dgen_readForm.
+(defun dgenGui_patternCB (field scope newValue "ggg")
+  (dgen_updatePreview)
+  t)
 
 ; -------- Picker callbacks ---------------------------------------------
 
@@ -922,7 +1033,7 @@
 (defun dgenOpenGUI (@optional dutLib dutCell dutView)
   (let (pins factorySpec lastState currentSpec fields preLib preCell preView
         topResult topFields rowH form title dutMode)
-    (setq rowH 25)
+    (setq rowH 30)
     (setq dutMode (and dutLib dutCell))
     (cond
       (dutMode
