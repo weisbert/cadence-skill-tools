@@ -76,32 +76,23 @@ user knows the field accepts a multi-bit integer (0..2^N-1).
 
 ## Loading and using in CIW
 
-**Recommended (`.cdsinit`)** — set the install root in one of three styles
-and load the umbrella; it sources MyTool + every dgen module in the right
-order. Do NOT edit any tracked `.il` file — overrides go in `.cdsinit`.
+**Recommended `.cdsinit`** (single line; assumes `$WORK_ROOT2` is set in
+your shell rc and points at the workarea dir):
 
 ```skill
-; Option 1 -- shell env var (export SKILL_TOOLS_ROOT in your shell rc):
-load(strcat(getShellEnvVar("SKILL_TOOLS_ROOT") "skill_tools.il"))
-
-; Option 2 -- compose from another env var (e.g. $WORK_ROOT2):
-setq( skillTools_root strcat(getShellEnvVar("WORK_ROOT2")
-                             "/workarea/cadence-skill-tools/") )
-load( strcat(skillTools_root "skill_tools.il") )
-
-; Option 3 -- absolute path:
-setq( skillTools_root "/abs/path/to/cadence-skill-tools/" )
-load( strcat(skillTools_root "skill_tools.il") )
+load(strcat(getShellEnvVar("WORK_ROOT2") "/skill_tools/skill_tools.il"))
 ```
 
-`skillTools_root` MUST end with a trailing `/`. See `mytool/README.md`
-for the full priority order (explicit setq > env var > dev fallback).
+The umbrella derives its own install dir from `$WORK_ROOT2` and sources
+MyTool + every `dgen*` module in the right order. See `mytool/README.md`
+for other configuration styles (`SKILL_TOOLS_ROOT`, explicit setq, dev
+fallback) and the full resolution priority order.
 
 To load just dreg_gen without MyTool menu wire-up (the menu hook silently
 no-ops when `mtRegister` is undefined):
 
 ```skill
-setq( dreg_genDir "/abs/path/to/cadence-skill-tools/dreg_gen/" )
+setq( dreg_genDir "/abs/path/to/skill_tools/dreg_gen/" )
 load( strcat(dreg_genDir "dreg_gen.il") )
 ```
 

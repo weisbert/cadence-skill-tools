@@ -62,30 +62,37 @@ Currently shipped:
 |---|---|---|---|
 | **Dreg Generator** | `dgenOpenGUI` | `dreg_gen/dgenGui.il` | Opens the Dreg-Generator form in DUT-less mode (user picks the DUT in-form via 3 pickers). See `dreg_gen/README.md`. |
 
-Recommended `.cdsinit` — the top-level `skill_tools.il` umbrella sources
-mytool + every plugin's loader in the right order. Three deployment styles
-(do NOT edit any tracked .il file; pick whichever fits your shell setup):
+Recommended `.cdsinit` — `skill_tools.il` derives its own location from
+`$WORK_ROOT2` (or `$SKILL_TOOLS_ROOT`), so the typical `.cdsinit` is one
+`load(...)` line:
 
 ```skill
-; Option 1 -- shell env var SKILL_TOOLS_ROOT (most portable):
-;   export SKILL_TOOLS_ROOT=/path/to/cadence-skill-tools/  in your shell rc
-load(strcat(getShellEnvVar("SKILL_TOOLS_ROOT") "skill_tools.il"))
+; Convention: $WORK_ROOT2 points at the workarea dir; skill_tools/ is a
+; direct subdir of it. csh: setenv WORK_ROOT2 ...; bash: export WORK_ROOT2=...
+load(strcat(getShellEnvVar("WORK_ROOT2") "/skill_tools/skill_tools.il"))
+```
 
-; Option 2 -- compose from another env var (e.g. $WORK_ROOT2):
-setq( skillTools_root strcat(getShellEnvVar("WORK_ROOT2")
-                             "/workarea/cadence-skill-tools/") )
-load( strcat(skillTools_root "skill_tools.il") )
+`skill_tools.il` resolves the install dir in this priority order (highest
+first; first non-nil wins):
 
-; Option 3 -- absolute path:
-setq( skillTools_root "/abs/path/to/cadence-skill-tools/" )
+1. `skillTools_root` already bound (via `setq` in `.cdsinit`)
+2. env var `SKILL_TOOLS_ROOT` (full path including `skill_tools/`)
+3. env var `WORK_ROOT2` (resolves to `$WORK_ROOT2/skill_tools/`)
+4. compile-time fallback (dev-machine hardcode)
+
+So if `$WORK_ROOT2` is set, no `setq` is needed in `.cdsinit`. If you don't
+want to use either env var, fall back to explicit setq:
+
+```skill
+setq( skillTools_root "/abs/path/to/skill_tools/" )
 load( strcat(skillTools_root "skill_tools.il") )
 ```
 
-`skillTools_root` MUST end with a trailing `/`. The umbrella propagates it
-into `mt_dir` and `dreg_genDir` before loading the children, so a single
-setting reaches every loader.
+Trailing `/` on `skillTools_root` is auto-fixed by the loader; missing
+`mytool/`, `dreg_gen/` subdirs trigger a clear error message naming the
+resolved path.
 
-If you want only the framework + a specific plugin (skip the umbrella):
+To load only the framework + a specific plugin (skip the umbrella):
 
 ```skill
 load("<root>/mytool/mytool.il")
