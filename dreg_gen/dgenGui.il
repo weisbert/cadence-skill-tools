@@ -2,7 +2,7 @@
 ; which DUT pins become Dreg parameters and editing defaults
 ; (target lib/cell, DVDD, defaultMode/Pattern, per-pin enable + default).
 ;
-; Phase B Wave 2 (B1-B5) refactor:
+; Phase B Wave 2 (B1-B5) refactor + Wave 3 callback rewrites:
 ;   * dgenOpenGUI is now @optional dutLib dutCell. With no args the form
 ;     opens "DUT-less" (top section only); with both args it renders
 ;     immediately (old behaviour preserved -- callers like
@@ -13,14 +13,21 @@
 ;     is instantiated -- linking REQUIRES instantiation per skuiref
 ;     p.495) and 3 picker buttons:
 ;       [Select from Schematic]  [Browse Library...]  [Load Pins]
-;   * Three picker mechanisms:
+;   * Three picker mechanisms (Wave 3 UX):
 ;       1. Manual: type into Lib combo (auto-completion lists libs from
 ;          cds.lib), pick a Cell (links repopulate it), click [Load Pins].
-;       2. Select from Schematic (dgenGui_selSchemCB): walks open schematic
-;          windows, reads geGetSelSet, picks first instance master's
-;          lib/cell/symbol, populates combos, triggers render.
-;       3. Browse Library (dgenGui_browseCB): pops a small modal
-;          dgen_dutChooser sub-form with 3 linked combos + OK/Cancel.
+;       2. Select from Schematic (dgenGui_selSchemCB): interactive pick
+;          mode -- click button FIRST, then click an instance in any
+;          open schematic. Uses enterPoint async path with doneProc
+;          (dgenGui_selSchemDone). Esc cancels. Re-entry guarded via
+;          enterFunNestLevel. Form-close cleanup tears down via
+;          cancelEnterFun.
+;       3. Browse Library (dgenGui_browseCB): links the real Cadence
+;          Library Manager into our top-section combos via
+;          ddsSyncWithForm (action 'browse, viewTypes filter
+;          schematic+symbol). [Load Pins] remains the explicit commit
+;          (no auto-trigger). Form-close cleanup ends the link via
+;          ddsEndSyncWithForm.
 ;   * Middle/bottom (target rows + DVDD + mode/pattern + per-pin rows)
 ;     only built when DUT is loaded; regenerates on DUT change via the
 ;     close-reopen pattern (B6 land, but the load callback already does
@@ -532,59 +539,114 @@
         (errset (hiFormCancel form) t)
         (dgenOpenGUI lib cell view)))))
 
-; B3: [Select from Schematic] button callback. Walks all 'window-type
-; windows, filters to those whose displayed cellview is a schematic,
-; gathers selected sets, applies edge-case rules, populates the form's
-; combo fields with the first instance's master lib/cell, and triggers
-; the load flow.
+; Wave 3 [Select from Schematic]: interactive-pick mode. User clicks
+; the button FIRST, then clicks an instance in any open schematic.
+; The form stays open (modeless). enterPoint async path -- doneProc
+; fires when the user clicks (g_done=t) or hits Esc (g_done=nil).
 ;
-; Edge cases:
-;   * 0 selected anywhere -> warn dialog
-;   * >1 selected -> use first, warn
-;   * non-instance selected -> error dialog
+; Ref: skuiref.pdf p.1197-1200 (enterPoint), p.1184 (enterFunNestLevel),
+;      p.1229 (cancelEnterFun).
 ;
-; Ref: skuiref.pdf p.945 (hiGetWindowList), skdfref.pdf p.115
-;      (geGetWindowCellView), skdfref.pdf p.183 (geGetSelSet).
-;
-; geGetWindowCellView issues a UserWarning for non-graphics windows
-; (CIW, LM, etc.); wrap each call in errset so the walk stays silent.
+; Re-entry guard: if user double-clicks the button, ignore the second
+; invocation (enterFunNestLevel > 0 means an enter-function is already
+; pending).
 (defun dgenGui_selSchemCB (form "g")
-  (let (allSel chosen master lib cell)
-    (setq allSel nil)
-    (foreach w (hiGetWindowList 'window)
+  (cond
+    ((greaterp (enterFunNestLevel) 0)
+      (warn "[dreg-gen] Already in pick mode. Click an instance, or press Esc to cancel.\n")
+      nil)
+    (t
+      ; Async enterPoint: registers doneProc, returns immediately so
+      ; the form's event loop continues. The doneProc symbol is
+      ; resolved at fire-time, so dgenGui_selSchemDone must be a
+      ; top-level defun (which it is, below).
+      (enterPoint
+        ?prompts (list "Click an instance in a schematic. Esc to cancel.")
+        ?cmdName "dgenSelInst"
+        ?doneProc "dgenGui_selSchemDone")
+      t)))
+
+; doneProc for dgenGui_selSchemCB. Signature per skuiref.pdf p.1197:
+;   (window done points)
+; - window : the graphics window where the click happened (nil on Esc)
+; - done   : t if user clicked, nil if Esc / cancel
+; - points : list of picked points (we don't use them; we read the
+;            window's selection set after the click)
+;
+; The pick on a schematic instance updates the window's selection set;
+; we read it back via geGetSelSet and dispatch into the same
+; combo-population / loadCB path that the old retroactive callback
+; used.
+(defun dgenGui_selSchemDone (w done pts "ggg")
+  (cond
+    ((null done) nil)        ; Esc / cancel -- silent no-op
+    ((null w)    nil)        ; defensive
+    (t
       (let (cvOk cv selOk sel)
+        ; Defensive cellview check: enterPoint should only fire on
+        ; graphics windows, but some non-schematic windows (layout,
+        ; symbol editor, etc.) also have CVs -- gate on schematic.
         (setq cvOk (errset (geGetWindowCellView w) t))
-        (when (and cvOk (car cvOk))
-          (setq cv (car cvOk))
-          (when (equal cv~>cellViewType "schematic")
-            (setq selOk (errset (geGetSelSet w) t))
-            (when (and selOk (car selOk))
-              (setq sel (car selOk))
-              (foreach obj sel
-                (setq allSel (cons obj allSel))))))))
-    (setq allSel (reverse allSel))
+        (cond
+          ((or (null cvOk) (null (car cvOk)))
+            (hiDisplayAppDBox
+              ?name 'dgenSelEmpty
+              ?dboxBanner "Select from Schematic"
+              ?dboxText "Pick window has no cellview. Try again -- click in a schematic."
+              ?dialogType hicWarningDialog
+              ?buttonLayout 'Close))
+          (t
+            (setq cv (car cvOk))
+            (cond
+              ((not (equal cv~>cellViewType "schematic"))
+                (hiDisplayAppDBox
+                  ?name 'dgenSelEmpty
+                  ?dboxBanner "Select from Schematic"
+                  ?dboxText "Pick window is not a schematic. Try again."
+                  ?dialogType hicWarningDialog
+                  ?buttonLayout 'Close))
+              (t
+                (setq selOk (errset (geGetSelSet w) t))
+                (cond
+                  ((or (null selOk) (null (car selOk)))
+                    (hiDisplayAppDBox
+                      ?name 'dgenSelEmpty
+                      ?dboxBanner "Select from Schematic"
+                      ?dboxText "No instance was picked. Try again -- click directly on an instance body."
+                      ?dialogType hicWarningDialog
+                      ?buttonLayout 'Close))
+                  (t
+                    (setq sel (car selOk))
+                    (dgen_applyPickedSelection 'dgen_form sel)))))))))))
+
+; Helper: validate the picked selection set, populate the top-section
+; combos with the first instance's master lib/cell, and trigger the
+; load flow. Lifted from the OLD dgenGui_selSchemCB body so the same
+; edge-case handling (non-instance, missing master, multi-select warn)
+; is preserved.
+;
+; formSym is the form's symbol (e.g. 'dgen_form) so the evalstring
+; combo-write lines match the rest of the codebase.
+(defun dgen_applyPickedSelection (formSym selSet "sl")
+  (let (chosen master lib cell)
     (cond
-      ((null allSel)
+      ((null selSet)
         (hiDisplayAppDBox
-          ?name 'dgen_selWarnDBox
-          ?dboxBanner "Dreg Generator"
-          ?dboxText (strcat "No instance selected. Click an instance in a "
-                            "schematic, then press the button again.")
+          ?name 'dgenSelEmpty
+          ?dboxBanner "Select from Schematic"
+          ?dboxText "No instance was picked. Try again -- click directly on an instance body."
           ?dialogType hicWarningDialog
           ?buttonLayout 'Close)
         nil)
       (t
-        (setq chosen (car allSel))
-        (when (greaterp (length allSel) 1)
+        (setq chosen (car selSet))
+        (when (greaterp (length selSet) 1)
           (hiDisplayAppDBox
             ?name 'dgen_selWarnDBox
             ?dboxBanner "Dreg Generator"
-            ?dboxText "Multiple selected -- using the first."
+            ?dboxText "Multiple objects selected -- using the first."
             ?dialogType hicInformationDialog
             ?buttonLayout 'Close))
-        ; Inspect chosen object: must be an instance with a master.
-        ; cv~>objType is "inst" for schematic instances; non-instance
-        ; selections (wires, pins, shapes) hit the error branch.
         (cond
           ((not (equal chosen~>objType "inst"))
             (hiDisplayAppDBox
@@ -610,90 +672,77 @@
                   ?buttonLayout 'Close)
                 nil)
               (t
-                ; Populate combos via infix `=` (setq cannot take a
-                ; subscript form). Then invoke the load flow which
-                ; itself reads back the combos and re-renders.
+                ; Populate combos via infix `=` (setq cannot write
+                ; through ~> per skill-gotchas). evalstring strings
+                ; MUST be one-liners (per reference_skillbridge_evalstring).
                 (evalstring (sprintf nil "dgen_form->dgen_srcLib->value = \"%s\"" lib))
                 (evalstring (sprintf nil "dgen_form->dgen_srcCell->value = \"%s\"" cell))
                 (evalstring "dgen_form->dgen_srcView->value = \"symbol\"")
-                (dgenGui_loadCB form)))))))))
+                ; Trigger load flow. dgen_form is a top-level symbol
+                ; bound to the live form record by hiCreateAppForm
+                ; (?name 'dgen_form), so evaluating it yields the
+                ; record dgenGui_loadCB expects.
+                (dgenGui_loadCB dgen_form)
+                t))))))))
 
-; B4: [Browse Library...] button callback. Opens a small modal
-; dgen_dutChooser sub-form with 3 linked Lib/Cell/View combo fields +
-; OK/Cancel. On OK, copies the picked lib/cell/view to the parent
-; combos and triggers the load flow.
+; Wave 3 [Browse Library...]: link the existing Library Manager into
+; "linked" mode against our form's top-section combos. User browses
+; the real Cadence tree; their pick updates dgen_srcLib/Cell/View
+; directly. Load Pins remains the explicit commit (per director
+; decision #3 -- no auto-trigger).
 ;
-; Modal (?dialogStyle 'modal) prevents the user from interacting with
-; the parent form while picking. After hiDisplayForm returns, we read
-; the sub-form's field values and decide whether to apply them.
+; If Library Manager isn't open, ddsSyncWithForm opens it. If it IS
+; open it gets re-routed into linked mode (per director decision #2 --
+; matches Cadence's own dialog behavior).
 ;
-; Note: hiDisplayForm on a modal form RETURNS t/nil (OK vs Cancel). The
-; sub-form's internal callbacks aren't strictly necessary for the
-; copy-back step -- we read field values post-display.
+; Ref: skdfref.pdf p.1904-1907 (ddsSyncWithForm),
+;      p.1875 (ddsEndSyncWithForm).
 (defun dgenGui_browseCB (form "g")
-  (let (subFields subForm subResult lib cell view ok)
-    ; Build sub-form fields. Layout: 3 stacked combos, fieldW 240,
-    ; promptW 100, rowH 25.
-    (setq subFields
-      (list
-        (list (ddHiCreateLibraryComboField
-                ?name 'chooserLib
-                ?prompt "Library"
-                ?defValue ""
-                ?value    "")
-              (list 0 0) (list 240 25) 100)
-        (list (ddHiCreateCellComboField
-                ?name 'chooserCell
-                ?prompt "Cell"
-                ?defValue ""
-                ?value    "")
-              (list 0 25) (list 240 25) 100)
-        (list (ddHiCreateViewComboField
-                ?name 'chooserView
-                ?prompt "View"
-                ?defValue "symbol"
-                ?value    "symbol")
-              (list 0 50) (list 240 25) 100)))
-    (setq subForm
-      (hiCreateAppForm
-        ?name 'dgen_dutChooser
-        ?formTitle "Pick DUT Library / Cell / View"
-        ?fields subFields
-        ?buttonLayout 'OKCancel
-        ?dialogStyle 'modal))
-    ; Instantiate + link BEFORE display so the user gets linked
-    ; auto-completion (Lib pick repopulates Cell choices, etc.).
-    ; ddHiLinkFields requires the form to be instantiated first
-    ; (skuiref p.495).
-    (hiInstantiateForm subForm)
-    (errset (ddHiLinkFields subForm->chooserLib subForm->chooserCell subForm->chooserView) t)
-    ; Display blocks until OK / Cancel; modal dialog returns t on OK,
-    ; nil on Cancel. After return, the form record is still alive and
-    ; field values are readable.
-    (setq subResult (hiDisplayForm 'dgen_dutChooser))
+  (let (rc)
+    ; Signature (skdfref.pdf p.1904):
+    ;   ddsSyncWithForm(g_form s_action s_libField
+    ;                   [s_cellField] [s_viewField] [l_viewTypes])
+    ; Returns t/nil. We pass the form symbol, action 'browse, the three
+    ; field name symbols, and a viewTypes filter so the tree only shows
+    ; schematic/symbol leaves (matches the dgen DUT-pick semantics).
+    (setq rc (errset
+               (ddsSyncWithForm
+                 'dgen_form
+                 'browse
+                 'dgen_srcLib
+                 'dgen_srcCell
+                 'dgen_srcView
+                 (list "schematic" "symbol"))
+               t))
     (cond
-      (subResult
-        (setq lib  (and subForm subForm->chooserLib  subForm->chooserLib->value))
-        (setq cell (and subForm subForm->chooserCell subForm->chooserCell->value))
-        (setq view (and subForm subForm->chooserView subForm->chooserView->value))
-        (when (or (null view) (equal view "")) (setq view "symbol"))
-        (cond
-          ((or (null lib) (equal lib "") (null cell) (equal cell ""))
-            (hiDisplayAppDBox
-              ?name 'dgen_browseWarnDBox
-              ?dboxBanner "Dreg Generator"
-              ?dboxText "Browse selection was empty. Aborting."
-              ?dialogType hicWarningDialog
-              ?buttonLayout 'Close)
-            nil)
-          (t
-            (evalstring (sprintf nil "dgen_form->dgen_srcLib->value = \"%s\"" lib))
-            (evalstring (sprintf nil "dgen_form->dgen_srcCell->value = \"%s\"" cell))
-            (evalstring (sprintf nil "dgen_form->dgen_srcView->value = \"%s\"" view))
-            (dgenGui_loadCB form))))
+      ((or (null rc) (null (car rc)))
+        (hiDisplayAppDBox
+          ?name 'dgenBrowseFail
+          ?dboxBanner "Browse Library"
+          ?dboxText "Library Browser link failed. See CIW for details."
+          ?dialogType hicWarningDialog
+          ?buttonLayout 'Close)
+        nil)
       (t
-        ; Cancel pressed: do nothing.
-        nil))))
+        (printf "[dreg-gen] Library Browser linked. Pick a view in the tree, then click [Load Pins].\n")
+        t))))
+
+; Wave 3 form-close cleanup. Wired into dgen_form's ?closeCallback so
+; orphaned enterPoint or ddsSyncWithForm linkage gets torn down on
+; ANY form-close path (OK / Cancel / window-close button).
+;
+; - cancelEnterFun: cancels a pending [Select from Schematic] pick if
+;   the user closed the form before clicking an instance.
+; - ddsEndSyncWithForm: tears down [Browse Library] linked-mode so the
+;   Library Manager goes back to its standalone behavior.
+;
+; Both wrapped in errset since either may be a no-op (no pending pick,
+; no active sync) and we never want close to fail.
+(defun dgenGui_closeCleanupCB (form "g")
+  (when (greaterp (enterFunNestLevel) 0)
+    (errset (cancelEnterFun) t))
+  (errset (ddsEndSyncWithForm) t)
+  t)
 
 ; ---------------------------------------------------------------------------
 ; Public entry point
@@ -752,8 +801,9 @@
               ?name 'dgen_form
               ?formTitle title
               ?fields fields
-              ?callback (list "(dgenGui_okCB dgen_form)"
-                              "(dgenGui_cancelCB dgen_form)")
+              ?callback (list "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_okCB dgen_form))"
+                              "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_cancelCB dgen_form))")
+              ?closeCallback "(dgenGui_closeCleanupCB dgen_form)"
               ?buttonLayout 'OKCancelDefApply))
             (hiInstantiateForm form)
             (errset (ddHiLinkFields form->dgen_srcLib form->dgen_srcCell form->dgen_srcView) t)
@@ -784,8 +834,9 @@
           ?name 'dgen_form
           ?formTitle title
           ?fields topFields
-          ?callback (list "(dgenGui_okCB dgen_form)"
-                          "(dgenGui_cancelCB dgen_form)")
+          ?callback (list "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_okCB dgen_form))"
+                          "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_cancelCB dgen_form))")
+          ?closeCallback "(dgenGui_closeCleanupCB dgen_form)"
           ?buttonLayout 'OKCancelDefApply))
         (hiInstantiateForm form)
         (errset (ddHiLinkFields form->dgen_srcLib form->dgen_srcCell form->dgen_srcView) t)
