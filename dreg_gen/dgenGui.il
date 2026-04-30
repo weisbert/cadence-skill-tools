@@ -581,6 +581,12 @@
   (cond
     ((null done) nil)        ; Esc / cancel -- silent no-op
     ((null w)    nil)        ; defensive
+    ; If the user X-closed the dreg form mid-pick, dgen_form is unbound
+    ; (or rebound to garbage). Bail silently rather than crash on the
+    ; combo-write evalstrings further down.
+    ((or (null (boundp 'dgen_form)) (null dgen_form))
+      (printf "[dreg-gen] pick fired but dreg form is gone -- ignoring.\n")
+      nil)
     (t
       (let (cvOk cv selOk sel)
         ; Defensive cellview check: enterPoint should only fire on
@@ -797,13 +803,20 @@
             (setq currentSpec (dgen_resolveCurrentSpec factorySpec lastState dutCell))
             (setq fields (dgen_buildFields factorySpec currentSpec))
             (setq title (sprintf nil "Dreg Generator -- %s/%s" dutLib dutCell))
+            ; OK/Cancel callbacks wrap the cleanup via progn so any
+            ; pending enterPoint pick or ddsSyncWithForm linkage gets
+            ; torn down before the form goes away. (hiRegCloseProc
+            ; would also catch the X-button close path but it requires
+            ; a window object that hiCreateAppForm/hiInstantiateForm
+            ; don't make available -- form record fails its type check.
+            ; The doneProc and applyPickedSelection use boundp guards
+            ; to bail safely if the user X-closes mid-pick.)
             (setq form (hiCreateAppForm
               ?name 'dgen_form
               ?formTitle title
               ?fields fields
               ?callback (list "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_okCB dgen_form))"
                               "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_cancelCB dgen_form))")
-              ?closeCallback "(dgenGui_closeCleanupCB dgen_form)"
               ?buttonLayout 'OKCancelDefApply))
             (hiInstantiateForm form)
             (errset (ddHiLinkFields form->dgen_srcLib form->dgen_srcCell form->dgen_srcView) t)
@@ -836,7 +849,6 @@
           ?fields topFields
           ?callback (list "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_okCB dgen_form))"
                           "(progn (dgenGui_closeCleanupCB dgen_form) (dgenGui_cancelCB dgen_form))")
-          ?closeCallback "(dgenGui_closeCleanupCB dgen_form)"
           ?buttonLayout 'OKCancelDefApply))
         (hiInstantiateForm form)
         (errset (ddHiLinkFields form->dgen_srcLib form->dgen_srcCell form->dgen_srcView) t)
