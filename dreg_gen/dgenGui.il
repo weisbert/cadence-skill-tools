@@ -997,3 +997,17 @@
         (errset (ddHiLinkFields form->dgen_srcLib form->dgen_srcCell form->dgen_srcView) t)
         (hiDisplayForm 'dgen_form)
         'dgen_form))))
+
+; ---------------------------------------------------------------------------
+; MyTool plugin registration
+; ---------------------------------------------------------------------------
+;
+; Self-register on load so the framework's MyTool pulldown gains a "Dreg
+; Generator" entry on every attached schematic / Maestro / ADE-XL window.
+; Guarded with `getd` (NOT functionp -- functionp on an undefined symbol
+; can raise rather than return nil); plugin still loads cleanly when
+; mytool/ is not present.
+;
+; Ref: workarea/skill_tools/mytool/README.md (Plugin registration pattern).
+(when (getd 'mtRegister)
+  (mtRegister "Dreg Generator" 'dgenOpenGUI "Open the Dreg-Generator GUI"))
