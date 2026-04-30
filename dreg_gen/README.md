@@ -76,6 +76,23 @@ user knows the field accepts a multi-bit integer (0..2^N-1).
 
 ## Loading and using in CIW
 
+**Recommended (one line)** — sources MyTool framework + every dgen module:
+
+```skill
+load("/home/yusheng/cadence_work/Test/workarea/skill_tools/skill_tools.il")
+```
+
+Or, to load just dreg_gen (without the MyTool menu wire-up):
+
+```skill
+load("/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/dreg_gen.il")
+```
+
+Both loaders are idempotent and honor an override variable for non-default
+paths — see the loader file headers for the override pattern.
+
+Manual (if you need to skip a module):
+
 ```skill
 base = "/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/"
 load(strcat(base "dgenPinScan.il"))
@@ -101,11 +118,11 @@ dgenOpenGUI()
 
 ## MyTool integration
 
-`dgenGui.il` self-registers as a MyTool plugin on load. Once both
-`mytool/mytool.il` and `dgen_gen/dgenGui.il` are sourced (in that order, from
-`workarea/.cdsinit`), every attached schematic / Maestro / ADE-XL window
-shows a **MyTool → Dreg Generator** entry that calls `dgenOpenGUI()` (no args
-— DUT-less mode; user picks the DUT in-form).
+`dgenGui.il` self-registers as a MyTool plugin on load. Once `mytool` is
+loaded BEFORE this plugin (the recommended `skill_tools.il` umbrella loader
+takes care of the order automatically), every attached schematic / Maestro /
+ADE-XL window shows a **MyTool → Dreg Generator** entry that calls
+`dgenOpenGUI()` (no args — DUT-less mode; user picks the DUT in-form).
 
 Registration uses `(when (getd 'mtRegister) (mtRegister ...))`, so dropping
 the `mytool/` framework still leaves dreg_gen fully usable from the CIW —

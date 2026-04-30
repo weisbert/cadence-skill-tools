@@ -62,14 +62,18 @@ Currently shipped:
 |---|---|---|---|
 | **Dreg Generator** | `dgenOpenGUI` | `dreg_gen/dgenGui.il` | Opens the Dreg-Generator form in DUT-less mode (user picks the DUT in-form via 3 pickers). See `dreg_gen/README.md`. |
 
-Recommended `.cdsinit` block:
+Recommended `.cdsinit` (one line — the top-level `skill_tools.il` umbrella
+sources mytool + every plugin's loader in the right order):
+
+```skill
+load("/home/yusheng/cadence_work/Test/workarea/skill_tools/skill_tools.il")
+```
+
+Or, if you want only the framework + a specific plugin:
 
 ```skill
 load("/home/yusheng/cadence_work/Test/workarea/skill_tools/mytool/mytool.il")
-; --- plugins below ---
-load("/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/dgenGui.il")
-; (dreg_gen/dgenGui.il assumes the other 6 dgen*.il files were loaded earlier
-;  in your .cdsinit -- see dreg_gen/README.md for the full load order.)
+load("/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/dreg_gen.il")
 ```
 
 The framework's `mt_pollArmed` poll picks up newly opened windows within ~2s,
