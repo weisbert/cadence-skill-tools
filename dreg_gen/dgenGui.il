@@ -247,16 +247,19 @@
     (setq fields nil)
     (setq y startY)
     (setq sizePt (list fieldW rowH))
-    ; Target rows (editable).
+    ; Target rows (editable). Use lib/cell combo dropdowns to mirror the
+    ; Source-section pattern (skuiref.pdf p.484, p.481). The ddHiLinkFields
+    ; call that wires lib->cell filtering lives in dgenOpenGUI's DUT-mode
+    ; path, after hiInstantiateForm (skuiref.pdf p.495).
     (setq fields (cons
-      (list (hiCreateStringField ?name 'dgen_tgtLib ?prompt "Target Lib"
+      (list (ddHiCreateLibraryComboField ?name 'dgen_tgtLib ?prompt "Target Lib"
               ?defValue (or (get fTgt 'lib) "")
               ?value    (or (get cTgt 'lib) ""))
             (list 0 y) sizePt promptW)
       fields))
     (setq y (plus y rowH))
     (setq fields (cons
-      (list (hiCreateStringField ?name 'dgen_tgtCell ?prompt "Target Cell"
+      (list (ddHiCreateCellComboField ?name 'dgen_tgtCell ?prompt "Target Cell"
               ?defValue (or (get fTgt 'cell) "")
               ?value    (or (get cTgt 'cell) ""))
             (list 0 y) sizePt promptW)
@@ -963,6 +966,10 @@
               ?buttonLayout 'OKCancelDefApply))
             (hiInstantiateForm form)
             (errset (ddHiLinkFields form->dgen_srcLib form->dgen_srcCell form->dgen_srcView) t)
+            ; Target lib+cell combos: 2-arg form (no view triplet on the
+            ; target side -- target view is fixed/inferred by callers).
+            ; Probed live: 2-arg call returns t cleanly (skuiref.pdf p.495).
+            (errset (ddHiLinkFields form->dgen_tgtLib form->dgen_tgtCell) t)
             (hiDisplayForm 'dgen_form)
             'dgen_form)))
       (t
