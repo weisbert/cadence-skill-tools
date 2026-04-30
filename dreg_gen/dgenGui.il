@@ -24,10 +24,10 @@
 ;          cancelEnterFun.
 ;       3. Browse Library (dgenGui_browseCB): links the real Cadence
 ;          Library Manager into our top-section combos via
-;          ddsSyncWithForm (action 'browse, viewTypes filter
-;          schematic+symbol). [Load Pins] remains the explicit commit
-;          (no auto-trigger). Form-close cleanup ends the link via
-;          ddsEndSyncWithForm.
+;          ddsSyncWithForm (action 'browse, NO viewTypes filter so the
+;          tree shows all views). [Load Pins] remains the explicit
+;          commit (no auto-trigger). Form-close cleanup ends the link
+;          via ddsEndSyncWithForm.
 ;   * Middle/bottom (target rows + DVDD + mode/pattern + per-pin rows)
 ;     only built when DUT is loaded; regenerates on DUT change via the
 ;     close-reopen pattern (B6 land, but the load callback already does
@@ -555,17 +555,38 @@
 
 ; Deferred close+reopen. Called from a hiRegTimer tick AFTER the load
 ; callback (or any caller) returns, so we're no longer inside the form's
-; mapped/callback context and hiFormCancel will succeed.
+; mapped/callback context.
 ;
-; Both calls are wrapped in errset so a transient failure (e.g. user
-; X-closed dgen_form between the timer arming and firing -- so the
-; record is already gone) doesn't cascade.
+; First hotfix tried hiFormCancel here, but live test still showed
+;   "*WARNING* hiDeleteForm: Cannot delete a form that is mapped or
+;    from within the form's callback (dgen_form)"
+;   "*WARNING* hiCreateAppForm: Could not delete already created form"
+; even after the timer defer. Root cause: hiFormCancel evaluates the
+; form's CANCEL CALLBACK chain (the ?callback string we wired up,
+; "(progn (dgenGui_closeCleanupCB ...) (dgenGui_cancelCB ...))").
+; Cadence treats THAT as "from within the form's callback" too, so the
+; subsequent hiCreateAppForm-with-same-name fails to delete the old
+; record.
 ;
-; Ref: skuiref.pdf p.84 (hiRegTimer fires the registered string from
-;       the event loop, not from the originating callback's call chain).
+; Fix: tear down via low-level calls that DON'T fire user callbacks.
+;   Step 1: hiFormUnmap to clear the "mapped" flag (skuiref.pdf p.703).
+;   Step 2: hiDeleteForm to free the form record.
+;   Step 3: explicitly nil the global so a stale reference doesn't
+;           confuse hiCreateAppForm's "form already exists" check
+;           (the symbol may still be bound to the now-invalid record
+;           after hiDeleteForm).
+;
+; All wrapped in errset so a missing/already-gone form (user X-closed
+; between timer arm and fire) doesn't cascade.
+;
+; Ref: skuiref.pdf p.703 (hiFormUnmap), p.84 (hiRegTimer fires the
+;      registered string from the event loop, not from the originating
+;      callback's call chain).
 (defun dgenGui_deferredReopen (lib cell view "ttt")
   (when (and (boundp 'dgen_form) dgen_form)
-    (errset (hiFormCancel dgen_form) t))
+    (errset (hiFormUnmap  dgen_form) t)
+    (errset (hiDeleteForm dgen_form) t))
+  (setq dgen_form nil)
   (errset (dgenOpenGUI lib cell view) t))
 
 ; Wave 3 [Select from Schematic]: interactive-pick mode. User clicks
@@ -799,14 +820,23 @@
     ; Pass the form RECORD as the first arg (per Example 1, p.1905-1906)
     ; -- the caller already received this as `form`. The field args
     ; remain quoted symbols (their on-form names).
+    ;
+    ; We deliberately OMIT the optional l_viewTypes arg so the LM tree
+    ; shows ALL views (default Cadence behavior -- no filtering). An
+    ; earlier rev passed (list "schematic" "symbol") here, but that
+    ; filter HIDES any view not in the list (e.g. a cell with only
+    ; "schematic" appears to have no other views, and a cell with
+    ; only "veriloga"+"symbol" loses the veriloga entry). The user's
+    ; live feedback was "Library能打开了，但是里面有的cell好像显示不全？
+    ; 例如 test_cell我只能看见schematic" -- exactly the symptom of
+    ; the filter. Dropping it lets the user see everything.
     (setq rc (errset
                (ddsSyncWithForm
                  form
                  'browse
                  'dgen_srcLib
                  'dgen_srcCell
-                 'dgen_srcView
-                 (list "schematic" "symbol"))
+                 'dgen_srcView)
                t))
     (cond
       ((or (null rc) (null (car rc)))
