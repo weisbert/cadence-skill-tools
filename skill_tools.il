@@ -93,16 +93,21 @@
       "  header for the three supported configuration styles.")))
 
 ; ---------------------------------------------------------------------------
-; Propagate to child loaders BEFORE they load. Each child uses
-; `(unless (boundp ...))` internally, so an explicit setq in .cdsinit
-; (e.g. setq mt_dir "/somewhere/else/") still wins over the umbrella.
+; Propagate to child loaders BEFORE they load. The umbrella OVERRIDES any
+; pre-bound mt_dir / dreg_genDir so children stay consistent with the
+; current skillTools_root. (A previous design used boundp guards here, but
+; that left stale values from earlier failed attempts in the same session
+; sticking around -- after fixing skillTools_root, mt_dir would still
+; point at the old broken path, producing concat artifacts like
+; "$WORK_ROOT2/workareamytool/mytool.il" in mytool.il's existence check.)
+;
+; If you want a different mt_dir / dreg_genDir, override skillTools_root
+; itself (umbrella usage), or load mytool/mytool.il and dreg_gen/dreg_gen.il
+; directly without the umbrella (those files keep their own boundp guards).
 ; ---------------------------------------------------------------------------
 
-(unless (boundp 'mt_dir)
-  (setq mt_dir (strcat skillTools_root "mytool/")))
-
-(unless (boundp 'dreg_genDir)
-  (setq dreg_genDir (strcat skillTools_root "dreg_gen/")))
+(setq mt_dir       (strcat skillTools_root "mytool/"))
+(setq dreg_genDir  (strcat skillTools_root "dreg_gen/"))
 
 ; ---------------------------------------------------------------------------
 ; Load framework + plugins in dependency order.
