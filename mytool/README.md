@@ -49,6 +49,32 @@ The callback symbol must be a defined SKILL function that takes no required argu
 - **Callback fires the wrong function**: the callback symbol you passed must resolve to a defined function at click time. Check with `getd('yourFn)`.
 - **Poll appears stalled** (no auto-attach on new opens, only manual `mtBootstrap` works): check `mt_pollArmed` — should be `t`. If `nil`, the chain was never armed: run `mtBootstrap()`. The chain is single-link — if a `hiRegTimer` re-arm ever fails (returns `nil`) the chain dies silently. To revive: `setq(mt_pollArmed nil); mtBootstrap()` re-arms.
 
+## Registered plugins
+
+Plugins live as siblings under `workarea/skill_tools/`. Each plugin's main
+`.il` file should be sourced AFTER `mytool/mytool.il` in `.cdsinit`, so the
+self-registration `(when (getd 'mtRegister) ...)` line at the bottom of the
+plugin file finds `mtRegister` already defined.
+
+Currently shipped:
+
+| Label | Callback | File | Notes |
+|---|---|---|---|
+| **Dreg Generator** | `dgenOpenGUI` | `dreg_gen/dgenGui.il` | Opens the Dreg-Generator form in DUT-less mode (user picks the DUT in-form via 3 pickers). See `dreg_gen/README.md`. |
+
+Recommended `.cdsinit` block:
+
+```skill
+load("/home/yusheng/cadence_work/Test/workarea/skill_tools/mytool/mytool.il")
+; --- plugins below ---
+load("/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/dgenGui.il")
+; (dreg_gen/dgenGui.il assumes the other 6 dgen*.il files were loaded earlier
+;  in your .cdsinit -- see dreg_gen/README.md for the full load order.)
+```
+
+The framework's `mt_pollArmed` poll picks up newly opened windows within ~2s,
+so plugins do not need to do anything beyond a single `mtRegister` call.
+
 ## Files
 
 - `mytool.il` -- loader; sources the three module files, calls `mtBootstrap`
