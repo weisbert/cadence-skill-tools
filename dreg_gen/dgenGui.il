@@ -553,40 +553,65 @@
           1)
         t))))
 
-; Deferred close+reopen. Called from a hiRegTimer tick AFTER the load
-; callback (or any caller) returns, so we're no longer inside the form's
-; mapped/callback context.
+; Deferred close+reopen. Two-stage timer pattern.
 ;
-; First hotfix tried hiFormCancel here, but live test still showed
-;   "*WARNING* hiDeleteForm: Cannot delete a form that is mapped or
-;    from within the form's callback (dgen_form)"
-;   "*WARNING* hiCreateAppForm: Could not delete already created form"
-; even after the timer defer. Root cause: hiFormCancel evaluates the
-; form's CANCEL CALLBACK chain (the ?callback string we wired up,
-; "(progn (dgenGui_closeCleanupCB ...) (dgenGui_cancelCB ...))").
-; Cadence treats THAT as "from within the form's callback" too, so the
-; subsequent hiCreateAppForm-with-same-name fails to delete the old
-; record.
+; History:
+;   Hotfix 1 used hiFormCancel + dgenOpenGUI directly here, but failed
+;   with "*WARNING* hiDeleteForm: Cannot delete a form that is mapped
+;   or from within the form's callback" because hiFormCancel fires our
+;   wired cancel-callback chain ("(progn (dgenGui_closeCleanupCB ...)
+;   (dgenGui_cancelCB ...))") and Cadence still treats that as
+;   form-callback context when the very next call (hiCreateAppForm with
+;   the same name) tries to delete the old record.
 ;
-; Fix: tear down via low-level calls that DON'T fire user callbacks.
-;   Step 1: hiFormUnmap to clear the "mapped" flag (skuiref.pdf p.703).
-;   Step 2: hiDeleteForm to free the form record.
-;   Step 3: explicitly nil the global so a stale reference doesn't
-;           confuse hiCreateAppForm's "form already exists" check
-;           (the symbol may still be bound to the now-invalid record
-;           after hiDeleteForm).
+;   Hotfix 2 swapped to hiFormUnmap + hiDeleteForm to bypass the
+;   callback chain. That made hiCreateAppForm succeed but freed only
+;   the form RECORD -- the visible window stayed on screen because
+;   neither low-level call destroys the X11/Qt widget. Result: zombie
+;   windows whose Cancel/X buttons clicked into a void (form record
+;   gone) and a new window per Load Pins click.
 ;
-; All wrapped in errset so a missing/already-gone form (user X-closed
-; between timer arm and fire) doesn't cascade.
+; Hotfix 3 (this version): hiFormCancel IS the right API to close the
+; window -- it's what wires Cancel/X up correctly. The hotfix-1 timing
+; bug was that dgenOpenGUI ran too soon after hiFormCancel, while
+; Cadence was still inside the cancel-callback chain. Fix: split into
+; two timers. Stage 1 just fires hiFormCancel. Stage 2 (armed for the
+; next tick) calls dgenOpenGUI. The 200ms gap lets Cadence's
+; cancel-callback context clear before hiCreateAppForm-with-same-name
+; runs.
 ;
-; Ref: skuiref.pdf p.703 (hiFormUnmap), p.84 (hiRegTimer fires the
-;      registered string from the event loop, not from the originating
-;      callback's call chain).
+; dgen_form is NOT nil'd here -- hiFormCancel triggers our cleanup
+; callback (which is safe in either state) and stage 2's dgenOpenGUI
+; rebinds dgen_form anyway.
+;
+; Edge cases:
+;   * User X-closes form before stage 2 fires -- dgenOpenGUI creates a
+;     fresh form regardless (errset wraps any failure).
+;   * Two rapid Load Pins clicks -- two stage-1 timers fire (second is
+;     a no-op since dgen_form is already gone), two stage-2 timers
+;     fire, end state is one new form on screen.
+;
+; Ref: skuiref.pdf p.84 (hiRegTimer; arg unit is tenths of seconds, so
+;      2 = 200ms), hiFormCancel (the documented form-close API that
+;      ALSO destroys the window widget, unlike hiFormUnmap +
+;      hiDeleteForm which only free the record).
 (defun dgenGui_deferredReopen (lib cell view "ttt")
   (when (and (boundp 'dgen_form) dgen_form)
-    (errset (hiFormUnmap  dgen_form) t)
-    (errset (hiDeleteForm dgen_form) t))
-  (setq dgen_form nil)
+    (errset (hiFormCancel dgen_form) t))
+  (hiRegTimer
+    (sprintf nil "(dgen_actuallyOpenGUI \"%s\" \"%s\" \"%s\")" lib cell view)
+    2))
+
+; Stage 2 of the deferred-reopen pattern. Fires from a hiRegTimer tick
+; after stage 1's hiFormCancel has finished firing the form's cancel
+; callback chain, so Cadence's form-callback context flag has cleared
+; and hiCreateAppForm-with-same-name can clean up + recreate without
+; the "Cannot delete a form ... from within the form's callback"
+; warning.
+;
+; errset wraps the open so any failure (e.g. user already opened
+; another instance during the 200ms gap) doesn't cascade.
+(defun dgen_actuallyOpenGUI (lib cell view "ttt")
   (errset (dgenOpenGUI lib cell view) t))
 
 ; Wave 3 [Select from Schematic]: interactive-pick mode. User clicks
