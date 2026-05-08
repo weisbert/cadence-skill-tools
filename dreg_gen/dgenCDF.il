@@ -75,6 +75,65 @@
       ((integerp d) (sprintf nil "%d" d))
       (t "0"))))
 
+; Build the simInfo plist that registers a Verilog-A cell as a Spectre
+; primitive on the OSS netlister side. Without this, OSS netlister treats
+; the veriloga view as a switch view, finds no sub-instances inside it,
+; and skips the cell entirely (warning OSSHNL-117). Verified against
+; ahdlLib/trans_channel structure on 2026-05-09.
+;
+; Shape:
+;   (nil
+;     spectre  (nil current port componentName "<cell>" namePrefix "ahdl"
+;                  termOrder (...) instParameters (...)
+;                  netlistProcedure ansSpectreSubcktCall)
+;     spectreS (nil ... netlistProcedure ansSpiceSubcktCall))
+;
+; termOrder is the list of port names in V-A port order (bus pins use
+; <hi:lo> syntax — same shape as written into the .va port list by
+; dgenSymbol.il / dgenVerilogA.il). instParameters is the matching
+; symbol list of CDF parameter names (DVDD + d_<PIN> per enabled pin).
+(defun dgen_buildSimInfo (spec cellName "gt")
+  (let (enabled termOrder instParams)
+    (setq enabled nil)
+    (foreach p (get spec 'pins)
+      (when (get p 'enabled) (setq enabled (cons p enabled))))
+    (setq enabled (reverse enabled))
+
+    ; termOrder: list of strings, bus pins use <hi:lo> form
+    (setq termOrder
+      (mapcar
+        (lambda (p)
+          (cond
+            ((get p 'isBus)
+              (sprintf nil "%s<%d:%d>"
+                (get p 'name) (get p 'busHi) (get p 'busLo)))
+            (t (get p 'name))))
+        enabled))
+
+    ; instParameters: bare symbols, DVDD then d_<PIN>
+    (setq instParams (cons (stringToSymbol "DVDD")
+      (mapcar
+        (lambda (p) (stringToSymbol (sprintf nil "d_%s" (get p 'name))))
+        enabled)))
+
+    ; spectre and spectreS sub-plists are identical except for the
+    ; netlistProcedure symbol (Spectre vs SPICE backend).
+    (list nil
+      'spectre (list nil
+        'current 'port
+        'componentName cellName
+        'namePrefix "ahdl"
+        'termOrder termOrder
+        'instParameters instParams
+        'netlistProcedure 'ansSpectreSubcktCall)
+      'spectreS (list nil
+        'current 'port
+        'componentName cellName
+        'namePrefix "ahdl"
+        'termOrder termOrder
+        'instParameters instParams
+        'netlistProcedure 'ansSpiceSubcktCall))))
+
 ; Public entry point.
 ;   spec       -- plist as produced by step 1 (see README)
 ;   outputLib  -- string, overrides spec~>target~>lib if non-nil
@@ -137,6 +196,15 @@
             (unless cdfId (error "dgenWriteCDF: cdfCreateBaseCellCDF returned nil"))
 
             ; DVDD parameter.
+            ; ?parseAsCEL/?parseAsNumber=t makes ADE treat the value as a
+            ; CDF Expression Language expression rather than an opaque
+            ; literal string. This is what lets Maestro's "Copy from
+            ; cellview" identify free symbols like "DVDD"/"EN" as design
+            ; variable references and auto-add them to the design vars
+            ; table. Without these flags, the value reaches Spectre fine
+            ; (Spectre evaluates it anyway), but the ADE UI doesn't know
+            ; to surface it. Per skartistref.pdf p.959, parseAsNumber
+            ; MUST be set when parseAsCEL is set.
             (setq dvddDefVal
               (dgen_resolveDefValue modeStr pattern "DVDD" "DVDD" t
                 (or (get spec 'dvddDefault) "0.9")))
@@ -144,6 +212,8 @@
               ?name     "DVDD"
               ?type     "string"
               ?defValue dvddDefVal
+              ?parseAsCEL    "yes"
+              ?parseAsNumber "yes"
               ?prompt   "DVDD"
               ?display  "t"
               ?editable "t")
@@ -160,8 +230,16 @@
                   ?name     paramName
                   ?type     "string"
                   ?defValue pinDefVal
+                  ?parseAsCEL    "yes"
+                  ?parseAsNumber "yes"
                   ?prompt   (dgen_pinPrompt p)
                   ?display  "t"
                   ?editable "t")))
+
+            ; Register as a Spectre primitive via the simInfo block. Without
+            ; this, OSS netlister treats the veriloga view as a switch view
+            ; with no sub-instances and skips the cell (OSSHNL-117). See
+            ; dgen_buildSimInfo header for the shape derivation.
+            (putpropq cdfId (dgen_buildSimInfo spec cellName) simInfo)
 
             (cdfSaveCDF cdfId)))))))

@@ -40,18 +40,61 @@ spec = list(nil
 `outputLib` / `outputCell` args, when non-nil, override `spec~>target~>lib` /
 `spec~>target~>cell` for that single call.
 
-## Critical ordering rule
+## Critical ordering rules
 
-**Symbol must be generated before the Verilog-A.** `schPinListToSymbolGen`
-silently creates 0 terminals if the cell already has a `veriloga` view at
-the time of the call. The orchestrator (step 7) must enforce:
+There are two independent ordering constraints. The orchestrator
+(`dgenRun`) enforces both:
 
 ```skill
-dgenWriteSymbol(spec)        ; first
-dgenWriteVerilogA(spec)      ; second
-dgenWriteCDF(spec)           ; third (CDF works regardless of order, but keep it
-                             ;  last for the natural symbol -> source -> params flow)
+dgenWriteSymbol(spec)        ; 1. first
+dgenWriteVerilogA(spec)      ; 2. second
+dgen_compileVerilogA(spec)   ; 3. amsUpdateTextviews + ahdlUpdateViewInfo
+dgenWriteCDF(spec)           ; 4. LAST -- this matters
 ```
+
+**Why symbol before V-A.** `schPinListToSymbolGen` silently creates 0
+terminals if the cell already has a `veriloga` view at the time of the
+call.
+
+**Why CDF last.** `amsUpdateTextviews` and `ahdlUpdateViewInfo` rewrite
+the cell's BASE CDF as a side effect — they derive parameter defaults
+from the .va's `parameter integer d_X = 0` declarations, clobbering any
+variable-mode defaults installed earlier AND re-adding entries for pins
+the user disabled. `dgenWriteCDF` therefore runs AFTER `compileVerilogA`
+so its rewrite is final.
+
+## OSS netlister registration via simInfo
+
+`dgenWriteCDF` builds and attaches a `simInfo` block on the base CDF (see
+`dgen_buildSimInfo` in `dgenCDF.il`) of the form:
+
+```skill
+(nil
+  spectre  (nil current port componentName "<cell>" namePrefix "ahdl"
+                termOrder (...) instParameters (...)
+                netlistProcedure ansSpectreSubcktCall)
+  spectreS (nil ... netlistProcedure ansSpiceSubcktCall))
+```
+
+Without this, the OSS netlister silently treats the veriloga view as a
+hierarchical "switch view", finds no sub-instances, and **skips the
+cell entirely** with `WARNING (OSSHNL-117): Ignoring switch view
+'veriloga' of cell '<cell>' as it does not contain any instance`. The
+sim then "succeeds" but the dreg never makes it into the netlist —
+silent functional drop. Reverse-engineered by diffing
+`ahdlLib/trans_channel`'s base CDF (which works) against ours; see
+project memory `project_dreg_gen.md` for the full debugging trail.
+
+## CDF parameter flags for "Copy from cellview"
+
+Each `cdfCreateParam` call in `dgenWriteCDF` sets `?parseAsCEL "yes"`
+and `?parseAsNumber "yes"` so ADE/Maestro's "Copy from cellview" walks
+each instance parameter value as a CDF Expression Language expression
+(rather than an opaque literal string) and auto-imports the free
+symbols into the design-variables table. Without these flags, Spectre
+still evaluates the value at netlist time, but the user has to type
+each variable into the design-variables table by hand. Per
+skartistref.pdf p.959 `parseAsNumber` MUST be set when `parseAsCEL` is.
 
 ## defaultMode for CDF
 

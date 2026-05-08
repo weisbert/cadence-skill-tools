@@ -524,7 +524,7 @@
         ?buttonLayout 'Close)
       nil)
     (t
-      (let (spec msg srcPlist tgtLib tgtCell cellOk)
+      (let (spec msg srcPlist tgtLib tgtCell cellOk oaPath oaOk libObj)
         (setq spec (dgen_readForm form dgen_currentPins))
         (setq tgtLib  (get (get spec 'target) 'lib))
         (setq tgtCell (get (get spec 'target) 'cell))
@@ -543,12 +543,19 @@
         (setq cellOk
           (and (ddGetObj tgtLib tgtCell "symbol")
                (ddGetObj tgtLib tgtCell "veriloga")))
+        ; Independent post-condition for the netlist.oa step. Without
+        ; this file Maestro/ADE-XL fail with OSSHNL-381 even though the
+        ; symbol+veriloga views are present. Surface this distinctly
+        ; rather than reporting plain success — otherwise users hit
+        ; the netlist err and resort to manual Check&Save, which
+        ; clobbers our CDF defaults via auto-CDF.
+        (setq libObj (ddGetObj tgtLib))
+        (setq oaPath
+          (when libObj
+            (strcat libObj~>readPath "/" tgtCell "/veriloga/netlist.oa")))
+        (setq oaOk (and oaPath (isFile oaPath)))
         (cond
-          (cellOk
-            ; B5 integration: pass current source plist so the saved file
-            ; gets v2 lastDutLib/Cell/View. The source plist shape is
-            ; (nil 'lib X 'cell Y 'view Z) -- matches dgenStore.il's
-            ; sourcePlist contract.
+          ((and cellOk oaOk)
             (setq srcPlist (get spec 'source))
             (errset (dgenSaveLastState
                       (dgen_specToLastState spec dgen_currentDutCell)
@@ -562,6 +569,25 @@
               ?dialogType hicInformationDialog
               ?buttonLayout 'Close)
             t)
+          (cellOk
+            ; Cellviews landed but netlist.oa is missing. Maestro will
+            ; fail with OSSHNL-381. Most common cause is the AMS license
+            ; not being available — see CIW for the dgen_compileVerilogA
+            ; warn line for details.
+            (setq srcPlist (get spec 'source))
+            (errset (dgenSaveLastState
+                      (dgen_specToLastState spec dgen_currentDutCell)
+                      srcPlist) t)
+            (setq msg (sprintf nil
+              "Generated %s/%s, but netlist.oa was NOT produced.\n\nMaestro/ADE-XL will fail with OSSHNL-381 until this is fixed.\n\nLikely cause: AMS Designer license not available (amsIsPresent=nil) or amsUpdateTextviews/vmsUpdateCellViews failed. See CIW for the warn from dgen_compileVerilogA."
+              tgtLib tgtCell))
+            (hiDisplayAppDBox
+              ?name 'dgen_resultDBox
+              ?dboxBanner "Dreg Generator"
+              ?dboxText msg
+              ?dialogType hicWarningDialog
+              ?buttonLayout 'Close)
+            nil)
           (t
             (setq msg (sprintf nil "Failed to generate %s/%s. See CIW for details."
               tgtLib tgtCell))
