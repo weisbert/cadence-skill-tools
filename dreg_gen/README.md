@@ -17,7 +17,7 @@ schematic / Maestro / ADE-XL window). Step 8 (packaging, GitHub tag) is pending.
 | `dgenStore.il` | `dgenSpecToString` / `dgenStringToSpec`, `dgenSavePropOnCell` / `dgenLoadPropFromCell`, `dgenSaveLastState` / `dgenLoadLastState` | Spec serialization, cell-property round-trip (`dgenConfig` prop), last-state file at `~/.skill_tools/dreg_gen.last`. |
 | `dgenSymbol.il` | `dgenWriteSymbol(spec [outLib outCell])` | Generate symbol view via `schPinListToSymbolGen`, all pins as direction `"output"` (right-side placement). Includes write-lock post-condition check. |
 | `dgenVerilogA.il` | `dgenWriteVerilogA(spec [outLib outCell])` | Write `veriloga.va` + `master.tag` into the cell's `veriloga/` dir, refresh lib via `ddUpdateLibList`, add cell to "dreg" category. |
-| `dgenCDF.il` | `dgenWriteCDF(spec [outLib outCell])` | Build cell-level base CDF (`cdfCreateBaseCellCDF` + `cdfCreateParam` × N + `cdfSaveCDF`). 5 `defaultMode` options. |
+| `dgenCDF.il` | `dgenWriteCDF(spec [outLib outCell])` | Build cell-level base CDF (`cdfCreateBaseCellCDF` + `cdfCreateParam` × N + `cdfSaveCDF`). 4 `defaultMode` options + a defensive legacy branch. |
 | `dgenRun.il` | `dgenRun(spec)` | End-to-end orchestrator: calls symbol → .va → CDF in mandatory order, fail-fast on any substep nil-return. No lib/cell overrides — set `spec~>target` instead. |
 | `dgenGui.il` | `dgenOpenGUI(@optional dutLib dutCell dutView)` | Modeless form. With no args: opens "DUT-less" — top section only (Lib/Cell/View combos + 3 picker buttons), pre-filled from last-state v2. With `dutLib`+`dutCell`: opens fully rendered (legacy path). Source: 3 linked combos + `[Select from Schematic]` / `[Browse Library...]` / `[Load Pins]`. Target editable + DVDD/mode/pattern + per-pin enable/value. Buttons OK / Cancel / Defaults / Apply. Last-state remembered across sessions; pin "value" fields auto-grey when mode ≠ literal. **Self-registers as a MyTool plugin** at load time (entry "Dreg Generator"; guarded with `getd` so dgenGui.il still loads if mytool/ is absent). |
 | `test_step5_auto.il` | (loadable test) | End-to-end smoke test for the GUI that bypasses display so it doesn't trap the skillbridge evaluator. Loads through `ws['load'](...)`. |
@@ -29,8 +29,8 @@ spec = list(nil
   'source        list(nil 'lib "L" 'cell "C" 'view "symbol")
   'target        list(nil 'lib "TL" 'cell "TC" 'view "veriloga")
   'dvddDefault   "0.9"
-  'defaultMode   "literal"      ; or "empty" / "variable" / "variable_pin" / "custom"
-  'defaultPattern "*_ls"        ; only used when defaultMode="custom"
+  'defaultMode   "literal"      ; or "empty" / "variable_pin" / "custom"
+  'defaultPattern "d_*"         ; only used when defaultMode="custom"; "*" = pin name
   'pins          list(
     list(nil 'name "D"   'isBus t   'busHi 7 'busLo 0 'enabled t   'default "0")
     list(nil 'name "EN"  'isBus nil                   'enabled t   'default "0")
@@ -98,18 +98,29 @@ skartistref.pdf p.959 `parseAsNumber` MUST be set when `parseAsCEL` is.
 
 ## defaultMode for CDF
 
-| Mode | DVDD defValue | d_EN defValue | d_D (bus) defValue |
-|------|---------------|---------------|---------------------|
-| `"empty"` | `""` | `""` | `""` |
-| `"literal"` (or absent) | `"0.9"` | `"0"` | `"0"` |
-| `"variable"` | `"DVDD"` | `"d_EN"` | `"d_D"` |
-| `"variable_pin"` | `"DVDD"` | `"EN"` | `"D"` |
-| `"custom"` + `defaultPattern="*_ls"` | `"DVDD"` | `"EN_ls"` | `"D_ls"` |
-| `"custom"` + `defaultPattern="d_*"` | `"DVDD"` | `"d_EN"` | `"d_D"` |
+The GUI exposes 4 modes via plain-English labels. Internal canonical
+tokens (used in spec / lastState / cell prop) and their behavior:
+
+| Mode (token) | GUI label | DVDD defValue | d_EN defValue | d_D (bus) defValue |
+|------|------|---------------|---------------|---------------------|
+| `"literal"` (or absent) | "Hard-coded number" | `"0.9"` | `"0"` | `"0"` |
+| `"empty"` | "Leave empty" | `""` | `""` | `""` |
+| `"variable_pin"` | "Variable = pin name" | `"DVDD"` | `"EN"` | `"D"` |
+| `"custom"` + `defaultPattern="d_*"` | "Variable, custom pattern" | `"DVDD"` | `"d_EN"` | `"d_D"` |
+| `"custom"` + `defaultPattern="*_ls"` | "Variable, custom pattern" | `"DVDD"` | `"EN_ls"` | `"D_ls"` |
 
 `custom` requires `spec~>defaultPattern`; `*` is replaced by the pin name
 (multiple `*` allowed). DVDD is always literal `"DVDD"` in variable-style
-modes (no pin name to substitute).
+modes (no pin name to substitute). The pattern field defaults to `"d_*"`
+in the GUI — picking custom mode + leaving the field blank produces the
+same result as the legacy `"variable"` mode.
+
+**Legacy `"variable"` token (silently migrated).** Older lastState files
+or cell props may carry `defaultMode = "variable"` (= `d_<PIN>`
+auto-prefix). `dgen_resolveCurrentSpec` rewrites these to `"custom"` +
+pattern `"d_*"` on read. `dgen_resolveDefValue` in `dgenCDF.il` also
+keeps a defensive `"variable"` branch so any spec that bypasses the GUI
+(direct script use, for example) still netlists correctly.
 
 Variable-style modes assume same-named design variables exist in the testbench
 or ADE-XL; otherwise sim fails with "undefined variable".

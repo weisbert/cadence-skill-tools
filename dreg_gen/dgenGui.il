@@ -83,6 +83,48 @@
   (concat 'dgen_pin_def_ idx))
 
 ; ---------------------------------------------------------------------------
+; Mode <-> label translation + legacy mode migration
+; ---------------------------------------------------------------------------
+;
+; Internal canonical modes (4): "literal", "empty", "variable_pin", "custom".
+; UI labels are plain English so users don't have to memorize what
+; "variable_pin" means. The cyclic field's ?choices stores labels (per
+; skuiref.pdf p.537 -- ?choices IS the value, no separate label/value
+; mapping), so dgen_buildMiddleFields / dgen_readForm / dgen_updatePreview
+; all translate at the GUI boundary using these helpers.
+;
+; Legacy "variable" (= d_<PIN> auto-prefix) is collapsed into "custom" with
+; pattern "d_*" -- equivalent behavior, one fewer concept for users to
+; learn. dgen_resolveCurrentSpec migrates lastState files silently;
+; dgen_resolveDefValue in dgenCDF.il keeps a "variable" branch as a
+; defensive back-compat fallback for any spec that bypasses the GUI.
+
+(defun dgen_modeToLabel (mode "g")
+  (cond
+    ((equal mode "literal")      "Hard-coded number")
+    ((equal mode "empty")        "Leave empty")
+    ((equal mode "variable_pin") "Variable = pin name")
+    ((equal mode "custom")       "Variable, custom pattern")
+    (t                           "Hard-coded number")))
+
+(defun dgen_labelToMode (label "g")
+  (cond
+    ((equal label "Hard-coded number")        "literal")
+    ((equal label "Leave empty")              "empty")
+    ((equal label "Variable = pin name")      "variable_pin")
+    ((equal label "Variable, custom pattern") "custom")
+    (t                                        "literal")))
+
+; Returns (modeOut patternOut). Maps legacy "variable" -> "custom" + "d_*"
+; (only sets the pattern when caller didn't supply one). Anything else
+; passes through unchanged.
+(defun dgen_migrateModePattern (mode pattern "gg")
+  (cond
+    ((equal mode "variable")
+      (list "custom" (or pattern "d_*")))
+    (t (list mode pattern))))
+
+; ---------------------------------------------------------------------------
 ; Spec resolution (factory + last-state -> currentSpec)
 ; ---------------------------------------------------------------------------
 
@@ -94,7 +136,8 @@
 ; targetCellTpl: pattern with optional "*" placeholder for the DUT cell
 ; name. Default factory tpl is "dreg_*".
 (defun dgen_resolveCurrentSpec (factorySpec lastState dutCell "ggt")
-  (let (src tgt curPins tpl tplApplied factoryPins pinStates match)
+  (let (src tgt curPins tpl tplApplied factoryPins pinStates match
+        rawMode rawPat migrated)
     (setq src (get factorySpec 'source))
     (setq tgt (get factorySpec 'target))
     (setq factoryPins (get factorySpec 'pins))
@@ -124,6 +167,12 @@
                   (append p (list 'enabled (dgen_factoryEnabledP p)
                                   'default "0")))))
             factoryPins))
+        ; Migrate legacy "variable" mode silently (see dgen_migrateModePattern
+        ; header). lastState wins over factorySpec only when lastState
+        ; actually has a value for the field.
+        (setq rawMode (or (get lastState 'defaultMode)    (get factorySpec 'defaultMode)))
+        (setq rawPat  (or (get lastState 'defaultPattern) (get factorySpec 'defaultPattern)))
+        (setq migrated (dgen_migrateModePattern rawMode rawPat))
         (list nil
           'source       src
           'target       (list nil
@@ -131,8 +180,8 @@
                           'cell tplApplied
                           'view (get tgt 'view))
           'dvddDefault    (or (get lastState 'dvddDefault)    (get factorySpec 'dvddDefault))
-          'defaultMode    (or (get lastState 'defaultMode)    (get factorySpec 'defaultMode))
-          'defaultPattern (or (get lastState 'defaultPattern) (get factorySpec 'defaultPattern))
+          'defaultMode    (car  migrated)
+          'defaultPattern (cadr migrated)
           'pins           curPins)))))
 
 ; Helper: read (key value) pair from spec-pin-list at given pin name.
@@ -211,7 +260,10 @@
 (defun dgen_updatePreview ()
   (let (mode pattern dvdd minSpec txt)
     (when (and (boundp 'dgen_form) dgen_form)
-      (setq mode    (dgen_fieldVal dgen_form 'dgen_mode))
+      ; Cyclic field stores labels; translate back to canonical mode
+      ; token before feeding dgen_renderPreview (which compares against
+      ; canonical tokens, not labels).
+      (setq mode    (dgen_labelToMode (dgen_fieldVal dgen_form 'dgen_mode)))
       (setq pattern (dgen_fieldVal dgen_form 'dgen_pattern))
       (setq dvdd    (dgen_fieldVal dgen_form 'dgen_dvdd))
       (setq minSpec (list nil
@@ -352,19 +404,23 @@
             (list 0 y) sizePt promptW)
       fields))
     (setq y (plus y rowH))
+    ; Cyclic field shows 4 plain-English labels (see dgen_modeToLabel
+    ; header for the rationale). ?choices stores labels directly --
+    ; dgen_readForm translates back to canonical mode tokens.
     (setq fields (cons
-      (list (hiCreateCyclicField ?name 'dgen_mode ?prompt "defaultMode"
-              ?choices  '("literal" "empty" "variable" "variable_pin" "custom")
-              ?defValue (or (get factorySpec 'defaultMode) "literal")
-              ?value    (or (get currentSpec 'defaultMode) "literal")
+      (list (hiCreateCyclicField ?name 'dgen_mode ?prompt "Default values"
+              ?choices  '("Hard-coded number" "Leave empty"
+                          "Variable = pin name" "Variable, custom pattern")
+              ?defValue (dgen_modeToLabel (or (get factorySpec 'defaultMode) "literal"))
+              ?value    (dgen_modeToLabel (or (get currentSpec 'defaultMode) "literal"))
               ?callback 'dgenGui_modeCB)
             (list 0 y) sizePt promptW)
       fields))
     (setq y (plus y rowH))
     (setq fields (cons
-      (list (hiCreateStringField ?name 'dgen_pattern ?prompt "defaultPattern"
-              ?defValue (or (get factorySpec 'defaultPattern) "*_ls")
-              ?value    (or (get currentSpec 'defaultPattern) "*_ls")
+      (list (hiCreateStringField ?name 'dgen_pattern ?prompt "Variable name"
+              ?defValue (or (get factorySpec 'defaultPattern) "d_*")
+              ?value    (or (get currentSpec 'defaultPattern) "d_*")
               ?enabled  (equal (or (get currentSpec 'defaultMode) "literal") "custom")
               ?callback 'dgenGui_patternCB)
             (list 0 y) sizePt promptW)
@@ -457,8 +513,14 @@
     (setq tgtLib   (dgen_fieldVal form 'dgen_tgtLib))
     (setq tgtCell  (dgen_fieldVal form 'dgen_tgtCell))
     (setq dvdd     (dgen_fieldVal form 'dgen_dvdd))
-    (setq mode     (dgen_fieldVal form 'dgen_mode))
+    ; Cyclic field stores labels; translate back to canonical mode token.
+    (setq mode     (dgen_labelToMode (dgen_fieldVal form 'dgen_mode)))
     (setq pattern  (dgen_fieldVal form 'dgen_pattern))
+    ; Auto-fill pattern when user picked custom-pattern mode but left the
+    ; field empty. "d_*" matches the legacy "variable" semantics so the
+    ; common case stays one-click.
+    (when (and (equal mode "custom") (or (null pattern) (equal pattern "")))
+      (setq pattern "d_*"))
     (setq outPins nil)
     (setq i 0)
     (foreach pin pins
@@ -607,13 +669,17 @@
 ; mode = "literal"; disable them under other modes. Cyclic-field
 ; callback signature (field scope item) per skuiref.pdf p.538.
 ;
+; `item` is the cyclic field's LABEL string (since ?choices stores
+; labels directly per skuiref.pdf p.537), so we compare against the
+; user-facing strings rather than canonical mode tokens.
+;
 ; Ref: skuiref.pdf p.806 (hiSetFieldEnabled). We use the dedicated
 ; setter rather than slot assignment because Lisp-form
 ; (setq rec->enabled v) is rejected (setq's first arg must be a symbol).
 (defun dgenGui_modeCB (field scope item "ggg")
   (let (isLit isCustom i rec patRec)
-    (setq isLit    (equal item "literal"))
-    (setq isCustom (equal item "custom"))
+    (setq isLit    (equal item "Hard-coded number"))
+    (setq isCustom (equal item "Variable, custom pattern"))
     (setq i 0)
     (foreach p dgen_currentPins
       (setq rec (get dgen_form (dgen_pinDefaultId i)))
@@ -1094,7 +1160,7 @@
               'target         (list nil 'lib dutLib 'cell (strcat "dreg_" dutCell) 'view "veriloga")
               'dvddDefault    "0.9"
               'defaultMode    "literal"
-              'defaultPattern "*_ls"
+              'defaultPattern "d_*"
               'pins           pins))
             (setq lastState (dgenLoadLastState))
             (setq currentSpec (dgen_resolveCurrentSpec factorySpec lastState dutCell))
