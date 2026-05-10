@@ -5,15 +5,21 @@
 ; The simplest single-line .cdsinit options come first.
 ; ============================================================================
 ;
-; Option 1 -- $WORK_ROOT2 already points at the workarea dir (the convention
-; on this team's dev + work machines):
+; Option 1 -- absolute path, NO env var, NO setq (recommended; works for
+; any user on any machine without coordinating environment setup):
+;
+;     load("/abs/path/to/skill_tools/skill_tools.il")
+;
+; The umbrella self-locates from the load path via get_filename(piport),
+; same trick as skillbridge/sbStart.il. The path you pass to load() can
+; live anywhere the user has read access; nothing else has to be set up.
+;
+; Option 2 -- $WORK_ROOT2 already points at the workarea dir (the
+; convention on this team's dev + work machines):
 ;
 ;     load(strcat(getShellEnvVar("WORK_ROOT2") "/skill_tools/skill_tools.il"))
 ;
-; This file then auto-derives skillTools_root from $WORK_ROOT2 -- no setq
-; needed in .cdsinit.
-;
-; Option 2 -- shell env var SKILL_TOOLS_ROOT (most portable for distribution):
+; Option 3 -- shell env var SKILL_TOOLS_ROOT:
 ;
 ;     # in ~/.bashrc or ~/.cshrc:
 ;     export SKILL_TOOLS_ROOT=/path/to/skill_tools/      # bash
@@ -21,20 +27,25 @@
 ;     # ~/.cdsinit:
 ;     load(strcat(getShellEnvVar("SKILL_TOOLS_ROOT") "skill_tools.il"))
 ;
-; Option 3 -- absolute path in .cdsinit (no env var needed):
+; Option 4 -- absolute path with explicit setq in .cdsinit (skips
+; self-locate; useful if you want to override what self-locate finds):
 ;
 ;     setq( skillTools_root "/abs/path/to/skill_tools/" )
 ;     load( strcat(skillTools_root "skill_tools.il") )
 ;
-; In all options, skillTools_root MUST end with a trailing "/". Loaders use
-; strcat to splice paths and do NOT auto-insert separators (auto-fix below).
+; In Options 2-4, skillTools_root MUST end with a trailing "/". The
+; loader auto-fixes a missing trailing slash (see normalize step below)
+; but env vars / setq are clearer when they get the slash right.
 ;
 ; ============================================================================
 ; RESOLUTION PRIORITY (highest first):
 ;   1. skillTools_root already bound (via setq in .cdsinit)
-;   2. env var SKILL_TOOLS_ROOT (if non-empty)
-;   3. env var WORK_ROOT2 (if non-empty) -> "$WORK_ROOT2/skill_tools/"
-;   4. compile-time fallback to dev-machine path
+;   2. self-locate via get_filename(piport) -- works for any load("...")
+;      that hands an absolute path; gated by isFile(mytool/mytool.il) so
+;      a wrong piport (e.g. copy-paste into CIW) falls through to step 3
+;   3. env var SKILL_TOOLS_ROOT (if non-empty)
+;   4. env var WORK_ROOT2 (if non-empty) -> "$WORK_ROOT2/skill_tools/"
+;   5. compile-time fallback to dev-machine path
 ; ============================================================================
 ;
 ; Loads:
@@ -52,10 +63,40 @@
 ; Resolve skillTools_root by priority.
 ; ---------------------------------------------------------------------------
 
+; Self-locate via piport: while this file is being load()-ed, piport is
+; bound to its input port and get_filename(piport) returns the absolute
+; path of the file currently being parsed. Strip the filename to get
+; the directory, then verify mytool/mytool.il sits inside it before
+; trusting the result -- if piport is bound to something else (e.g.
+; the file contents were pasted into CIW rather than load-ed), the
+; isFile check fails and we fall through to the env-var paths.
+;
+; errset wraps the call because piport may be unbound or
+; get_filename may raise on non-file ports; we want a silent fallthrough,
+; not a cdsinit-aborting error.
+;
+; Same pattern as skillbridge/sbStart.il -- proven in production there
+; since 8a6b3ef.
+;
+; Ref: sklangref.pdf p.167 (pcreCompile), p.191 (pcreReplace), p.428 (isFile).
+
 (unless (boundp 'skillTools_root)
   (let ((skill_env (getShellEnvVar "SKILL_TOOLS_ROOT"))
-        (work_env  (getShellEnvVar "WORK_ROOT2")))
+        (work_env  (getShellEnvVar "WORK_ROOT2"))
+        (self_raw  (errset (get_filename piport) t))
+        self_path self_dir)
+    (when self_raw
+      (setq self_path (car self_raw))
+      (when (stringp self_path)
+        (setq self_path (pcreReplace (pcreCompile "^ +| +$") self_path "" 0))
+        (setq self_dir  (pcreReplace (pcreCompile "/[^/]+$") self_path "" 1))))
     (cond
+      ; Self-locate wins over env vars, but only when the resolved dir
+      ; actually contains the framework -- otherwise piport pointed at
+      ; something unrelated and we should keep looking.
+      ((and self_dir (nequal self_dir "")
+            (isFile (strcat self_dir "/mytool/mytool.il")))
+        (setq skillTools_root (strcat self_dir "/")))
       ((and skill_env (nequal skill_env ""))
         (setq skillTools_root skill_env))
       ((and work_env (nequal work_env ""))
