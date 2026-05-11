@@ -99,6 +99,17 @@
         (sprintf nil "%s<%d:%d>" nm (get pin 'busHi) (get pin 'busLo)))
       (t nm))))
 
+; Pin row label with category prefix. 'power -> "[PWR] ...", 'dreg ->
+; "[DREG] ...", everything else is unprefixed (avoiding visual noise on
+; pins the classifier could not place). Used by dgen_buildMiddleFields
+; to make the auto-categorization visible without changing the prompt
+; column width or row geometry.
+(defun dgen_pinButtonText (display cat "tg")
+  (cond
+    ((equal cat 'power) (sprintf nil "[PWR] %s"  display))
+    ((equal cat 'dreg)  (sprintf nil "[DREG] %s" display))
+    (t                  display)))
+
 ; Per-pin field ids. Stable so dgen_readForm can index by pin index without
 ; parsing names. Index is 0-based.
 (defun dgen_pinEnableId (idx "n")
@@ -508,11 +519,14 @@
 ; Ref: skuiref.pdf p.502 (hiCreateAppForm), p.650 (hiCreateStringField),
 ;      p.521 (hiCreateBooleanButton), p.536 (hiCreateCyclicField).
 (defun dgen_buildMiddleFields (factorySpec currentSpec startY rowH "ggng")
-  (let (fTgt cTgt pins cPins fields i y fieldW promptW sizePt previewTxt)
+  (let (fTgt cTgt pins cPins fields i y fieldW promptW sizePt previewTxt pats)
     (setq fTgt (get factorySpec 'target))
     (setq cTgt (get currentSpec 'target))
     (setq pins  (get factorySpec 'pins))
     (setq cPins (get currentSpec 'pins))
+    ; Load pin-classification dictionary once per form build; pin rows
+    ; below read it to attach [PWR]/[DREG] prefixes to buttonText.
+    (setq pats (dgenPatternsLoad))
     (setq fieldW 360)
     (setq promptW 130)
     (setq fields nil)
@@ -585,13 +599,14 @@
         (let ((enId (dgen_pinEnableId i))
               (defId (dgen_pinDefaultId i))
               (display (dgen_pinDisplayName p))
+              (cat (dgenPatternsClassify p pats))
               (factoryEn (dgen_factoryEnabledP p))
               (curEn  (dgen_pinFieldOr cPins (get p 'name) 'enabled (dgen_factoryEnabledP p)))
               (curDef (dgen_pinFieldOr cPins (get p 'name) 'default "0")))
           (setq fields (cons
             (list (hiCreateBooleanButton
                     ?name enId
-                    ?buttonText display
+                    ?buttonText (dgen_pinButtonText display cat)
                     ?defValue factoryEn
                     ?value    curEn)
                   (list 0 y) (list 200 rowH) 0)
