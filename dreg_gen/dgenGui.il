@@ -103,17 +103,23 @@
 ;
 ; Checks:
 ;   1. name non-empty
-;   2. no whitespace / no characters that would break .va port names
-;      (basic alnum + underscore only -- bus syntax already stripped at
-;      readForm time for digital; analog never bus)
-;   3. analog default parses as a real (digital validated by atoi
-;      fallback in the emitter; only analog has a strict format because
-;      "0" silently meaning "0.0V" is a real possibility)
+;   2. name is a legal Verilog identifier (alnum + underscore, not
+;      starting with a digit) -- the .va port list and CDF parameter
+;      both need this
+;   3. analog default is one of: real literal (1.8), integer literal (0),
+;      or Verilog identifier (VDDA) for a CEL variable reference. Empty
+;      / garbage rejected so the user can't silently end up with 0V
+;      where they meant 1.8V. Digital default is NOT validated at this
+;      layer -- dgen_emitDefaultStr accepts int/identifier and falls
+;      back to "0" for anything else, preserving the legacy permissive
+;      behavior for digital pins.
 ;   4. no collision with another customVar's name
-;   5. no collision with an ENABLED DUT pin's name
+;   5. no collision with an ENABLED DUT pin's name (disabled pins are
+;      filtered out of the .va port list so they can be safely shadowed)
 ;
-; A disabled DUT pin can be shadowed safely (it doesn't make it to the
-; .va port list), so the pin-collision check filters to enabled.
+; All regex uses pcreMatchp (sklangref.pdf p.186), not rexMatchp -- see
+; dgen_emitDefaultStr in dgenStore.il for the rex quirks that motivated
+; this. The prior rex form rejected legitimate analog values like "1.8".
 (defun dgen_validateCustomVars (spec "g")
   (let (cvs pins names cv nm kind dflt msg seen pinName seenAlready)
     (setq cvs  (or (get spec 'customVars) nil))
@@ -128,14 +134,15 @@
         (cond
           ((equal nm "")
             (setq msg "Custom variable has an empty name. Fill it in or delete the row."))
-          ((null (rexMatchp "^[A-Za-z_][A-Za-z0-9_]*$" nm))
+          ((null (pcreMatchp "^[A-Za-z_][A-Za-z0-9_]*$" nm))
             (setq msg (sprintf nil
-              "Custom variable name '%s' is not a legal Verilog identifier (use letters/digits/underscore, no whitespace)."
+              "Custom variable name '%s' is not a legal Verilog identifier (use letters/digits/underscore, no whitespace, no leading digit)."
               nm)))
           ((and (equal kind "analog")
-                (null (rexMatchp "^-?[0-9]+\\(\\.[0-9]+\\)?$" dflt)))
+                (null (pcreMatchp "^-?[0-9]+(\\.[0-9]+)?$" dflt))
+                (null (pcreMatchp "^[A-Za-z_][A-Za-z0-9_]*$" dflt)))
             (setq msg (sprintf nil
-              "Analog custom variable '%s' has non-numeric value '%s'. Use a real literal like 1.8."
+              "Analog custom variable '%s' default '%s' is neither a real literal nor a legal identifier. Use a number (e.g. 1.8) or a variable name (e.g. VDDA)."
               nm dflt)))
           (t
             ; Collision detection.

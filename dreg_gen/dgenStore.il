@@ -246,11 +246,28 @@
         (dgen_emitParamName item) (get item 'busHi) (get item 'busLo)))
     (t (dgen_emitParamName item))))
 
-; CDF defValue string. Validates the item's 'default field against a kind-
-; appropriate literal pattern; falls back to "0" on non-numeric input so a
-; bad user value can never produce a CDF that fails to load.
-;   digital -> integer literal (optional sign)
-;   analog  -> real literal (optional sign, optional fractional part)
+; CDF defValue string. Three accepted shapes:
+;   1. integer literal "0" / "-3" / "42"     -- digital + analog
+;   2. real    literal "1.8" / "-3.3"        -- analog only (digital
+;      gets fallback "0" because the .va integer parameter would mismatch)
+;   3. Verilog identifier "EN" / "VDDA"      -- treated as a CEL variable
+;      reference at netlist time, because dgenWriteCDF passes
+;      ?parseAsCEL=yes / ?parseAsNumber=yes. The .va parameter still
+;      carries its literal-0 fallback (Verilog-A requires literal
+;      parameter defaults), but CDF's defValue overrides at the instance
+;      level so Cadence resolves the identifier through ADE design vars.
+;      A printf surfaces this so a typo (e.g. "lO" instead of "10") is
+;      not silently interpreted as an undefined variable reference.
+; Anything else (empty string, decimals on digital, expressions, garbage)
+; falls back to "0" so a malformed value can't break the CDF load.
+;
+; Implementation note: uses pcreMatchp (sklangref.pdf p.186), NOT
+; rexMatchp (p.208). Cadence's rex flavor doesn't list `?` as a quantifier
+; (only `*` and `+` are documented as quantifiers) and treats `(...)` as
+; literal parens (only `\(...\)` is a group) -- the previous rex-based
+; check `^-?[0-9]+\(\.[0-9]+\)?$` rejected legitimate values like "1.8"
+; because the group-level `?` is unsupported. pcre is Perl-compatible and
+; supports both `?` and `(...)` reliably.
 
 (defun dgen_emitDefaultStr (item "g")
   (let ((d (get item 'default)) (analog (equal (get item 'kind) "analog")))
@@ -258,12 +275,18 @@
       ((null d) "0")
       ((stringp d)
         (cond
-          (analog
-            (cond ((rexMatchp "^-?[0-9]+\\(\\.[0-9]+\\)?$" d) d)
-                  (t "0")))
-          (t
-            (cond ((rexMatchp "^-?[0-9]+$" d) d)
-                  (t "0")))))
+          ; integer literal -- digital + analog, preserved verbatim
+          ((pcreMatchp "^-?[0-9]+$" d) d)
+          ; real literal -- analog only; digital falls through to "0"
+          ((and analog (pcreMatchp "^-?[0-9]+\\.[0-9]+$" d)) d)
+          ; Verilog identifier -- CEL variable reference
+          ((pcreMatchp "^[A-Za-z_][A-Za-z0-9_]*$" d)
+            (printf
+              "[dreg-gen] '%s' default '%s' interpreted as CEL variable reference (resolved via ADE design vars at netlist time)\n"
+              (get item 'name) d)
+            d)
+          ; defensive fallback
+          (t "0")))
       ((integerp d) (sprintf nil "%d" d))
       ((numberp d)  (sprintf nil "%g" d))
       (t "0"))))
