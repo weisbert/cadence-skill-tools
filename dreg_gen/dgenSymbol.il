@@ -10,27 +10,22 @@
 ; but functionally inert. Therefore the orchestrator (step 7) MUST call
 ; dgenWriteSymbol BEFORE dgenWriteVerilogA.
 
-; Reconstruct the externally-visible terminal name for a pin. Bus pins keep
-; Cadence's <hi:lo> syntax in the name; scalar pins are bare.
-(defun dgen_pinTerminalName (pin "g")
-  (let ((nm (get pin 'name)))
-    (cond
-      ((get pin 'isBus)
-        (sprintf nil "%s<%d:%d>" nm (get pin 'busHi) (get pin 'busLo)))
-      (t nm))))
-
 ; Build the pinList expected by schPinListToSymbolGen from our spec.
 ; Format documented in skcompref.pdf p.336-338. Disembodied plist with
 ; symbol keys (NOT strings); we use 'ports / 'name / 'direction.
-; Disabled pins are skipped entirely. Every Dreg pin is direction "output".
+;
+; Iterates dgen_specEmitList (dgenStore.il) so the symbol picks up BOTH
+; auto-discovered pins (filtered to enabled) AND user-added customVars
+; (digital + analog) in one pass. Every Dreg pin -- including analog
+; customVars driving a fixed voltage -- is direction "output", because the
+; cell is a source of stimulus, not a sink.
 (defun dgen_specToPinList (spec "g")
   (let (terms)
-    (foreach p (get spec 'pins)
-      (when (get p 'enabled)
-        (setq terms
-          (cons
-            (list nil 'name (dgen_pinTerminalName p) 'direction "output")
-            terms))))
+    (foreach item (dgen_specEmitList spec)
+      (setq terms
+        (cons
+          (list nil 'name (dgen_emitTermName item) 'direction "output")
+          terms)))
     (list nil 'ports (reverse terms))))
 
 ; Public entry point.

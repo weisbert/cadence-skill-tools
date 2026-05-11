@@ -4,78 +4,111 @@
 ; cell in a "dreg" category so the user can find it in Library Manager.
 
 ; ------------------------------------------------------------------
-; Pin emitters -- one helper per piece of the Verilog-A template.
+; Emit-item helpers -- one helper per piece of the Verilog-A template.
 ; Each returns a string. dgen_buildVAText concatenates them.
+;
+; "Item" means "auto-discovered pin OR user-added customVar" (see
+; dgen_specEmitList in dgenStore.il). Each item has a 'kind of "digital"
+; (pins + digital customVars) or "analog" (analog customVars). The
+; per-piece functions branch on 'kind so the same emit loop in
+; dgen_buildVAText handles both kinds.
 ; ------------------------------------------------------------------
 
 ; Port-list piece: just the bare name (port-list parens).
 ; Same for scalar and bus -- bus dimensions go in the dimension brackets,
-; not in the port-list reference.
-(defun dgen_emitPortListItem (pin "g")
-  (get pin 'name))
+; not in the port-list reference -- and same for digital and analog.
+(defun dgen_emitPortListItem (item "g")
+  (get item 'name))
 
-; "output ..." + "electrical ..." declarations for one pin.
-(defun dgen_emitPortDecl (pin "g")
-  (let ((nm (get pin 'name)))
+; "output ..." + "electrical ..." declarations for one item. Analog items
+; are always scalar; defensively ignore any spurious 'isBus on them so a
+; hand-crafted bad spec can't emit "output [3:0] VDD1P8" which would parse
+; as a vector net but get driven by a single analog source.
+(defun dgen_emitPortDecl (item "g")
+  (let ((nm (get item 'name)))
     (cond
-      ((get pin 'isBus)
+      ((and (get item 'isBus) (nequal (get item 'kind) "analog"))
         (sprintf nil "    output [%d:%d] %s;\n    electrical [%d:%d] %s;\n"
-          (get pin 'busHi) (get pin 'busLo) nm
-          (get pin 'busHi) (get pin 'busLo) nm))
+          (get item 'busHi) (get item 'busLo) nm
+          (get item 'busHi) (get item 'busLo) nm))
       (t
         (sprintf nil "    output %s;\n    electrical %s;\n" nm nm)))))
 
-; Parse the spec's `default` string as an integer. Spec doc says v1 is a
-; numeric string; "DVDD" or non-numeric falls back to 0. atoi returns 0
-; for non-numeric input, which is exactly what we want here.
+; Parse the spec's `default` string as an integer (digital). Spec doc says
+; v1 is a numeric string; "DVDD" or non-numeric falls back to 0. atoi
+; returns 0 for non-numeric input, which is exactly what we want here.
 ; Ref: sklangref.pdf p.36 (atoi)
-(defun dgen_pinDefaultInt (pin "g")
-  (let ((d (get pin 'default)))
+(defun dgen_pinDefaultInt (item "g")
+  (let ((d (get item 'default)))
     (cond
       ((null d) 0)
       ((stringp d) (atoi d))
       ((integerp d) d)
       (t 0))))
 
-; "parameter integer d_<name> = <int>;" for one pin.
-(defun dgen_emitPinParam (pin "g")
-  (sprintf nil "    parameter integer d_%s = %d;\n"
-    (get pin 'name) (dgen_pinDefaultInt pin)))
-
-; Analog-block lines for one pin: one line for scalar, busHi..busLo lines
-; for buses. Iterates from hi toward lo regardless of direction so that
-; reverse-numbered buses (<0:7>) also work — the bit weight always matches
-; the index, since `>> i` and `[i]` use the same i.
-(defun dgen_emitPinAnalog (pin "g")
-  (let ((nm (get pin 'name)))
+; Parse the spec's `default` string as a real (analog). atof returns 0.0
+; for non-numeric input, matching the digital fallback policy.
+; Ref: sklangref.pdf p.34 (atof)
+(defun dgen_emitDefaultReal (item "g")
+  (let ((d (get item 'default)))
     (cond
-      ((get pin 'isBus)
-        (let ((hi (get pin 'busHi)) (lo (get pin 'busLo))
+      ((null d) 0.0)
+      ((stringp d) (atof d))
+      ((numberp d) d)
+      (t 0.0))))
+
+; Parameter declaration line for one item.
+;   digital -> parameter integer d_<name> = <int literal>;
+;   analog  -> parameter real    v_<name> = <real literal>;
+; %g formats the real without trailing zeros (1.8, not 1.800000), matching
+; the DVDD line emitted elsewhere in this file.
+(defun dgen_emitPinParam (item "g")
+  (cond
+    ((equal (get item 'kind) "analog")
+      (sprintf nil "    parameter real    %s = %g;\n"
+        (dgen_emitParamName item) (dgen_emitDefaultReal item)))
+    (t
+      (sprintf nil "    parameter integer %s = %d;\n"
+        (dgen_emitParamName item) (dgen_pinDefaultInt item)))))
+
+; Analog-block lines for one item.
+;   digital scalar -> V(X) <+ d_X * DVDD;
+;   digital bus    -> one V(X[i]) <+ ((d_X >> i) & 1) * DVDD; per bit
+;                     (iterates hi -> lo so reverse-numbered <0:7> works too
+;                      -- the bit weight always matches the index)
+;   analog  scalar -> V(X) <+ v_X;
+; Analog customVars never carry bus dims (enforced in the GUI), so analog
+; takes the scalar branch unconditionally.
+(defun dgen_emitPinAnalog (item "g")
+  (let ((nm (get item 'name)) (pn (dgen_emitParamName item)))
+    (cond
+      ((equal (get item 'kind) "analog")
+        (sprintf nil "        V(%s) <+ %s;\n" nm pn))
+      ((get item 'isBus)
+        (let ((hi (get item 'busHi)) (lo (get item 'busLo))
               (out "") i step done)
           (setq i hi)
           (setq step (cond ((geqp hi lo) -1) (t 1)))
           (setq done nil)
           (while (null done)
             (setq out (strcat out
-              (sprintf nil "        V(%s[%d]) <+ ((d_%s >> %d) & 1) * DVDD;\n"
-                nm i nm i)))
+              (sprintf nil "        V(%s[%d]) <+ ((%s >> %d) & 1) * DVDD;\n"
+                nm i pn i)))
             (cond ((equal i lo) (setq done t))
                   (t (setq i (plus i step)))))
           out))
       (t
-        (sprintf nil "        V(%s) <+ d_%s * DVDD;\n" nm nm)))))
+        (sprintf nil "        V(%s) <+ %s * DVDD;\n" nm pn)))))
 
 ; ------------------------------------------------------------------
 ; Whole-file builder: returns the complete veriloga.va string.
 ; ------------------------------------------------------------------
 
 (defun dgen_buildVAText (spec moduleName "gt")
-  (let (enabled portList portDecls params analogs dvdd)
-    ; Filter to enabled pins only -- disabled pins are dropped entirely.
-    (setq enabled nil)
-    (foreach p (get spec 'pins)
-      (when (get p 'enabled) (setq enabled (cons p enabled))))
-    (setq enabled (reverse enabled))
+  (let (items portList portDecls params analogs dvdd)
+    ; Unified emit list: enabled pins (tagged digital) + customVars (carry
+    ; own kind). See dgen_specEmitList in dgenStore.il.
+    (setq items (dgen_specEmitList spec))
 
     ; DVDD value -- string in spec, want a float for the parameter literal.
     ; Ref: sklangref.pdf p.34 (atof)
@@ -87,25 +120,25 @@
     ; Build the comma-separated port list.
     (setq portList "")
     (let ((first t))
-      (foreach p enabled
+      (foreach it items
         (setq portList
           (cond
-            (first (dgen_emitPortListItem p))
-            (t (strcat portList ", " (dgen_emitPortListItem p)))))
+            (first (dgen_emitPortListItem it))
+            (t (strcat portList ", " (dgen_emitPortListItem it)))))
         (setq first nil)))
 
-    ; Concatenate the per-pin pieces.
+    ; Concatenate the per-item pieces.
     (setq portDecls "")
-    (foreach p enabled
-      (setq portDecls (strcat portDecls (dgen_emitPortDecl p))))
+    (foreach it items
+      (setq portDecls (strcat portDecls (dgen_emitPortDecl it))))
 
     (setq params "")
-    (foreach p enabled
-      (setq params (strcat params (dgen_emitPinParam p))))
+    (foreach it items
+      (setq params (strcat params (dgen_emitPinParam it))))
 
     (setq analogs "")
-    (foreach p enabled
-      (setq analogs (strcat analogs (dgen_emitPinAnalog p))))
+    (foreach it items
+      (setq analogs (strcat analogs (dgen_emitPinAnalog it))))
 
     (strcat
       "`include \"constants.vams\"\n"

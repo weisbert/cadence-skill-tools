@@ -9,18 +9,11 @@
 ; Trade-off: if a future variant of this cell needs view-specific params,
 ; this base CDF will conflict with it -- not a concern for Dreg.
 
-; Build the prompt string shown next to a parameter in the Properties dialog.
-; Kept terse on purpose: the prompt is the LEFT-side label of the form row,
-; and a verbose label crowds the dialog. For scalars the prompt is just the
-; param name "d_<PIN>". For buses we append the <hi:lo> bit range so the
-; user knows the input is multi-bit -- otherwise seeing just "d_D" they
-; might not realize they can enter integers up to 2^N-1.
-(defun dgen_pinPrompt (pin "g")
-  (cond
-    ((get pin 'isBus)
-      (sprintf nil "d_%s<%d:%d>"
-        (get pin 'name) (get pin 'busHi) (get pin 'busLo)))
-    (t (sprintf nil "d_%s" (get pin 'name)))))
+; CDF prompt + defValue helpers live in dgenStore.il as dgen_emitPrompt /
+; dgen_emitDefaultStr (shared with the symbol/.va emitters so the digital/
+; analog branching is in one place). The legacy dgen_pinPrompt / dgen_pinDefaultStr
+; names that used to live here have been deleted; callers in this file go
+; through the dgen_emit* helpers below.
 
 ; Substitute every '*' in a pattern with pinName. Returns pattern unchanged
 ; if no '*' is present. Walks char-by-char rather than using parseString
@@ -62,19 +55,6 @@
         (t (dgen_substStar pattern pinName))))
     (t literalDefault)))
 
-; Read the v1 default for a pin's drive value. Spec stores it as a string;
-; "DVDD"/non-numeric falls back to "0" (the spec doc says v1 expects a
-; numeric string).
-(defun dgen_pinDefaultStr (pin "g")
-  (let ((d (get pin 'default)))
-    (cond
-      ((null d) "0")
-      ((stringp d)
-        (cond ((rexMatchp "^-?[0-9]+$" d) d)
-              (t "0")))
-      ((integerp d) (sprintf nil "%d" d))
-      (t "0"))))
-
 ; Build the simInfo plist that registers a Verilog-A cell as a Spectre
 ; primitive on the OSS netlister side. Without this, OSS netlister treats
 ; the veriloga view as a switch view, finds no sub-instances inside it,
@@ -88,33 +68,23 @@
 ;                  netlistProcedure ansSpectreSubcktCall)
 ;     spectreS (nil ... netlistProcedure ansSpiceSubcktCall))
 ;
-; termOrder is the list of port names in V-A port order (bus pins use
-; <hi:lo> syntax — same shape as written into the .va port list by
-; dgenSymbol.il / dgenVerilogA.il). instParameters is the matching
-; symbol list of CDF parameter names (DVDD + d_<PIN> per enabled pin).
+; termOrder is the list of port names in .va port order (bus pins use
+; <hi:lo> syntax via dgen_emitTermName -- same shape as written into the
+; .va port list by dgenSymbol.il / dgenVerilogA.il). instParameters is the
+; matching symbol list of CDF parameter names, DVDD then d_<PIN> for digital
+; items and v_<NAME> for analog customVars (via dgen_emitParamName), in the
+; same port order produced by dgen_specEmitList.
 (defun dgen_buildSimInfo (spec cellName "gt")
-  (let (enabled termOrder instParams)
-    (setq enabled nil)
-    (foreach p (get spec 'pins)
-      (when (get p 'enabled) (setq enabled (cons p enabled))))
-    (setq enabled (reverse enabled))
+  (let (items termOrder instParams)
+    ; Unified emit list: enabled pins (digital) + customVars (own kind).
+    (setq items (dgen_specEmitList spec))
 
-    ; termOrder: list of strings, bus pins use <hi:lo> form
-    (setq termOrder
-      (mapcar
-        (lambda (p)
-          (cond
-            ((get p 'isBus)
-              (sprintf nil "%s<%d:%d>"
-                (get p 'name) (get p 'busHi) (get p 'busLo)))
-            (t (get p 'name))))
-        enabled))
+    (setq termOrder (mapcar 'dgen_emitTermName items))
 
-    ; instParameters: bare symbols, DVDD then d_<PIN>
     (setq instParams (cons (stringToSymbol "DVDD")
       (mapcar
-        (lambda (p) (stringToSymbol (sprintf nil "d_%s" (get p 'name))))
-        enabled)))
+        (lambda (it) (stringToSymbol (dgen_emitParamName it)))
+        items)))
 
     ; spectre and spectreS sub-plists are identical except for the
     ; netlistProcedure symbol (Spectre vs SPICE backend).
@@ -169,7 +139,7 @@
 ;      p.1760 (ddGetObj).
 (defun dgenWriteCDF (spec outputLib outputCell "ggg")
   (let (target libName cellName cellId existing cdfId
-        modeStr pattern dvddDefVal pinDefVal pinName paramName)
+        modeStr pattern dvddDefVal items itemDefVal itemName paramName)
     (setq target (get spec 'target))
     (setq libName  (or outputLib  (get target 'lib)))
     (setq cellName (or outputCell (get target 'cell)))
@@ -218,23 +188,29 @@
               ?display  "t"
               ?editable "t")
 
-            ; One d_<PIN> param per enabled pin.
-            (foreach p (get spec 'pins)
-              (when (get p 'enabled)
-                (setq pinName   (get p 'name))
-                (setq paramName (sprintf nil "d_%s" pinName))
-                (setq pinDefVal
-                  (dgen_resolveDefValue modeStr pattern paramName pinName nil
-                    (dgen_pinDefaultStr p)))
-                (cdfCreateParam cdfId
-                  ?name     paramName
-                  ?type     "string"
-                  ?defValue pinDefVal
-                  ?parseAsCEL    "yes"
-                  ?parseAsNumber "yes"
-                  ?prompt   (dgen_pinPrompt p)
-                  ?display  "t"
-                  ?editable "t")))
+            ; One CDF param per emitted item (enabled pins + customVars).
+            ; paramName is d_<name> for digital, v_<name> for analog (via
+            ; dgen_emitParamName). The defValue resolution still respects
+            ; the spec's defaultMode (literal / empty / variable_pin /
+            ; custom); analog items pass through the same code path so a
+            ; "variable_pin" mode produces v_VDD1P8 default = "VDD1P8",
+            ; mirroring the digital behaviour.
+            (setq items (dgen_specEmitList spec))
+            (foreach it items
+              (setq itemName  (get it 'name))
+              (setq paramName (dgen_emitParamName it))
+              (setq itemDefVal
+                (dgen_resolveDefValue modeStr pattern paramName itemName nil
+                  (dgen_emitDefaultStr it)))
+              (cdfCreateParam cdfId
+                ?name     paramName
+                ?type     "string"
+                ?defValue itemDefVal
+                ?parseAsCEL    "yes"
+                ?parseAsNumber "yes"
+                ?prompt   (dgen_emitPrompt it)
+                ?display  "t"
+                ?editable "t"))
 
             ; Register as a Spectre primitive via the simInfo block. Without
             ; this, OSS netlister treats the veriloga view as a switch view

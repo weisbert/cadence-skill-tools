@@ -1,19 +1,54 @@
-; dgenStore.il -- Step 1 of Dreg Generator: spec serialization, cell-property and last-state I/O.
+; dgenStore.il -- Step 1 of Dreg Generator: spec serialization, cell-property and last-state I/O,
+; and the shared emit-item iterator that unifies pins + customVars for the downstream generators.
 ;
 ; Last-state schema:
 ;   v1 (legacy): plist with targetLib, targetCellTpl, dvddDefault, defaultMode,
 ;                defaultPattern, pinStates. No 'schemaVersion key.
-;   v2 (current): v1 + 'schemaVersion 2 + 'lastDutLib / 'lastDutCell / 'lastDutView.
+;   v2          : v1 + 'schemaVersion 2 + 'lastDutLib / 'lastDutCell / 'lastDutView.
+;   v3 (current): v2 + 'customVarStates (list of customVar plists; absent in v1/v2 = empty list).
 ;
 ; Migration policy: silent forward-only.
 ;   - Reader returns the plist verbatim; consumers use `get` so missing fields
 ;     read as nil. v1 files therefore yield nil for lastDutLib/Cell/View, which
-;     is the desired fallback. Future v3+ fields are also returned verbatim and
-;     ignored by current consumers.
+;     is the desired fallback. v1/v2 files yield nil for customVarStates which
+;     the GUI treats as empty list. Future v4+ fields are also returned
+;     verbatim and ignored by current consumers.
 ;   - Writer always stamps 'schemaVersion 2 (auto-injected if not already in
-;     the input plist). The optional sourcePlist argument supplies lastDutLib/
-;     Cell/View; when omitted, those fields are absent (file is still v2 and
-;     will roundtrip cleanly, just with no DUT pre-fill data).
+;     the input plist) -- v3 fields are additive plist entries on top of v2 so
+;     the version stamp stays at 2 and old GUIs reading new files just skip
+;     'customVarStates harmlessly. (No v3-specific reader/writer functions
+;     are needed -- presence of the 'customVarStates key IS the version probe.)
+;
+; SPEC SHAPE (in-memory; not the same as last-state file shape):
+;   spec is a plist:
+;     'source         (nil 'lib L 'cell C 'view V)         ; DUT cellview
+;     'target         (nil 'lib L 'cell C 'view "veriloga"); generated Dreg cellview
+;     'dvddDefault    "0.9"                                ; string, .va parameter
+;     'defaultMode    "literal" | "empty" | "variable_pin" | "custom"
+;     'defaultPattern "d_*" or similar                     ; only used in "custom"
+;     'pins           list of pin plists from dgenScanPins
+;     'customVars     list of customVar plists             ; user-added in GUI; NEW
+;
+;   pin plist (from dgenScanPins, augmented in GUI):
+;     'name, 'isBus, 'busHi, 'busLo, 'srcDirection, 'enabled, 'default
+;
+;   customVar plist (user-added in GUI):
+;     'name      "XX_ctrl"      ; bus suffix stripped at parse time
+;     'kind      "digital" | "analog"
+;     'isBus     t/nil          ; analog is always scalar (nil/absent)
+;     'busHi     int            ; only when isBus = t
+;     'busLo     int            ; only when isBus = t
+;     'default   "0" | "1.8"    ; digital: integer string; analog: real string
+;
+;   Naming convention used by the emitters (single source of truth in
+;   dgen_emitParamName below):
+;     digital item -> .va parameter named d_<name>, integer, V() <+ d_<name> * DVDD
+;     analog  item -> .va parameter named v_<name>, real,    V() <+ v_<name>
+;
+;   Pins are always digital (auto-discovered from cv~>terminals). CustomVars
+;   carry their kind explicitly. The dgen_specEmitList helper unifies both
+;   into a single emit-item list so symbol / VA / CDF emitters iterate one
+;   list and branch on 'kind for kind-specific behavior.
 
 ; sprintf with %L round-trips through readstring.
 ; Ref: sklangref.pdf p.214 (sprintf), p.198 (readstring), p.410 (%L format).
@@ -138,3 +173,97 @@
 
 (defun dgen_lastStateDutView (state "g")
   (and (dgen_lastStateIsV2P state) (get state 'lastDutView)))
+
+; ---------------------------------------------------------------------------
+; Emit-item helpers: shared by dgenSymbol.il / dgenVerilogA.il / dgenCDF.il.
+; ---------------------------------------------------------------------------
+;
+; The Dreg cell's symbol/Verilog-A/CDF are all generated from the SAME flat
+; list of "things to emit": each enabled DUT pin becomes one emit-item, plus
+; each user-added customVar becomes one emit-item. Centralizing the merge
+; here means the three downstream generators just iterate the result and
+; branch on 'kind for kind-specific output.
+;
+; An emit-item is a plist with at minimum:
+;   'name    -- bare identifier (no bus suffix)
+;   'kind    -- "digital" or "analog"
+;   'isBus, 'busHi, 'busLo -- only meaningful when isBus = t (digital only)
+;   'default -- string; digital is an integer literal, analog is a real literal
+;
+; Pins from dgenScanPins carry 'name/'isBus/'busHi/'busLo/'srcDirection/'enabled/
+; 'default but no 'kind -- this helper splices kind="digital" onto enabled pins
+; because every pin emitted by Dreg is a digital drive (V<+d*DVDD per bit).
+; CustomVars already carry their own 'kind from the GUI.
+;
+; Disabled pins are dropped here. CustomVars have no enabled flag -- to disable
+; one, the user deletes the row in the GUI; entries present in the list are
+; always emitted.
+
+(defun dgen_specEmitList (spec "g")
+  (let (out)
+    (foreach p (get spec 'pins)
+      (when (get p 'enabled)
+        (setq out (cons (append p (list 'kind "digital")) out))))
+    (foreach c (get spec 'customVars)
+      (setq out (cons c out)))
+    (reverse out)))
+
+; Terminal name as written into the .va port list, symbol pin list, and CDF
+; simInfo termOrder. Bus items keep Cadence's <hi:lo> suffix; scalars are bare.
+; Used to live in three near-duplicate functions (dgen_pinTerminalName in
+; dgenSymbol.il, dgen_emitPortListItem in dgenVerilogA.il, an inline lambda
+; in dgenCDF.il's dgen_buildSimInfo); consolidated here so customVar bus
+; entries get the same treatment without three independent code changes.
+
+(defun dgen_emitTermName (item "g")
+  (let ((nm (get item 'name)))
+    (cond
+      ((get item 'isBus)
+        (sprintf nil "%s<%d:%d>" nm (get item 'busHi) (get item 'busLo)))
+      (t nm))))
+
+; CDF/Verilog-A parameter name. Digital items get the legacy d_<name>
+; convention so existing DUT testbenches that reference d_EN keep working;
+; analog items get v_<name> to keep them visually distinct in the ADE
+; Properties dialog (and to avoid collision with the analog pin's own name
+; in the .va, where a `parameter real X` and `electrical X` would clash).
+
+(defun dgen_emitParamName (item "g")
+  (let ((nm (get item 'name)))
+    (cond
+      ((equal (get item 'kind) "analog") (sprintf nil "v_%s" nm))
+      (t                                  (sprintf nil "d_%s" nm)))))
+
+; CDF prompt: the LEFT-side label shown next to the parameter in the
+; instance Properties dialog. Digital scalar -> "d_<name>"; digital bus ->
+; "d_<name><hi:lo>" so the user knows the input is multi-bit; analog ->
+; "v_<name>". Bus suffix only ever attaches to digital (analog never buses).
+
+(defun dgen_emitPrompt (item "g")
+  (cond
+    ((and (get item 'isBus) (nequal (get item 'kind) "analog"))
+      (sprintf nil "%s<%d:%d>"
+        (dgen_emitParamName item) (get item 'busHi) (get item 'busLo)))
+    (t (dgen_emitParamName item))))
+
+; CDF defValue string. Validates the item's 'default field against a kind-
+; appropriate literal pattern; falls back to "0" on non-numeric input so a
+; bad user value can never produce a CDF that fails to load.
+;   digital -> integer literal (optional sign)
+;   analog  -> real literal (optional sign, optional fractional part)
+
+(defun dgen_emitDefaultStr (item "g")
+  (let ((d (get item 'default)) (analog (equal (get item 'kind) "analog")))
+    (cond
+      ((null d) "0")
+      ((stringp d)
+        (cond
+          (analog
+            (cond ((rexMatchp "^-?[0-9]+\\(\\.[0-9]+\\)?$" d) d)
+                  (t "0")))
+          (t
+            (cond ((rexMatchp "^-?[0-9]+$" d) d)
+                  (t "0")))))
+      ((integerp d) (sprintf nil "%d" d))
+      ((numberp d)  (sprintf nil "%g" d))
+      (t "0"))))

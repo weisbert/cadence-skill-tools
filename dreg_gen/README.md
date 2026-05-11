@@ -34,8 +34,26 @@ spec = list(nil
   'pins          list(
     list(nil 'name "D"   'isBus t   'busHi 7 'busLo 0 'enabled t   'default "0")
     list(nil 'name "EN"  'isBus nil                   'enabled t   'default "0")
-    list(nil 'name "CLK" 'isBus nil                   'enabled nil)))    ; skipped
+    list(nil 'name "CLK" 'isBus nil                   'enabled nil))    ; skipped
+  'customVars    list(                                                  ; user-added in GUI; may be absent
+    list(nil 'name "XX_EN"   'kind "digital" 'isBus nil                   'default "0")
+    list(nil 'name "XX_ctrl" 'kind "digital" 'isBus t   'busHi 3 'busLo 0 'default "0")
+    list(nil 'name "VDD1P8"  'kind "analog"                               'default "1.8")))
 ```
+
+`'customVars` is appended to `'pins` in the unified emit list (`dgen_specEmitList` in
+`dgenStore.il`), so the symbol view gets one extra output pin per customVar, the
+`.va` gets one extra port/parameter/analog-line, and the CDF gets one extra
+parameter. Naming convention enforced by `dgen_emitParamName`:
+
+| Kind    | .va parameter   | CDF parameter | Drive expression           |
+|---------|-----------------|---------------|----------------------------|
+| digital | `integer d_<N>` | `d_<N>`       | `V(N) <+ d_<N> * DVDD;`    |
+| analog  | `real v_<N>`    | `v_<N>`       | `V(N) <+ v_<N>;` (literal) |
+
+Pins are always digital. Analog customVars are always scalar (the GUI
+doesn't expose bus syntax for analog; the emitters defensively force
+scalar shape if a buggy spec carries `'isBus t` on an analog item).
 
 `outputLib` / `outputCell` args, when non-nil, override `spec~>target~>lib` /
 `spec~>target~>cell` for that single call.
