@@ -83,6 +83,27 @@
 (unless (boundp 'dgen_currentCustomVars) (setq dgen_currentCustomVars nil))
 (unless (boundp 'dgen_preserveCvs)       (setq dgen_preserveCvs       nil))
 
+; Per-pin literal cache. Parallel to dgen_currentPins. Holds the user's
+; numeric literal default for each pin so that mode-toggling (literal
+; <-> variable_pin / custom / empty) doesn't clobber it: in non-literal
+; modes the per-pin "value" field is repurposed to show the resolved
+; variable name (e.g. EN, d_EN) as a read-only hint, so its raw ->value
+; can no longer be trusted as the user's literal. dgen_readForm reads
+; the cache when defaultMode != "literal".
+;
+; dgen_pinFieldsAreLit mirrors the last-known enabled state of the per-
+; pin "value" fields. Initialised in dgen_buildMiddleFields and updated
+; in dgenGui_modeCB; the modeCB uses the *previous* value to decide
+; whether the current field contents are a literal worth caching (true)
+; or a stale variable-name hint that should be discarded (false).
+(unless (boundp 'dgen_pinLiteralCache)   (setq dgen_pinLiteralCache   nil))
+(unless (boundp 'dgen_pinFieldsAreLit)   (setq dgen_pinFieldsAreLit   t))
+
+; Scratch global for evalstring slot-writes -- evalstring runs at top-
+; level scope so a let-bound local would not be visible; the global is
+; read+cleared per write.
+(unless (boundp 'dgen_tmpFieldVal)       (setq dgen_tmpFieldVal       ""))
+
 ; Pending form geometry to apply on the next dgenOpenGUI call. One-shot:
 ; consumed (and cleared) at form display. Set by dgen_captureFormGeometry
 ; which is called inside dgenGui_deferredReopen just before hiFormCancel,
@@ -140,6 +161,46 @@
 ; fixed at row creation time (clicking [+ Digital] vs [+ Analog]).
 (defun dgen_cvNameId    (idx "n") (concat 'dgen_cv_name_ idx))
 (defun dgen_cvDefaultId (idx "n") (concat 'dgen_cv_def_  idx))
+
+; Compute the per-pin "value" field's display string for a given mode.
+; In literal mode the field is editable and shows the user's number; in
+; every other mode the field is greyed and shows the *resolved* variable
+; name that dgen_resolveDefValue would emit, so the user sees a faithful
+; preview of what ends up in the generated cell.
+;
+;   mode == "literal"      -> literal (user-typed number)
+;   mode == "empty"        -> ""           (parameter default is empty)
+;   mode == "variable_pin" -> pin name     (parameter default is the pin name)
+;   mode == "custom"       -> pattern with '*' substituted by pin name;
+;                             empty/nil pattern collapses to "d_*" to
+;                             mirror dgen_readForm's auto-fill at OK time
+;   else                   -> literal     (back-compat, treat unknown like literal)
+(defun dgen_pinResolvedDisplay (mode pattern pinName literal "ggtg")
+  (cond
+    ((equal mode "literal")      (or literal "0"))
+    ((equal mode "empty")        "")
+    ((equal mode "variable_pin") pinName)
+    ((equal mode "custom")
+      (dgen_substStar
+        (cond ((or (null pattern) (equal pattern "")) "d_*") (t pattern))
+        pinName))
+    (t (or literal "0"))))
+
+; Set a form field's ->value at runtime. setq cannot write through an
+; arrow expression (skuiref.pdf p.806 commentary) so we stage the value
+; in a top-level scratch symbol and let evalstring do the slot write.
+; Returns t on success, nil if the field record is missing (form X-
+; closed mid-callback).
+(defun dgen_setFieldValue (fieldSym val "gg")
+  (cond
+    ((and (boundp 'dgen_form) dgen_form (get dgen_form fieldSym))
+      (setq dgen_tmpFieldVal val)
+      (errset
+        (evalstring (sprintf nil "dgen_form->%s->value = dgen_tmpFieldVal"
+                                  (symbolToString fieldSym)))
+        t)
+      t)
+    (t nil)))
 
 ; Validate the customVars list against the enabled pin list. Returns nil
 ; on success, or an error-message string on the first problem found
@@ -251,7 +312,7 @@
 ; UI labels are plain English so users don't have to memorize what
 ; "variable_pin" means. The cyclic field's ?choices stores labels (per
 ; skuiref.pdf p.537 -- ?choices IS the value, no separate label/value
-; mapping), so dgen_buildMiddleFields / dgen_readForm / dgen_updatePreview
+; mapping), so dgen_buildMiddleFields / dgen_readForm / dgenGui_modeCB
 ; all translate at the GUI boundary using these helpers.
 ;
 ; Legacy "variable" (= d_<PIN> auto-prefix) is collapsed into "custom" with
@@ -365,88 +426,6 @@
       (t fallback))))
 
 ; ---------------------------------------------------------------------------
-; Preview helpers
-; ---------------------------------------------------------------------------
-
-; Build a one-line example of how the chosen defaultMode + pattern will
-; resolve into CDF defValue strings at instantiation. Read-only string
-; shown in the "Preview" row below the pattern field. Pure function --
-; takes a spec plist, returns a string.
-;
-; Pin substitution: pick the FIRST scalar pin (isBus = nil) for a clean
-; example. Falls back to first pin overall, then to literal "<pin>" if
-; spec has no pins yet (DUT-less form mode).
-(defun dgen_renderPreview (spec "g")
-  (let (mode pattern dvdd pins examplePin pinName customResolved)
-    (setq mode    (or (get spec 'defaultMode)    "literal"))
-    (setq pattern (or (get spec 'defaultPattern) ""))
-    (setq dvdd    (or (get spec 'dvddDefault)    "0.9"))
-    (setq pins    (get spec 'pins))
-    (setq examplePin nil)
-    (foreach p pins
-      (when (and (null examplePin) (null (get p 'isBus)))
-        (setq examplePin p)))
-    (when (and (null examplePin) pins)
-      (setq examplePin (car pins)))
-    (setq pinName (cond
-                    (examplePin (get examplePin 'name))
-                    (t          "<pin>")))
-    (cond
-      ((equal mode "literal")
-        (sprintf nil "Example: DVDD=\"%s\", d_%s=(from per-pin row below)"
-                 dvdd pinName))
-      ((equal mode "empty")
-        "All defValues empty -- user fills at instantiation")
-      ((equal mode "variable")
-        (sprintf nil "Example: DVDD=\"DVDD\", d_%s=\"d_%s\"" pinName pinName))
-      ((equal mode "variable_pin")
-        (sprintf nil "Example: DVDD=\"DVDD\", d_%s=\"%s\"" pinName pinName))
-      ((equal mode "custom")
-        (cond
-          ((or (null pattern) (equal pattern ""))
-            "Example: pattern required (defaultPattern field above)")
-          (t
-            (rexCompile "\\*")
-            (setq customResolved (rexReplace pattern pinName 0))
-            (sprintf nil "Example: DVDD=\"DVDD\", d_%s=\"%s\""
-                     pinName customResolved))))
-      (t (sprintf nil "Example: (unknown mode %s)" mode)))))
-
-; Re-render the Preview row from the live form's current field values.
-; Called from dgenGui_modeCB and dgenGui_patternCB. Defensive: errset
-; around the slot write so a missing form (X-closed) doesn't crash the
-; callback chain.
-;
-; setq cannot write through ~> so we route the slot assignment through
-; evalstring with infix `=`. We stage the rendered text in a global
-; symbol (dgen_tmpPreviewTxt) and have evalstring reference that symbol,
-; rather than splicing the text into a string literal -- the text itself
-; contains embedded double quotes (e.g. "Example: DVDD=\"0.9\", ...")
-; which would terminate the literal early and cause a SKILL parse error
-; (caught in dev). Symbol-reference path sidesteps quote-escaping
-; entirely.
-(defun dgen_updatePreview ()
-  (let (mode pattern dvdd minSpec txt)
-    (when (and (boundp 'dgen_form) dgen_form)
-      ; Cyclic field stores labels; translate back to canonical mode
-      ; token before feeding dgen_renderPreview (which compares against
-      ; canonical tokens, not labels).
-      (setq mode    (dgen_labelToMode (dgen_fieldVal dgen_form 'dgen_mode)))
-      (setq pattern (dgen_fieldVal dgen_form 'dgen_pattern))
-      (setq dvdd    (dgen_fieldVal dgen_form 'dgen_dvdd))
-      (setq minSpec (list nil
-        'defaultMode    (or mode    "literal")
-        'defaultPattern (or pattern "")
-        'dvddDefault    (or dvdd    "0.9")
-        'pins           dgen_currentPins))
-      (setq txt (dgen_renderPreview minSpec))
-      (setq dgen_tmpPreviewTxt txt)
-      (errset
-        (evalstring "dgen_form->dgen_preview->value = dgen_tmpPreviewTxt")
-        t))
-    t))
-
-; ---------------------------------------------------------------------------
 ; Top-section field builders (built unconditionally on every form open)
 ; ---------------------------------------------------------------------------
 
@@ -536,7 +515,7 @@
 ; Ref: skuiref.pdf p.502 (hiCreateAppForm), p.650 (hiCreateStringField),
 ;      p.521 (hiCreateBooleanButton), p.536 (hiCreateCyclicField).
 (defun dgen_buildMiddleFields (factorySpec currentSpec startY rowH "ggng")
-  (let (fTgt cTgt pins cPins fields i y fieldW promptW sizePt previewTxt pats)
+  (let (fTgt cTgt pins cPins fields i y fieldW promptW sizePt pats)
     (setq fTgt (get factorySpec 'target))
     (setq cTgt (get currentSpec 'target))
     (setq pins  (get factorySpec 'pins))
@@ -597,18 +576,6 @@
             (list 0 y) sizePt promptW)
       fields))
     (setq y (plus y rowH))
-    ; Preview row -- read-only one-line example of how defValue strings
-    ; will be emitted given the current mode/pattern/dvdd. Updated live
-    ; on mode/pattern change via dgenGui_modeCB / dgenGui_patternCB.
-    (setq previewTxt (dgen_renderPreview currentSpec))
-    (setq fields (cons
-      (list (hiCreateStringField ?name 'dgen_preview ?prompt "Preview"
-              ?defValue ""
-              ?value    previewTxt
-              ?editable nil)
-            (list 0 y) sizePt promptW)
-      fields))
-    (setq y (plus y rowH))
     ; Mode-button toolbar: a row of one-click prefill actions sitting
     ; right above the per-pin rows. All four are stringly-typed callbacks
     ; (defun bodies live further down in the Callbacks section). Buttons
@@ -649,7 +616,23 @@
         fields))
       (setq y (plus y rowH)))
     ; Per-pin rows.
-    (let ((litMode (equal (or (get currentSpec 'defaultMode) "literal") "literal")))
+    ;
+    ; Field-value strategy: when defaultMode is "literal" the value field
+    ; is editable and shows the user-typed number (curDef). In every
+    ; other mode the field is greyed and instead shows the resolved
+    ; variable name (pin name / d_PIN / pattern-substituted / "") so
+    ; the user can see what will actually be emitted into the generated
+    ; cell -- replaces the legacy display which kept showing a stale,
+    ; ignored literal. We snapshot curDef into dgen_pinLiteralCache so
+    ; later mode-toggles can restore it.
+    ; SKILL has no let* -- nest two lets so curPattern can be derived
+    ; independently and litMode can derive from curMode in the inner
+    ; binding list. (See dgenStore.il:90 / PLAN.md:187 for the rule.)
+    (let ((curMode    (or (get currentSpec 'defaultMode)    "literal"))
+          (curPattern (or (get currentSpec 'defaultPattern) "d_*")))
+     (let ((litMode (equal curMode "literal")))
+      (setq dgen_pinLiteralCache nil)
+      (setq dgen_pinFieldsAreLit litMode)
       (setq i 0)
       (foreach p pins
         (let ((enId (dgen_pinEnableId i))
@@ -658,7 +641,11 @@
               (cat (dgenPatternsClassify p pats))
               (factoryEn (dgen_factoryEnabledP p))
               (curEn  (dgen_pinFieldOr cPins (get p 'name) 'enabled (dgen_factoryEnabledP p)))
-              (curDef (dgen_pinFieldOr cPins (get p 'name) 'default "0")))
+              (curDef (dgen_pinFieldOr cPins (get p 'name) 'default "0"))
+              displayVal)
+          (setq dgen_pinLiteralCache (cons curDef dgen_pinLiteralCache))
+          (setq displayVal
+            (dgen_pinResolvedDisplay curMode curPattern (get p 'name) curDef))
           (setq fields (cons
             (list (hiCreateBooleanButton
                     ?name enId
@@ -672,12 +659,15 @@
                     ?name defId
                     ?prompt "value"
                     ?defValue "0"
-                    ?value    curDef
+                    ?value    displayVal
                     ?enabled  litMode)
                   (list 210 y) (list 160 rowH) 50)
             fields))
           (setq y (plus y rowH)))
-        (setq i (add1 i))))
+        (setq i (add1 i)))
+      ; Cache was consed back-to-front; reverse so index i lines up with
+      ; pin index i (same indexing used by dgen_pinDefaultId / readForm).
+      (setq dgen_pinLiteralCache (reverse dgen_pinLiteralCache))))
 
     ; Custom Variables section. Header label, one row per customVar (name
     ; field + default field + Delete button), then [+ Digital] / [+ Analog]
@@ -821,11 +811,22 @@
     ; common case stays one-click.
     (when (and (equal mode "custom") (or (null pattern) (equal pattern "")))
       (setq pattern "d_*"))
+    ; Per-pin default: in non-literal modes the "value" field has been
+    ; repurposed as a read-only hint that displays the resolved variable
+    ; name, NOT the user's literal. Read the literal from
+    ; dgen_pinLiteralCache instead so a save->reopen round-trip preserves
+    ; the user's typed number (cache is populated at form build and
+    ; refreshed by dgenGui_modeCB on literal->variable transitions).
     (setq outPins nil)
     (setq i 0)
     (foreach pin pins
       (setq enabled (dgen_fieldVal form (dgen_pinEnableId i)))
-      (setq deflt   (dgen_fieldVal form (dgen_pinDefaultId i)))
+      (setq deflt
+        (cond
+          ((equal mode "literal") (dgen_fieldVal form (dgen_pinDefaultId i)))
+          (t (or (nth i dgen_pinLiteralCache)
+                 (dgen_fieldVal form (dgen_pinDefaultId i))
+                 "0"))))
       (setq outPins (cons
         (append pin (list 'enabled enabled 'default deflt))
         outPins))
@@ -1079,42 +1080,92 @@
           1)
         t))))
 
-; defaultMode-change callback. Per-pin "value" fields only used when
-; mode = "literal"; disable them under other modes. Cyclic-field
-; callback signature (field scope item) per skuiref.pdf p.538.
+; defaultMode-change callback. Cyclic-field callback signature
+; (field scope item) per skuiref.pdf p.538.
 ;
 ; `item` is the cyclic field's LABEL string (since ?choices stores
-; labels directly per skuiref.pdf p.537), so we compare against the
-; user-facing strings rather than canonical mode tokens.
+; labels directly per skuiref.pdf p.537), so we translate via
+; dgen_labelToMode to compare against canonical mode tokens.
+;
+; The per-pin "value" field is the user's literal number only in
+; "literal" mode -- in the other three modes it doubles as a read-only
+; preview of the resolved variable name. So we both flip ?enabled AND
+; rewrite ->value here. Cache invariant: dgen_pinLiteralCache[i] always
+; holds the user's most recent literal entry, so a literal->variable
+; toggle saves the current field value (it was a literal) and a
+; variable->literal toggle restores it.
 ;
 ; Ref: skuiref.pdf p.806 (hiSetFieldEnabled). We use the dedicated
-; setter rather than slot assignment because Lisp-form
-; (setq rec->enabled v) is rejected (setq's first arg must be a symbol).
+; setter for ?enabled and the evalstring/scratch-symbol trick for ?value
+; because Lisp-form (setq rec->slot v) is rejected (setq's first arg
+; must be a symbol).
 (defun dgenGui_modeCB (field scope item "ggg")
-  (let (isLit isCustom i rec patRec)
-    (setq isLit    (equal item "Hard-coded number"))
-    (setq isCustom (equal item "Variable, custom pattern"))
+  (let (newMode isLit isCustom curPattern wasLit i rec patRec
+        cached pinName curFieldVal displayVal)
+    (setq newMode  (dgen_labelToMode item))
+    (setq isLit    (equal newMode "literal"))
+    (setq isCustom (equal newMode "custom"))
+    (setq wasLit   dgen_pinFieldsAreLit)
+    (setq curPattern (or (dgen_fieldVal dgen_form 'dgen_pattern) "d_*"))
     (setq i 0)
     (foreach p dgen_currentPins
       (setq rec (get dgen_form (dgen_pinDefaultId i)))
-      (when rec (hiSetFieldEnabled rec isLit))
+      (setq pinName (get p 'name))
+      (when rec
+        (cond
+          ; literal -> non-literal: snapshot current field text into cache
+          ; (it's still the user's literal, the field hasn't been rewritten
+          ; yet) so we can restore it on a later switch back to literal.
+          ((and wasLit (null isLit))
+            (setq curFieldVal (or (dgen_fieldVal dgen_form (dgen_pinDefaultId i)) "0"))
+            (dgen_listSetNth 'dgen_pinLiteralCache i curFieldVal)))
+        (setq cached (nth i dgen_pinLiteralCache))
+        (when (null cached) (setq cached "0"))
+        (setq displayVal
+          (dgen_pinResolvedDisplay newMode curPattern pinName cached))
+        (dgen_setFieldValue (dgen_pinDefaultId i) displayVal)
+        (hiSetFieldEnabled rec isLit))
       (setq i (add1 i)))
+    (setq dgen_pinFieldsAreLit isLit)
     ; Pattern field is only meaningful when mode = "custom"; gray it
     ; out otherwise so the user isn't tempted to type a pattern that
     ; will be ignored.
     (when (and (boundp 'dgen_form) dgen_form)
       (setq patRec (get dgen_form 'dgen_pattern))
       (when patRec (hiSetFieldEnabled patRec isCustom)))
-    ; Live-update the Preview row to match the new mode.
-    (dgen_updatePreview)
+    t))
+
+; Destructive list-element setter -- writes val into the idx-th cell of
+; the list bound to listSym (a quoted symbol). Used by dgenGui_modeCB to
+; mutate dgen_pinLiteralCache in place without rebuilding the whole list
+; on every mode toggle. Out-of-range idx is a no-op. Ref: sklangref.pdf
+; p.394 (rplaca), p.466 (nthcdr).
+(defun dgen_listSetNth (listSym idx val "sng")
+  (let ((cell (nthcdr idx (symeval listSym))))
+    (when cell (rplaca cell val))
     t))
 
 ; defaultPattern-edit callback. String-field callback signature is
-; (field scope newValue) per skuiref.pdf p.650. We just refresh the
-; preview -- the actual pattern value is stored in the field itself
-; and read at OK time by dgen_readForm.
+; (field scope newValue) per skuiref.pdf p.650. In "custom" mode we
+; rewrite each greyed per-pin "value" field with the new pattern
+; substitution so the read-only variable-name hint stays in sync; in
+; other modes the hint doesn't depend on pattern, so the per-pin walk
+; is skipped.
 (defun dgenGui_patternCB (field scope newValue "ggg")
-  (dgen_updatePreview)
+  (let (curMode i pinName)
+    (setq curMode (dgen_labelToMode (dgen_fieldVal dgen_form 'dgen_mode)))
+    (when (equal curMode "custom")
+      (setq i 0)
+      (foreach p dgen_currentPins
+        (setq pinName (get p 'name))
+        (dgen_setFieldValue
+          (dgen_pinDefaultId i)
+          (dgen_pinResolvedDisplay
+            "custom"
+            (cond ((or (null newValue) (equal newValue "")) "d_*") (t newValue))
+            pinName
+            (or (nth i dgen_pinLiteralCache) "0")))
+        (setq i (add1 i)))))
   t)
 
 ; -------- Mode-button callbacks (toolbar above pin rows) ---------------
@@ -1387,6 +1438,21 @@
                       "(dgenGui_patternsEditorCancelCB dgenPat_editorForm)")
       ?buttonLayout 'OKCancelDef))
     (hiInstantiateForm form)
+    ; Size the form just large enough that no OUTER scrollbar appears.
+    ; Without this, the form viewport defaults to a smaller size than the
+    ; stacked MLT panels, Cadence adds its own scrollbar, and a wheel
+    ; event over an MLT scrolls BOTH the inner text AND the outer form
+    ; simultaneously (Motif wheel-event propagation). Field stack:
+    ;   header   y=  0 h= 28
+    ;   power    y= 34 h=220
+    ;   dreg     y=262 h=220
+    ;   reset    y=488 h= 28   -> content bottom = 516
+    ; Form chrome (button row + title bar + frame) adds ~80px; 420x620
+    ; clears the content + a small safety margin so the outer scrollbar
+    ; stays retracted. Wrapped in errset because hiSetFormSize is a no-op
+    ; (with a warn) on the rare timing window when the form record isn't
+    ; yet fully realized.
+    (errset (hiSetFormSize form (list 420 620)) t)
     (hiDisplayForm 'dgenPat_editorForm)
     'dgenPat_editorForm))
 
@@ -1556,6 +1622,15 @@
     ; (dgen_actuallyOpenGUI -> dgenOpenGUI) consumes the pending slots
     ; when calling dgen_displayFormApplyPending.
     (dgen_captureFormGeometry)
+    ; On DUT change (e.g. [Select from Schematic] -> new pin count) the
+    ; captured size is meaningless and would clip the new content. Drop
+    ; the size hint so the rebuilt form sizes naturally to fit its pin
+    ; rows; the captured POSITION is still useful so the window doesn't
+    ; jump around. +Digital / +Analog / +Delete all reopen with the same
+    ; DUT so the cell-equality check leaves their size restore intact.
+    (when (or (null dgen_currentDutCell)
+              (null (equal cell dgen_currentDutCell)))
+      (setq dgen_pendingFormSize nil))
     (errset (hiFormCancel dgen_form) t))
   (hiRegTimer
     (sprintf nil "(dgen_actuallyOpenGUI \"%s\" \"%s\" \"%s\")" lib cell view)
