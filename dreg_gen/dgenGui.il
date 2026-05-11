@@ -83,6 +83,23 @@
 (unless (boundp 'dgen_currentCustomVars) (setq dgen_currentCustomVars nil))
 (unless (boundp 'dgen_preserveCvs)       (setq dgen_preserveCvs       nil))
 
+; Pending form geometry to apply on the next dgenOpenGUI call. One-shot:
+; consumed (and cleared) at form display. Set by dgen_captureFormGeometry
+; which is called inside dgenGui_deferredReopen just before hiFormCancel,
+; so that any user drag/resize done before clicking [Load Pins] /
+; [+ Digital] / [+ Analog] / [Delete] survives the close-reopen.
+;
+; Both stay nil on first dgenOpenGUI in a session -> form opens at the
+; default position/size, matching pre-feature behaviour.
+;
+; Ref: skuiref.pdf p.719 (hiGetFormLocation), p.720 (hiGetFormSize),
+;      p.688 (hiDisplayForm with location arg), p.813 (hiSetFormSize).
+;      Slot-level introspection failed live (form->x etc. all nil); only
+;      the four functions above expose form geometry — see memory
+;      reference_skill_form_runtime.md for the IC6.1.8 spike record.
+(unless (boundp 'dgen_pendingFormLoc)  (setq dgen_pendingFormLoc  nil))
+(unless (boundp 'dgen_pendingFormSize) (setq dgen_pendingFormSize nil))
+
 ; ---------------------------------------------------------------------------
 ; Private helpers (pin metadata + pin field id mapping)
 ; ---------------------------------------------------------------------------
@@ -1173,6 +1190,74 @@
         (setq i (add1 i)))))
   t)
 
+; -------- Form-geometry capture / restore -------------------------------
+;
+; Snapshot the currently-displayed dgen_form's screen position + pixel
+; size into the module-level pending slots. Called from
+; dgenGui_deferredReopen just before hiFormCancel so the post-reopen
+; form lands where the user left it. Wrapped in errset so a stale or
+; partially-displayed form record can't error out the close path.
+
+(defun dgen_captureFormGeometry ()
+  (when (and (boundp 'dgen_form) dgen_form)
+    (let ((locR (errset (hiGetFormLocation dgen_form) t))
+          (szR  (errset (hiGetFormSize     dgen_form) t)))
+      ; errset wraps success in a 1-element list; unwrap via car. nil on
+      ; failure (form record not displayed yet, etc.) -> keep pending nil.
+      (when locR (setq dgen_pendingFormLoc  (car locR)))
+      (when szR  (setq dgen_pendingFormSize (car szR)))))
+  t)
+
+; Apply pending geometry (if any) to a freshly-instantiated form. Called
+; from the two hiDisplayForm sites in dgenOpenGUI. Pending slots are
+; consumed (cleared to nil) here so each capture cycles through cleanly:
+; capture -> close -> reopen -> consume -> stable until next capture.
+;
+; hiSetFormSize must run AFTER hiInstantiateForm; per the doc it's a
+; no-op on a non-instantiated form. hiDisplayForm accepts the location
+; as its second positional argument.
+
+(defun dgen_displayFormApplyPending (form formSym "gs")
+  (let ((pendingLoc dgen_pendingFormLoc)
+        (pendingSize dgen_pendingFormSize))
+    (setq dgen_pendingFormLoc  nil)
+    (setq dgen_pendingFormSize nil)
+    (when pendingSize
+      (errset (hiSetFormSize form pendingSize) t))
+    (cond
+      (pendingLoc (hiDisplayForm formSym pendingLoc))
+      (t          (hiDisplayForm formSym)))))
+
+; -------- In-place pin-label refresh ------------------------------------
+;
+; Rewrites each per-pin BooleanButton's visible label to reflect a fresh
+; classification pass against the supplied patterns. Used by the Edit
+; Patterns OK path to avoid the previous close-reopen flicker.
+;
+; Mechanism: SKILL stores the ?buttonText creation-time arg on the field
+; record's `prompt` slot. Writing to ->prompt at runtime via evalstring
+; updates the visible label immediately -- verified live against IC6.1.8
+; (see memory reference_skill_form_runtime.md). The infix `=` is required
+; because (setq form->field->prompt ...) rejects the slot-chain LHS.
+;
+; No-op when no DUT is loaded (dgen_currentPins is nil) or the field
+; record is missing (defensive against rare close-reopen race).
+
+(defun dgenGui_refreshPinLabels (pats "g")
+  (when dgen_currentPins
+    (let ((i 0))
+      (foreach p dgen_currentPins
+        (let ((cat (dgenPatternsClassify p pats))
+              (display (dgen_pinDisplayName p)))
+          (errset
+            (evalstring (sprintf nil
+              "dgen_form->%s->prompt = %L"
+              (dgen_pinEnableId i)
+              (dgen_pinButtonText display cat)))
+            t))
+        (setq i (add1 i)))))
+  t)
+
 ; -------- Edit Patterns secondary form ---------------------------------
 ;
 ; Standalone modal-ish form for editing the keyword dictionary. Two
@@ -1314,15 +1399,18 @@
 
 ; ---- Editor callbacks ----
 
-; OK: serialize the two MLT fields, write the patterns file, and trigger
-; a main-form rebuild so the [PWR]/[DREG] prefix labels reflect the new
-; dictionary. The mid-form pin enable / default state is preserved via
-; the dgen_readForm + last-state snapshot + dgen_preserveCvs path -- the
-; same plumbing that survives [+ Digital] / [+ Analog] / [Load Pins].
+; OK: serialize the two MLT fields, write the patterns file, and refresh
+; visible pin-row labels in-place. No close-reopen, no flicker, no loss of
+; position / size / pin-enable state -- the form keeps everything else.
+;
+; The refresh walks dgen_currentPins, classifies each against the new
+; dictionary, and writes the resulting [PWR]/[DREG]/<bare> prefix into
+; the field's prompt slot (which is where ?buttonText lands at creation
+; time; see dgenGui_refreshPinLabels header for the IC6.1.8 confirmation).
 ;
 ; Returns t so Cadence dismisses the editor automatically.
 (defun dgenGui_patternsEditorOkCB (editorForm "g")
-  (let (powerTxt dregTxt newPats sp src)
+  (let (powerTxt dregTxt newPats)
     (setq powerTxt (or (dgen_fieldVal editorForm 'dgenPat_powerList) ""))
     (setq dregTxt  (or (dgen_fieldVal editorForm 'dgenPat_dregList)  ""))
     (setq newPats (list nil
@@ -1330,27 +1418,7 @@
       'power (dgenPat_parseTextarea powerTxt)
       'dreg  (dgenPat_parseTextarea dregTxt)))
     (dgenPatternsSave newPats)
-    ; If main form is open with a DUT, snapshot + close-reopen so the
-    ; visible prefix labels refresh. The errset shields the editor OK
-    ; path from any inner-error cascade in the snapshot/timer chain --
-    ; saving patterns is the user's primary intent, refreshing the main
-    ; form is the secondary effect.
-    (when (and dgen_form dgen_currentPins
-               dgen_currentDutLib dgen_currentDutCell)
-      (errset
-        (progn
-          (setq sp (dgen_readForm dgen_form dgen_currentPins))
-          (setq src (get sp 'source))
-          (dgenSaveLastState
-            (dgen_specToLastState sp dgen_currentDutCell)
-            src)
-          (setq dgen_preserveCvs t)
-          (hiRegTimer
-            (sprintf nil "(dgenGui_deferredReopen \"%s\" \"%s\" \"%s\")"
-              dgen_currentDutLib dgen_currentDutCell
-              (or dgen_currentDutView "symbol"))
-            1))
-        t))
+    (dgenGui_refreshPinLabels newPats)
     t))
 
 (defun dgenGui_patternsEditorCancelCB (editorForm "g")
@@ -1484,6 +1552,10 @@
 ;      hiDeleteForm which only free the record).
 (defun dgenGui_deferredReopen (lib cell view "ttt")
   (when (and (boundp 'dgen_form) dgen_form)
+    ; Snapshot pos+size BEFORE hiFormCancel destroys the window. Stage 2
+    ; (dgen_actuallyOpenGUI -> dgenOpenGUI) consumes the pending slots
+    ; when calling dgen_displayFormApplyPending.
+    (dgen_captureFormGeometry)
     (errset (hiFormCancel dgen_form) t))
   (hiRegTimer
     (sprintf nil "(dgen_actuallyOpenGUI \"%s\" \"%s\" \"%s\")" lib cell view)
@@ -1870,7 +1942,7 @@
             ; target side -- target view is fixed/inferred by callers).
             ; Probed live: 2-arg call returns t cleanly (skuiref.pdf p.495).
             (errset (ddHiLinkFields form->dgen_tgtLib form->dgen_tgtCell) t)
-            (hiDisplayForm 'dgen_form)
+            (dgen_displayFormApplyPending form 'dgen_form)
             'dgen_form)))
       (t
         ; DUT-less path. Reset per-pin state. Pre-fill combos from v2
@@ -1903,7 +1975,7 @@
           ?buttonLayout 'OKCancelDefApply))
         (hiInstantiateForm form)
         (errset (ddHiLinkFields form->dgen_srcLib form->dgen_srcCell form->dgen_srcView) t)
-        (hiDisplayForm 'dgen_form)
+        (dgen_displayFormApplyPending form 'dgen_form)
         'dgen_form))))
 
 ; ---------------------------------------------------------------------------

@@ -98,9 +98,17 @@ via `%L` + `lineread` (same shape as `dreg_gen.last`).
 
 `[Edit Patterns...]` opens a separate form with two multi-line text
 fields (one power keyword per line, one dreg keyword per line) plus a
-`Reset to Defaults` button. OK saves to disk and triggers a main-form
-close-reopen so the visible `[PWR]`/`[DREG]` prefix labels refresh.
-Cancel discards without saving.
+`Reset to Defaults` button. OK saves to disk and refreshes the visible
+`[PWR]`/`[DREG]` prefix labels **in place** via direct `->prompt` slot
+writes — no main-form rebuild, no position/size loss. Cancel discards.
+
+The remaining close-reopen paths (Load Pins, customVar add/del,
+Select from Schematic) preserve window position and size across the
+cycle: `dgenGui_deferredReopen` snapshots `hiGetFormLocation` +
+`hiGetFormSize` before `hiFormCancel`, and the next `dgenOpenGUI`
+applies them via `hiSetFormSize` + `hiDisplayForm` with the saved
+location. So a resized + repositioned window stays put through
+button clicks within a session.
 
 ## Critical ordering rules
 
