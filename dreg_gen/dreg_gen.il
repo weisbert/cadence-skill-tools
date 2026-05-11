@@ -35,6 +35,7 @@
 (let ((d dreg_genDir))
   (load (strcat d "dgenPinScan.il"))    ; data layer: scan DUT pins
   (load (strcat d "dgenStore.il"))      ; spec serialization + last-state
+  (load (strcat d "dgenPatterns.il"))   ; pin classification + keyword dict
   (load (strcat d "dgenSymbol.il"))     ; symbol generator
   (load (strcat d "dgenVerilogA.il"))   ; .va writer
   (load (strcat d "dgenCDF.il"))        ; CDF parameter wirer
