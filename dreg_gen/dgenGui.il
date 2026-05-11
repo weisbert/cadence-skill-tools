@@ -592,6 +592,36 @@
             (list 0 y) sizePt promptW)
       fields))
     (setq y (plus y rowH))
+    ; Mode-button toolbar: a row of one-click prefill actions sitting
+    ; right above the per-pin rows. All four are stringly-typed callbacks
+    ; (defun bodies live further down in the Callbacks section). Buttons
+    ; are no-ops when no DUT is loaded; in that state we render nothing.
+    (when pins
+      (setq fields (cons
+        (list (hiCreateButton ?name 'dgen_btnAllPins
+                ?buttonText "All Pins"
+                ?callback "(dgenGui_modeAllCB dgen_form)")
+              (list 0 y) (list 85 rowH) 0)
+        fields))
+      (setq fields (cons
+        (list (hiCreateButton ?name 'dgen_btnNoPins
+                ?buttonText "No Pins"
+                ?callback "(dgenGui_modeNoneCB dgen_form)")
+              (list 90 y) (list 85 rowH) 0)
+        fields))
+      (setq fields (cons
+        (list (hiCreateButton ?name 'dgen_btnOnlyDreg
+                ?buttonText "Only DREG"
+                ?callback "(dgenGui_modeOnlyDregCB dgen_form)")
+              (list 180 y) (list 95 rowH) 0)
+        fields))
+      (setq fields (cons
+        (list (hiCreateButton ?name 'dgen_btnAutoSuggest
+                ?buttonText "Auto Suggest"
+                ?callback "(dgenGui_modeAutoSuggestCB dgen_form)")
+              (list 280 y) (list 105 rowH) 0)
+        fields))
+      (setq y (plus y rowH)))
     ; Per-pin rows.
     (let ((litMode (equal (or (get currentSpec 'defaultMode) "literal") "literal")))
       (setq i 0)
@@ -1059,6 +1089,79 @@
 ; and read at OK time by dgen_readForm.
 (defun dgenGui_patternCB (field scope newValue "ggg")
   (dgen_updatePreview)
+  t)
+
+; -------- Mode-button callbacks (toolbar above pin rows) ---------------
+;
+; Four one-click buttons let the user prefill the pin enable column
+; without clicking each row:
+;   [All Pins]     -> every enable -> t
+;   [No Pins]      -> every enable -> nil
+;   [Only DREG]    -> enable iff dgenPatternsClassify returns 'dreg
+;   [Auto Suggest] -> 'dreg -> t, 'power -> nil, 'other -> factory
+;                     default (direction-based via dgen_factoryEnabledP)
+;
+; Each callback walks dgen_currentPins and writes
+; dgen_form->dgen_pin_en_<i>->value via evalstring. The form-> ->value
+; chain only parses with literal symbols, so when the field name is
+; constructed at runtime evalstring is the documented escape hatch --
+; same pattern used at line ~417 (preview update) and ~1367-1369
+; (Select-from-Schematic picker fill).
+;
+; All four are no-ops when no DUT is loaded (dgen_currentPins is nil)
+; and likewise no-op if the corresponding form field record is missing
+; (defensive against close-reopen races).
+
+(defun dgenGui_modeAllCB (form "g")
+  (when dgen_currentPins
+    (let ((i 0))
+      (foreach _p dgen_currentPins
+        (evalstring (sprintf nil
+          "dgen_form->%s->value = t" (dgen_pinEnableId i)))
+        (setq i (add1 i)))))
+  t)
+
+(defun dgenGui_modeNoneCB (form "g")
+  (when dgen_currentPins
+    (let ((i 0))
+      (foreach _p dgen_currentPins
+        (evalstring (sprintf nil
+          "dgen_form->%s->value = nil" (dgen_pinEnableId i)))
+        (setq i (add1 i)))))
+  t)
+
+(defun dgenGui_modeOnlyDregCB (form "g")
+  (when dgen_currentPins
+    (let ((pats (dgenPatternsLoad)) (i 0))
+      (foreach p dgen_currentPins
+        (let ((on (equal (dgenPatternsClassify p pats) 'dreg)))
+          (evalstring (sprintf nil
+            "dgen_form->%s->value = %s"
+            (dgen_pinEnableId i) (if on "t" "nil"))))
+        (setq i (add1 i)))))
+  t)
+
+; Auto Suggest: best-guess classifier-driven prefill.
+;   'dreg  -> t   (digital control input -- the whole point of dreg_gen)
+;   'power -> nil (rail; user shouldn't drive it)
+;   'other -> dgen_factoryEnabledP (input -> t, otherwise nil)
+; 'other falls back to direction so unclassified inputs still default
+; on, matching the pre-feature behavior the user had before this
+; classifier existed -- a tactical "do no harm" default.
+(defun dgenGui_modeAutoSuggestCB (form "g")
+  (when dgen_currentPins
+    (let ((pats (dgenPatternsLoad)) (i 0))
+      (foreach p dgen_currentPins
+        (let ((cat (dgenPatternsClassify p pats)) on)
+          (setq on
+            (cond
+              ((equal cat 'dreg)  t)
+              ((equal cat 'power) nil)
+              (t                  (dgen_factoryEnabledP p))))
+          (evalstring (sprintf nil
+            "dgen_form->%s->value = %s"
+            (dgen_pinEnableId i) (if on "t" "nil"))))
+        (setq i (add1 i)))))
   t)
 
 ; -------- Picker callbacks ---------------------------------------------
