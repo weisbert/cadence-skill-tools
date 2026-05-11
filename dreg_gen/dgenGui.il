@@ -59,12 +59,29 @@
 (unless (boundp 'dgen_currentDutView) (setq dgen_currentDutView nil))
 
 ; CustomVars list captured at GUI-open time. Parallel to dgen_currentPins:
-; callbacks index into this for per-row field IDs. Reset on every
-; dgenOpenGUI call. Empty list when DUT-less or no customVars defined.
+; callbacks index into this for per-row field IDs. Empty list when
+; DUT-less or no customVars defined.
+;
 ; A "customVar" is a user-added entry: (nil 'name N 'kind "digital"|"analog"
 ; 'isBus t/nil 'busHi int 'busLo int 'default "0"|"1.8"). See dgenStore.il
 ; SPEC SHAPE comment for the field-by-field contract.
+;
+; PERSISTENCE POLICY. customVars are session-transient by design -- pin
+; configuration is DUT-derived and worth keeping across opens, but
+; customVars are user-typed for a specific generation run and resetting
+; on every user-initiated open is the desired UX. The list survives ONLY
+; the internal close-reopen triggered by [+ Digital] / [+ Analog] /
+; [Delete] (those callbacks set dgen_preserveCvs to t). Every other path
+; -- user clicks OK / Cancel / X-close / Load Pins for a new DUT, or
+; reopens via the MyTool menu -- starts with an empty list.
+;
+; dgen_preserveCvs is a one-shot flag: set by add/del callbacks before
+; the deferred reopen, consumed (and cleared) at the start of the next
+; dgenOpenGUI invocation. So even Cancel + reopen-via-menu gives a clean
+; slate -- the flag was consumed by the deferred-reopen that came before
+; the Cancel.
 (unless (boundp 'dgen_currentCustomVars) (setq dgen_currentCustomVars nil))
+(unless (boundp 'dgen_preserveCvs)       (setq dgen_preserveCvs       nil))
 
 ; ---------------------------------------------------------------------------
 ; Private helpers (pin metadata + pin field id mapping)
@@ -290,10 +307,11 @@
         (setq rawMode (or (get lastState 'defaultMode)    (get factorySpec 'defaultMode)))
         (setq rawPat  (or (get lastState 'defaultPattern) (get factorySpec 'defaultPattern)))
         (setq migrated (dgen_migrateModePattern rawMode rawPat))
-        ; CustomVars round-trip verbatim from lastState. v1/v2 files
-        ; have no 'customVarStates key so get returns nil = empty list,
-        ; which is the right answer (no customVars defined yet).
-        (setq curCvs (or (get lastState 'customVarStates) nil))
+        ; CustomVars are NOT pulled from lastState -- they're session-
+        ; transient by design (see dgen_currentCustomVars header comment
+        ; for the policy). resolveCurrentSpec always returns customVars=nil;
+        ; dgenOpenGUI splices in dgen_currentCustomVars after this call
+        ; depending on dgen_preserveCvs.
         (list nil
           'source       src
           'target       (list nil
@@ -304,7 +322,7 @@
           'defaultMode    (car  migrated)
           'defaultPattern (cadr migrated)
           'pins           curPins
-          'customVars     curCvs)))))
+          'customVars     nil)))))
 
 ; Helper: read (key value) pair from spec-pin-list at given pin name.
 (defun dgen_pinFieldOr (pins pinName key fallback "ltsg")
@@ -793,21 +811,17 @@
       (setq pinStates (cons
         (list (get p 'name) (get p 'enabled) (or (get p 'default) "0"))
         pinStates)))
-    ; CustomVars are not DUT-derived (user-typed in the GUI), so we save
-    ; them verbatim rather than mapping through a "states" tuple shape
-    ; like pinStates does. The plists already carry name/kind/isBus/busHi/
-    ; busLo/default which is exactly what dgen_resolveCurrentSpec needs to
-    ; rehydrate them on the next open. v1/v2 readers see this as an
-    ; unknown key and skip it -- forward-compatible per dgenStore.il
-    ; schema policy.
+    ; CustomVars are session-transient (see dgen_currentCustomVars
+    ; header). They are NOT written to lastState -- the file only
+    ; carries persistent DUT/pin configuration so reopening across
+    ; Virtuoso sessions gives the user a clean customVars slate.
     (list nil
       'targetLib       (get tgt 'lib)
       'targetCellTpl   tpl
       'dvddDefault     (get spec 'dvddDefault)
       'defaultMode     (get spec 'defaultMode)
       'defaultPattern  (get spec 'defaultPattern)
-      'pinStates       (reverse pinStates)
-      'customVarStates (or (get spec 'customVars) nil))))
+      'pinStates       (reverse pinStates))))
 
 ; ---------------------------------------------------------------------------
 ; Callbacks
@@ -954,6 +968,11 @@
         (setq sp     (dgen_readForm form dgen_currentPins))
         (setq newCvs (append (get sp 'customVars) (list (dgen_cvFactoryEntry kind))))
         (setq dgen_currentCustomVars newCvs)
+        ; Raise the preserve flag so the deferred reopen below keeps the
+        ; new cv list across the form rebuild. dgenOpenGUI consumes
+        ; (clears) this flag, so a subsequent user-initiated open won't
+        ; see it.
+        (setq dgen_preserveCvs t)
         (setq updated (dgen_specWithCustomVars sp newCvs))
         (setq src    (get updated 'source))
         (errset (dgenSaveLastState
@@ -975,6 +994,10 @@
         (setq sp     (dgen_readForm form dgen_currentPins))
         (setq newCvs (dgen_listRemoveAt (get sp 'customVars) idx))
         (setq dgen_currentCustomVars newCvs)
+        ; Same one-shot preserve flag as dgenGui_addCvCB -- the reduced
+        ; cv list (after deletion) survives the form rebuild but does
+        ; NOT leak into the next user-initiated open.
+        (setq dgen_preserveCvs t)
         (setq updated (dgen_specWithCustomVars sp newCvs))
         (setq src    (get updated 'source))
         (errset (dgenSaveLastState
@@ -1485,10 +1508,21 @@
               'customVars     nil))
             (setq lastState (dgenLoadLastState))
             (setq currentSpec (dgen_resolveCurrentSpec factorySpec lastState dutCell))
-            ; Mirror currentSpec~>customVars into the module-state list so
-            ; per-row callbacks (Delete) and dgen_readForm index against
-            ; the same shape that dgen_buildMiddleFields just laid out.
-            (setq dgen_currentCustomVars (or (get currentSpec 'customVars) nil))
+            ; CustomVars: consume the one-shot dgen_preserveCvs flag.
+            ; Set to t by [+ Digital]/[+ Analog]/[Delete] callbacks just
+            ; before they schedule the deferred reopen -- preserves the
+            ; user's in-flight edits across the close-rebuild cycle.
+            ; All other paths leave the flag at nil so the form opens with
+            ; a clean customVars slate (per the policy in the
+            ; dgen_currentCustomVars header comment).
+            (cond
+              ((and (boundp 'dgen_preserveCvs) dgen_preserveCvs) nil)
+              (t (setq dgen_currentCustomVars nil)))
+            (setq dgen_preserveCvs nil)
+            ; Splice the resolved customVars list (kept or freshly nil-ed
+            ; above) into currentSpec so dgen_buildMiddleFields lays out
+            ; the right rows -- it iterates (get currentSpec 'customVars).
+            (setq currentSpec (dgen_specWithCustomVars currentSpec dgen_currentCustomVars))
             (setq fields (dgen_buildFields factorySpec currentSpec))
             (setq title (sprintf nil "Dreg Generator -- %s/%s" dutLib dutCell))
             ; OK/Cancel callbacks wrap the cleanup via progn so any

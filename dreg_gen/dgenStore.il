@@ -4,20 +4,22 @@
 ; Last-state schema:
 ;   v1 (legacy): plist with targetLib, targetCellTpl, dvddDefault, defaultMode,
 ;                defaultPattern, pinStates. No 'schemaVersion key.
-;   v2          : v1 + 'schemaVersion 2 + 'lastDutLib / 'lastDutCell / 'lastDutView.
-;   v3 (current): v2 + 'customVarStates (list of customVar plists; absent in v1/v2 = empty list).
+;   v2 (current): v1 + 'schemaVersion 2 + 'lastDutLib / 'lastDutCell / 'lastDutView.
+;
+; History note: a v3 schema briefly added 'customVarStates so customVars
+; would round-trip across opens. That was rolled back -- customVars are
+; session-transient by design (see dgen_currentCustomVars in dgenGui.il)
+; and the last-state file only carries persistent DUT/pin configuration.
+; Old last-state files that still contain 'customVarStates are read
+; verbatim and the field is silently ignored (forward-compatible).
 ;
 ; Migration policy: silent forward-only.
 ;   - Reader returns the plist verbatim; consumers use `get` so missing fields
 ;     read as nil. v1 files therefore yield nil for lastDutLib/Cell/View, which
-;     is the desired fallback. v1/v2 files yield nil for customVarStates which
-;     the GUI treats as empty list. Future v4+ fields are also returned
-;     verbatim and ignored by current consumers.
+;     is the desired fallback. Future v3+ fields are also returned verbatim and
+;     ignored by current consumers.
 ;   - Writer always stamps 'schemaVersion 2 (auto-injected if not already in
-;     the input plist) -- v3 fields are additive plist entries on top of v2 so
-;     the version stamp stays at 2 and old GUIs reading new files just skip
-;     'customVarStates harmlessly. (No v3-specific reader/writer functions
-;     are needed -- presence of the 'customVarStates key IS the version probe.)
+;     the input plist).
 ;
 ; SPEC SHAPE (in-memory; not the same as last-state file shape):
 ;   spec is a plist:
