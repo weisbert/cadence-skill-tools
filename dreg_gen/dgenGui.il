@@ -621,6 +621,15 @@
                 ?callback "(dgenGui_modeAutoSuggestCB dgen_form)")
               (list 280 y) (list 105 rowH) 0)
         fields))
+      ; Edit Patterns opens the secondary keyword-dictionary editor.
+      ; Lives on the same toolbar row so the toolbar reads as one
+      ; coherent "act on classification" group.
+      (setq fields (cons
+        (list (hiCreateButton ?name 'dgen_btnEditPatterns
+                ?buttonText "Edit Patterns..."
+                ?callback "(dgenGui_editPatternsCB dgen_form)")
+              (list 395 y) (list 115 rowH) 0)
+        fields))
       (setq y (plus y rowH)))
     ; Per-pin rows.
     (let ((litMode (equal (or (get currentSpec 'defaultMode) "literal") "literal")))
@@ -1163,6 +1172,203 @@
             (dgen_pinEnableId i) (if on "t" "nil"))))
         (setq i (add1 i)))))
   t)
+
+; -------- Edit Patterns secondary form ---------------------------------
+;
+; Standalone modal-ish form for editing the keyword dictionary. Two
+; multi-line text fields (one per category) plus a Reset-to-Defaults
+; button. OK writes to ~/.skill_tools/dreg_gen.patterns and triggers a
+; close-reopen of the main form so the [PWR]/[DREG] prefix labels pick
+; up the new dictionary. Cancel discards without saving.
+;
+; Form handle stored in a module-level binding so the Reset callback
+; can write back into the two MLT fields via the evalstring escape
+; hatch (same pattern as dgen_form -- the form->field->value chain
+; only parses with a literal symbol).
+;
+; Ref: skuiref.pdf p.502 (hiCreateAppForm), p.602 (hiCreateMLTextField),
+;      p.767 (hiInstantiateForm), p.688 (hiDisplayForm).
+;      sklangref.pdf p.165 (parseString), p.158 (buildString),
+;      p.191 (pcreReplace).
+
+(unless (boundp 'dgenPat_editorForm) (setq dgenPat_editorForm nil))
+
+; ---- Keyword-list text serialization helpers ----
+
+; List-of-strings -> single string with "\n" between entries. Empty list
+; yields the empty string (the MLT field shows blank, which is the right
+; UX -- not a literal "()").
+(defun dgenPat_listToText (lst "l")
+  (cond
+    ((null lst) "")
+    (t (buildString lst "\n"))))
+
+; Trim leading/trailing whitespace from a string. SKILL has no built-in;
+; pcreReplace on a precompiled pattern is the project-standard pcre-only
+; idiom (no rexReplace per feedback_skill_pcre_over_rex.md). \s in PCRE
+; matches space + tab + form-feed / etc., which is what we want for
+; sloppy user input.
+(defun dgenPat_trim (s "t")
+  (let ((p (pcreCompile "^\\s+|\\s+$")))
+    (pcreReplace p s "" 0)))
+
+; Text-area content -> list of trimmed, non-empty keywords. parseString
+; with "\n" splits the textarea content per line; we then drop blanks
+; and dedupe-by-first-occurrence so a stray empty line in the editor
+; doesn't end up as a match-everything entry (dgenPatternsMatchKw also
+; skips blanks defensively, but cleaning at parse time keeps the saved
+; file tidy).
+(defun dgenPat_parseTextarea (text "t")
+  (let (lines out trimmed seen)
+    (setq lines (parseString text "\n"))
+    (setq seen (makeTable 'dgenPat_seen nil))
+    (foreach l lines
+      (setq trimmed (dgenPat_trim l))
+      (when (and (greaterp (strlen trimmed) 0)
+                 (null seen[trimmed]))
+        (setarray seen trimmed t)
+        (setq out (cons trimmed out))))
+    (reverse out)))
+
+; ---- Form builder ----
+
+(defun dgenPatternsEditorBuild (pats "g")
+  (let (fields y rowH labelW mlW mlH)
+    (setq fields nil)
+    (setq y 0)
+    (setq rowH 28)
+    (setq labelW 0)            ; prompt label width baked into MLT
+    (setq mlW 360)
+    (setq mlH 220)
+    ; Header label as a read-only string field (mirrors the customVars
+    ; header pattern; hiCreateLabel works too but the read-only string
+    ; field aligns better with the rest of the dreg_gen forms).
+    (setq fields (cons
+      (list (hiCreateStringField
+              ?name 'dgenPat_header
+              ?prompt "Edit Patterns"
+              ?defValue ""
+              ?value "One keyword per line. Matching is prefix-anchored, case-insensitive."
+              ?editable nil)
+            (list 0 y) (list mlW rowH) 100)
+      fields))
+    (setq y (plus y rowH 6))
+    ; Power keywords block.
+    (setq fields (cons
+      (list (hiCreateMLTextField
+              ?name 'dgenPat_powerList
+              ?prompt "Power keywords"
+              ?value (dgenPat_listToText (get pats 'power))
+              ?defValue (dgenPat_listToText (dgenPatternsDefaultPower))
+              ?hasVerticalScrollbar t
+              ?hasHorizontalScrollbar nil
+              ?enableWordWrap t)
+            (list 0 y) (list mlW mlH) 100)
+      fields))
+    (setq y (plus y mlH 8))
+    ; DREG keywords block.
+    (setq fields (cons
+      (list (hiCreateMLTextField
+              ?name 'dgenPat_dregList
+              ?prompt "DREG keywords"
+              ?value (dgenPat_listToText (get pats 'dreg))
+              ?defValue (dgenPat_listToText (dgenPatternsDefaultDreg))
+              ?hasVerticalScrollbar t
+              ?hasHorizontalScrollbar nil
+              ?enableWordWrap t)
+            (list 0 y) (list mlW mlH) 100)
+      fields))
+    (setq y (plus y mlH 6))
+    ; Reset button -- rewrites the two MLT field values in-place to the
+    ; built-in defaults. Does NOT save -- user still has to click OK.
+    (setq fields (cons
+      (list (hiCreateButton
+              ?name 'dgenPat_btnReset
+              ?buttonText "Reset to Defaults"
+              ?callback "(dgenGui_patternsEditorResetCB dgenPat_editorForm)")
+            (list 0 y) (list 140 rowH) 0)
+      fields))
+    (reverse fields)))
+
+(defun dgenPatternsEditorOpen ()
+  (let (pats fields form)
+    (setq pats (dgenPatternsLoad))
+    (setq fields (dgenPatternsEditorBuild pats))
+    (setq form (hiCreateAppForm
+      ?name 'dgenPat_editorForm
+      ?formTitle "Dreg Generator -- Edit Pin Classification Patterns"
+      ?fields fields
+      ?callback (list "(dgenGui_patternsEditorOkCB dgenPat_editorForm)"
+                      "(dgenGui_patternsEditorCancelCB dgenPat_editorForm)")
+      ?buttonLayout 'OKCancelDef))
+    (hiInstantiateForm form)
+    (hiDisplayForm 'dgenPat_editorForm)
+    'dgenPat_editorForm))
+
+; Main-form callback: route the [Edit Patterns...] toolbar click into
+; the editor opener. Stringly callback -- form arg unused but kept for
+; signature symmetry with the other mode buttons.
+(defun dgenGui_editPatternsCB (form "g")
+  (dgenPatternsEditorOpen)
+  t)
+
+; ---- Editor callbacks ----
+
+; OK: serialize the two MLT fields, write the patterns file, and trigger
+; a main-form rebuild so the [PWR]/[DREG] prefix labels reflect the new
+; dictionary. The mid-form pin enable / default state is preserved via
+; the dgen_readForm + last-state snapshot + dgen_preserveCvs path -- the
+; same plumbing that survives [+ Digital] / [+ Analog] / [Load Pins].
+;
+; Returns t so Cadence dismisses the editor automatically.
+(defun dgenGui_patternsEditorOkCB (editorForm "g")
+  (let (powerTxt dregTxt newPats sp src)
+    (setq powerTxt (or (dgen_fieldVal editorForm 'dgenPat_powerList) ""))
+    (setq dregTxt  (or (dgen_fieldVal editorForm 'dgenPat_dregList)  ""))
+    (setq newPats (list nil
+      'schemaVersion 1
+      'power (dgenPat_parseTextarea powerTxt)
+      'dreg  (dgenPat_parseTextarea dregTxt)))
+    (dgenPatternsSave newPats)
+    ; If main form is open with a DUT, snapshot + close-reopen so the
+    ; visible prefix labels refresh. The errset shields the editor OK
+    ; path from any inner-error cascade in the snapshot/timer chain --
+    ; saving patterns is the user's primary intent, refreshing the main
+    ; form is the secondary effect.
+    (when (and dgen_form dgen_currentPins
+               dgen_currentDutLib dgen_currentDutCell)
+      (errset
+        (progn
+          (setq sp (dgen_readForm dgen_form dgen_currentPins))
+          (setq src (get sp 'source))
+          (dgenSaveLastState
+            (dgen_specToLastState sp dgen_currentDutCell)
+            src)
+          (setq dgen_preserveCvs t)
+          (hiRegTimer
+            (sprintf nil "(dgenGui_deferredReopen \"%s\" \"%s\" \"%s\")"
+              dgen_currentDutLib dgen_currentDutCell
+              (or dgen_currentDutView "symbol"))
+            1))
+        t))
+    t))
+
+(defun dgenGui_patternsEditorCancelCB (editorForm "g")
+  t)
+
+; Reset: blow away the two MLT field values with the built-in defaults.
+; The user still has to click OK to persist; clicking Cancel after Reset
+; abandons the reset, matching the "Cancel always discards" contract.
+(defun dgenGui_patternsEditorResetCB (editorForm "g")
+  (let ((powerTxt (dgenPat_listToText (dgenPatternsDefaultPower)))
+        (dregTxt  (dgenPat_listToText (dgenPatternsDefaultDreg))))
+    ; %L on a string yields a SKILL string literal (with quoting); using
+    ; %s would corrupt embedded backslashes / quotes if the user ever
+    ; pastes oddball content into the textarea. The defaults are
+    ; alphanumeric so this is defensive rather than necessary.
+    (evalstring (sprintf nil "dgenPat_editorForm->dgenPat_powerList->value = %L" powerTxt))
+    (evalstring (sprintf nil "dgenPat_editorForm->dgenPat_dregList->value  = %L" dregTxt))
+    t))
 
 ; -------- Picker callbacks ---------------------------------------------
 

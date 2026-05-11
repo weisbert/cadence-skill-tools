@@ -15,6 +15,7 @@ schematic / Maestro / ADE-XL window). Step 8 (packaging, GitHub tag) is pending.
 |------|----------------|---------|
 | `dgenPinScan.il` | `dgenScanPins(libName cellName viewName)` | Open source cellview, return list of pin descriptor plists. Bus parsing (`D<7:0>`, `D<3>`, `D`) and bit-decomposed merge included. |
 | `dgenStore.il` | `dgenSpecToString` / `dgenStringToSpec`, `dgenSavePropOnCell` / `dgenLoadPropFromCell`, `dgenSaveLastState` / `dgenLoadLastState` | Spec serialization, cell-property round-trip (`dgenConfig` prop), last-state file at `~/.skill_tools/dreg_gen.last`. |
+| `dgenPatterns.il` | `dgenPatternsClassify(pin pats)`, `dgenPatternsLoad`, `dgenPatternsSave`, `dgenPatternsDefault` | Pin classification engine. Returns `'power` / `'dreg` / `'other` for each DUT pin from name + direction. Keyword dictionary at `~/.skill_tools/dreg_gen.patterns` (auto-falls-back to baked-in default). |
 | `dgenSymbol.il` | `dgenWriteSymbol(spec [outLib outCell])` | Generate symbol view via `schPinListToSymbolGen`, all pins as direction `"output"` (right-side placement). Includes write-lock post-condition check. |
 | `dgenVerilogA.il` | `dgenWriteVerilogA(spec [outLib outCell])` | Write `veriloga.va` + `master.tag` into the cell's `veriloga/` dir, refresh lib via `ddUpdateLibList`, add cell to "dreg" category. |
 | `dgenCDF.il` | `dgenWriteCDF(spec [outLib outCell])` | Build cell-level base CDF (`cdfCreateBaseCellCDF` + `cdfCreateParam` × N + `cdfSaveCDF`). 4 `defaultMode` options + a defensive legacy branch. |
@@ -57,6 +58,49 @@ scalar shape if a buggy spec carries `'isBus t` on an analog item).
 
 `outputLib` / `outputCell` args, when non-nil, override `spec~>target~>lib` /
 `spec~>target~>cell` for that single call.
+
+## Pin auto-categorization
+
+Each DUT pin row in the GUI carries a category prefix on its checkbox
+label (`[PWR] VDD`, `[DREG] EN<3:0>`, bare name otherwise) so the user
+can scan supply rails vs. control inputs at a glance. Above the pin
+list, a five-button toolbar drives one-click prefill actions:
+
+| Button | Effect |
+|--------|--------|
+| `All Pins` | Every enable -> t |
+| `No Pins` | Every enable -> nil |
+| `Only DREG` | Enable iff classifier returns `'dreg` |
+| `Auto Suggest` | `'dreg` -> t, `'power` -> nil, `'other` -> direction default |
+| `Edit Patterns...` | Open a secondary form to edit the keyword dictionary |
+
+Classification (in `dgenPatterns.il`) priority, first match wins:
+
+1. `srcDirection == "output"` -> `'other` (outputs aren't drivable inputs)
+2. name matches power keyword -> `'power`
+3. `isBus == t` -> `'dreg` (multi-bit -> digital bus)
+4. name matches dreg keyword -> `'dreg`
+5. `srcDirection == "inputOutput"` -> `'power` (rail fallback)
+6. otherwise -> `'other`
+
+Matching is PCRE, case-insensitive, with a token-boundary anchor:
+`(?:^|[\W_])KEYWORD`. PCRE's `\b` treats `_` as a word char, so
+`\bVDD` would miss `core_VDD`; the custom boundary catches `_VDD`
+while still rejecting `myVDD` / `XVDD`.
+
+Default keyword lists are conservative -- ambiguous names like `VREF`,
+`VBG`, `VBIAS`, `IBIAS` are NOT in the default power list because
+they're often DC-swept analog inputs in characterization testbenches.
+Add them via `[Edit Patterns...]` if your flow treats them as
+untouchable. The dictionary is persisted to
+`~/.skill_tools/dreg_gen.patterns` as a SKILL plist that round-trips
+via `%L` + `lineread` (same shape as `dreg_gen.last`).
+
+`[Edit Patterns...]` opens a separate form with two multi-line text
+fields (one power keyword per line, one dreg keyword per line) plus a
+`Reset to Defaults` button. OK saves to disk and triggers a main-form
+close-reopen so the visible `[PWR]`/`[DREG]` prefix labels refresh.
+Cancel discards without saving.
 
 ## Critical ordering rules
 
@@ -174,6 +218,7 @@ Manual (if you need to skip a module):
 base = "/home/yusheng/cadence_work/Test/workarea/skill_tools/dreg_gen/"
 load(strcat(base "dgenPinScan.il"))
 load(strcat(base "dgenStore.il"))
+load(strcat(base "dgenPatterns.il"))
 load(strcat(base "dgenSymbol.il"))
 load(strcat(base "dgenVerilogA.il"))
 load(strcat(base "dgenCDF.il"))
