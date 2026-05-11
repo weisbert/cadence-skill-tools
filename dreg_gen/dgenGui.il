@@ -58,6 +58,14 @@
 (unless (boundp 'dgen_currentDutLib) (setq dgen_currentDutLib nil))
 (unless (boundp 'dgen_currentDutView) (setq dgen_currentDutView nil))
 
+; CustomVars list captured at GUI-open time. Parallel to dgen_currentPins:
+; callbacks index into this for per-row field IDs. Reset on every
+; dgenOpenGUI call. Empty list when DUT-less or no customVars defined.
+; A "customVar" is a user-added entry: (nil 'name N 'kind "digital"|"analog"
+; 'isBus t/nil 'busHi int 'busLo int 'default "0"|"1.8"). See dgenStore.il
+; SPEC SHAPE comment for the field-by-field contract.
+(unless (boundp 'dgen_currentCustomVars) (setq dgen_currentCustomVars nil))
+
 ; ---------------------------------------------------------------------------
 ; Private helpers (pin metadata + pin field id mapping)
 ; ---------------------------------------------------------------------------
@@ -81,6 +89,107 @@
 
 (defun dgen_pinDefaultId (idx "n")
   (concat 'dgen_pin_def_ idx))
+
+; Per-customVar field ids. Parallel to dgen_pin*Id. Kind is not stored in
+; a per-row widget -- it lives in dgen_currentCustomVars[idx]['kind] and is
+; fixed at row creation time (clicking [+ Digital] vs [+ Analog]).
+(defun dgen_cvNameId    (idx "n") (concat 'dgen_cv_name_ idx))
+(defun dgen_cvDefaultId (idx "n") (concat 'dgen_cv_def_  idx))
+
+; Validate the customVars list against the enabled pin list. Returns nil
+; on success, or an error-message string on the first problem found
+; (one-at-a-time so the user fixes them sequentially; dialog box is
+; clearer than a multi-error dump).
+;
+; Checks:
+;   1. name non-empty
+;   2. no whitespace / no characters that would break .va port names
+;      (basic alnum + underscore only -- bus syntax already stripped at
+;      readForm time for digital; analog never bus)
+;   3. analog default parses as a real (digital validated by atoi
+;      fallback in the emitter; only analog has a strict format because
+;      "0" silently meaning "0.0V" is a real possibility)
+;   4. no collision with another customVar's name
+;   5. no collision with an ENABLED DUT pin's name
+;
+; A disabled DUT pin can be shadowed safely (it doesn't make it to the
+; .va port list), so the pin-collision check filters to enabled.
+(defun dgen_validateCustomVars (spec "g")
+  (let (cvs pins names cv nm kind dflt msg seen pinName seenAlready)
+    (setq cvs  (or (get spec 'customVars) nil))
+    (setq pins (get spec 'pins))
+    (setq names nil)
+    (setq msg nil)
+    (foreach cv cvs
+      (when (null msg)
+        (setq nm   (or (get cv 'name) ""))
+        (setq kind (or (get cv 'kind) "digital"))
+        (setq dflt (or (get cv 'default) ""))
+        (cond
+          ((equal nm "")
+            (setq msg "Custom variable has an empty name. Fill it in or delete the row."))
+          ((null (rexMatchp "^[A-Za-z_][A-Za-z0-9_]*$" nm))
+            (setq msg (sprintf nil
+              "Custom variable name '%s' is not a legal Verilog identifier (use letters/digits/underscore, no whitespace)."
+              nm)))
+          ((and (equal kind "analog")
+                (null (rexMatchp "^-?[0-9]+\\(\\.[0-9]+\\)?$" dflt)))
+            (setq msg (sprintf nil
+              "Analog custom variable '%s' has non-numeric value '%s'. Use a real literal like 1.8."
+              nm dflt)))
+          (t
+            ; Collision detection.
+            (setq seenAlready nil)
+            (foreach prior names
+              (when (equal prior nm) (setq seenAlready t)))
+            (cond
+              (seenAlready
+                (setq msg (sprintf nil
+                  "Two custom variables named '%s'. Rename one." nm)))
+              (t
+                (foreach p pins
+                  (when (and (null msg)
+                             (get p 'enabled)
+                             (equal (get p 'name) nm))
+                    (setq msg (sprintf nil
+                      "Custom variable '%s' shadows enabled DUT pin '%s'. Rename or delete the custom variable."
+                      nm nm))))
+                (setq names (cons nm names))))))))
+    msg))
+
+; List-mutation helper: return a copy of `lst` with the element at 0-based
+; `idx` removed. Used by dgenGui_delCvCB to drop one customVar from the
+; current list before the deferred reopen rebuilds the form.
+(defun dgen_listRemoveAt (lst idx "ln")
+  (let (out (i 0))
+    (foreach el lst
+      (unless (equal i idx) (setq out (cons el out)))
+      (setq i (add1 i)))
+    (reverse out)))
+
+; Return a copy of `spec` with its 'customVars slot replaced by `cvs`.
+; SKILL has no plist-put; we rebuild from the known spec field set. Used
+; by the add/del callbacks before save+reopen so the new customVars list
+; round-trips through dgenSaveLastState.
+(defun dgen_specWithCustomVars (spec cvs "gl")
+  (list nil
+    'source         (get spec 'source)
+    'target         (get spec 'target)
+    'dvddDefault    (get spec 'dvddDefault)
+    'defaultMode    (get spec 'defaultMode)
+    'defaultPattern (get spec 'defaultPattern)
+    'pins           (get spec 'pins)
+    'customVars     cvs))
+
+; Build a fresh customVar plist for [+ Digital] / [+ Analog]. Initial name
+; is empty (user types it next); default value matches kind convention
+; (digital 0/1 -> "0"; analog volts -> "1.8" as a reasonable rail).
+(defun dgen_cvFactoryEntry (kind "t")
+  (list nil
+    'name    ""
+    'kind    kind
+    'isBus   nil
+    'default (cond ((equal kind "analog") "1.8") (t "0"))))
 
 ; ---------------------------------------------------------------------------
 ; Mode <-> label translation + legacy mode migration
@@ -137,13 +246,14 @@
 ; name. Default factory tpl is "dreg_*".
 (defun dgen_resolveCurrentSpec (factorySpec lastState dutCell "ggt")
   (let (src tgt curPins tpl tplApplied factoryPins pinStates match
-        rawMode rawPat migrated)
+        rawMode rawPat migrated curCvs)
     (setq src (get factorySpec 'source))
     (setq tgt (get factorySpec 'target))
     (setq factoryPins (get factorySpec 'pins))
     (cond
       ((null lastState)
-        factorySpec)
+        ; No saved state: factory pins + empty customVars list.
+        (append factorySpec (list 'customVars nil)))
       (t
         (setq tpl (or (get lastState 'targetCellTpl) "dreg_*"))
         (cond
@@ -173,6 +283,10 @@
         (setq rawMode (or (get lastState 'defaultMode)    (get factorySpec 'defaultMode)))
         (setq rawPat  (or (get lastState 'defaultPattern) (get factorySpec 'defaultPattern)))
         (setq migrated (dgen_migrateModePattern rawMode rawPat))
+        ; CustomVars round-trip verbatim from lastState. v1/v2 files
+        ; have no 'customVarStates key so get returns nil = empty list,
+        ; which is the right answer (no customVars defined yet).
+        (setq curCvs (or (get lastState 'customVarStates) nil))
         (list nil
           'source       src
           'target       (list nil
@@ -182,7 +296,8 @@
           'dvddDefault    (or (get lastState 'dvddDefault)    (get factorySpec 'dvddDefault))
           'defaultMode    (car  migrated)
           'defaultPattern (cadr migrated)
-          'pins           curPins)))))
+          'pins           curPins
+          'customVars     curCvs)))))
 
 ; Helper: read (key value) pair from spec-pin-list at given pin name.
 (defun dgen_pinFieldOr (pins pinName key fallback "ltsg")
@@ -467,6 +582,94 @@
             fields))
           (setq y (plus y rowH)))
         (setq i (add1 i))))
+
+    ; Custom Variables section. Header label, one row per customVar (name
+    ; field + default field + Delete button), then [+ Digital] / [+ Analog]
+    ; at the bottom. Iterates dgen_currentCustomVars (set by dgenOpenGUI
+    ; from currentSpec~>customVars) so the per-row field IDs match what
+    ; dgen_readForm later indexes on. cv-row default field is NOT gated by
+    ; defaultMode the way per-pin rows are -- customVars sit alongside the
+    ; auto-mode pin defaults but the user-typed analog literal (e.g. 1.8)
+    ; is meaningful even in variable_pin / custom modes (the parameter
+    ; emitted into the .va is `parameter real v_X = 1.8;` regardless).
+    (let ((cvs (or (get currentSpec 'customVars) nil))
+          (header "Custom Variables"))
+      (setq fields (cons
+        (list (hiCreateStringField
+                ?name 'dgen_cvHeader
+                ?prompt header
+                ?defValue ""
+                ?value (cond
+                  ((null cvs) "(none) -- click [+ Digital] or [+ Analog] below to add")
+                  (t (sprintf nil "%d defined" (length cvs))))
+                ?editable nil)
+              (list 0 y) (list 360 rowH) 130)
+        fields))
+      (setq y (plus y rowH))
+      (setq i 0)
+      (foreach cv cvs
+        (let ((nameId (dgen_cvNameId i))
+              (defId  (dgen_cvDefaultId i))
+              (kindTag (cond ((equal (get cv 'kind) "analog") "[A]")
+                             (t                                "[D]")))
+              (curName (or (cond
+                             ; Re-emit digital bus syntax so the user sees
+                             ; the same string they typed (XX_ctrl<3:0>),
+                             ; not the parsed base name.
+                             ((and (get cv 'isBus) (nequal (get cv 'kind) "analog"))
+                               (sprintf nil "%s<%d:%d>"
+                                 (get cv 'name) (get cv 'busHi) (get cv 'busLo)))
+                             (t (get cv 'name)))
+                           ""))
+              (curDef  (or (get cv 'default) "")))
+          ; Name field. Prompt is "[D]" or "[A]" so the kind is obvious
+          ; without a separate cyclic widget. Digital accepts XX<hi:lo>
+          ; bus syntax; analog accepts a bare name (bus syntax is ignored
+          ; at read time -- see dgen_readForm).
+          (setq fields (cons
+            (list (hiCreateStringField
+                    ?name nameId
+                    ?prompt kindTag
+                    ?defValue ""
+                    ?value curName)
+                  (list 0 y) (list 200 rowH) 30)
+            fields))
+          ; Default field.
+          (setq fields (cons
+            (list (hiCreateStringField
+                    ?name defId
+                    ?prompt "value"
+                    ?defValue ""
+                    ?value curDef)
+                  (list 210 y) (list 100 rowH) 50)
+            fields))
+          ; Delete button. Stringly callback embeds idx so the click
+          ; fires (dgenGui_delCvCB dgen_form <idx>).
+          (setq fields (cons
+            (list (hiCreateButton
+                    ?name (concat 'dgen_cv_del_ i)
+                    ?buttonText "Delete"
+                    ?callback (sprintf nil "(dgenGui_delCvCB dgen_form %d)" i))
+                  (list 320 y) (list 60 rowH) 0)
+            fields))
+          (setq y (plus y rowH)))
+        (setq i (add1 i)))
+      ; [+ Digital] / [+ Analog] buttons.
+      (setq fields (cons
+        (list (hiCreateButton
+                ?name 'dgen_btnAddDigital
+                ?buttonText "+ Digital"
+                ?callback "(dgenGui_addCvCB dgen_form \"digital\")")
+              (list 0 y) (list 100 rowH) 0)
+        fields))
+      (setq fields (cons
+        (list (hiCreateButton
+                ?name 'dgen_btnAddAnalog
+                ?buttonText "+ Analog"
+                ?callback "(dgenGui_addCvCB dgen_form \"analog\")")
+              (list 110 y) (list 100 rowH) 0)
+        fields))
+      (setq y (plus y rowH)))
     (reverse fields)))
 
 ; Compatibility wrapper kept so test_step5_auto.il (and any external
@@ -506,7 +709,8 @@
 ; build time). Caller MUST guarantee pins is non-nil (i.e. DUT loaded);
 ; with no DUT there are no pin fields and dgen_readForm has nothing to do.
 (defun dgen_readForm (form pins "gl")
-  (let (srcLib srcCell srcView tgtLib tgtCell dvdd mode pattern outPins i pin enabled deflt)
+  (let (srcLib srcCell srcView tgtLib tgtCell dvdd mode pattern outPins
+        i pin enabled deflt outCvs cv cvName cvDef cvKind parsed)
     (setq srcLib   (dgen_fieldVal form 'dgen_srcLib))
     (setq srcCell  (dgen_fieldVal form 'dgen_srcCell))
     (setq srcView  (dgen_fieldVal form 'dgen_srcView))
@@ -530,13 +734,39 @@
         (append pin (list 'enabled enabled 'default deflt))
         outPins))
       (setq i (add1 i)))
+    ; Read customVars rows. dgen_currentCustomVars holds the kind for
+    ; each idx (set at row creation); we only re-read user-editable
+    ; fields (name + default). For digital rows, run the name through
+    ; dgenParseBusName so "XX_ctrl<3:0>" comes back split into name +
+    ; bus dims (matching how dgenScanPins handles auto-discovered bus
+    ; pins). For analog rows, take the name literally -- the GUI prompt
+    ; tag "[A]" tells the user not to type bus syntax, and the emitter
+    ; defensively drops 'isBus on analog anyway.
+    (setq outCvs nil)
+    (setq i 0)
+    (foreach cv dgen_currentCustomVars
+      (setq cvKind (or (get cv 'kind) "digital"))
+      (setq cvName (or (dgen_fieldVal form (dgen_cvNameId i)) ""))
+      (setq cvDef  (or (dgen_fieldVal form (dgen_cvDefaultId i)) ""))
+      (cond
+        ((equal cvKind "analog")
+          (setq outCvs (cons
+            (list nil 'name cvName 'kind "analog" 'isBus nil 'default cvDef)
+            outCvs)))
+        (t
+          (setq parsed (dgenParseBusName cvName))
+          (setq outCvs (cons
+            (append parsed (list 'kind "digital" 'default cvDef))
+            outCvs))))
+      (setq i (add1 i)))
     (list nil
       'source       (list nil 'lib srcLib 'cell srcCell 'view srcView)
       'target       (list nil 'lib tgtLib 'cell tgtCell 'view "veriloga")
       'dvddDefault  dvdd
       'defaultMode  mode
       'defaultPattern pattern
-      'pins         (reverse outPins))))
+      'pins         (reverse outPins)
+      'customVars   (reverse outCvs))))
 
 ; Build a last-state plist from current spec + form. The targetCellTpl
 ; reverses the DUT-cell substitution: if tgtCell starts with "dreg_" + dutCell,
@@ -556,13 +786,21 @@
       (setq pinStates (cons
         (list (get p 'name) (get p 'enabled) (or (get p 'default) "0"))
         pinStates)))
+    ; CustomVars are not DUT-derived (user-typed in the GUI), so we save
+    ; them verbatim rather than mapping through a "states" tuple shape
+    ; like pinStates does. The plists already carry name/kind/isBus/busHi/
+    ; busLo/default which is exactly what dgen_resolveCurrentSpec needs to
+    ; rehydrate them on the next open. v1/v2 readers see this as an
+    ; unknown key and skip it -- forward-compatible per dgenStore.il
+    ; schema policy.
     (list nil
       'targetLib       (get tgt 'lib)
       'targetCellTpl   tpl
       'dvddDefault     (get spec 'dvddDefault)
       'defaultMode     (get spec 'defaultMode)
       'defaultPattern  (get spec 'defaultPattern)
-      'pinStates       (reverse pinStates))))
+      'pinStates       (reverse pinStates)
+      'customVarStates (or (get spec 'customVars) nil))))
 
 ; ---------------------------------------------------------------------------
 ; Callbacks
@@ -586,8 +824,29 @@
         ?buttonLayout 'Close)
       nil)
     (t
-      (let (spec msg srcPlist tgtLib tgtCell cellOk oaPath oaOk libObj)
+      (let (spec msg srcPlist tgtLib tgtCell cellOk oaPath oaOk libObj cvErr)
         (setq spec (dgen_readForm form dgen_currentPins))
+        ; CustomVars validation happens BEFORE dgenRun so a bad name /
+        ; empty value / collision halts at the GUI boundary rather than
+        ; producing a broken cellview that the user has to delete by
+        ; hand. dgen_validateCustomVars returns nil on success or an
+        ; error string on the first problem; surface it in a warning
+        ; dialog and bail without touching disk.
+        ;
+        ; SKILL has no defun-level early-return; we gate the rest of the
+        ; body on cvErr being nil rather than calling (return ...) which
+        ; only works inside prog / loop constructs.
+        (setq cvErr (dgen_validateCustomVars spec))
+        (cond
+          (cvErr
+            (hiDisplayAppDBox
+              ?name 'dgen_cvErrDBox
+              ?dboxBanner "Dreg Generator -- Custom Variables"
+              ?dboxText cvErr
+              ?dialogType hicWarningDialog
+              ?buttonLayout 'Close)
+            nil)
+          (t
         (setq tgtLib  (get (get spec 'target) 'lib))
         (setq tgtCell (get (get spec 'target) 'cell))
         ; Run the orchestrator -- errset suppresses the inner-error
@@ -659,11 +918,65 @@
               ?dboxText msg
               ?dialogType hicWarningDialog
               ?buttonLayout 'Close)
-            nil))))))
+            nil))))))))   ; close inner-cond t-branch + inner-cond + cvErr-cond t-branch + cvErr-cond + let + outer-cond t-branch + outer-cond + defun
 
 ; Cancel callback. Form auto-closes; nothing else to do.
 (defun dgenGui_cancelCB (form "g")
   t)
+
+; [+ Digital] / [+ Analog] callback. Reads current form state, appends a
+; fresh customVar of the requested kind, persists via dgenSaveLastState,
+; and schedules the same deferred close+reopen pattern that [Load Pins]
+; uses so the new row renders without any "Cannot delete a form from
+; within the form's callback" warning. Same DUT -- we pass
+; dgen_currentDut{Lib,Cell,View} to the reopen.
+;
+; No-op + warn dialog when DUT-less (consistent with dgenGui_okCB).
+(defun dgenGui_addCvCB (form kind "gt")
+  (cond
+    ((null dgen_currentPins)
+      (hiDisplayAppDBox
+        ?name 'dgen_cvWarnDBox
+        ?dboxBanner "Dreg Generator"
+        ?dboxText "Load a DUT first. Custom Variables are stored alongside the DUT's pin selections."
+        ?dialogType hicWarningDialog
+        ?buttonLayout 'Close)
+      nil)
+    (t
+      (let (sp newCvs src updated)
+        (setq sp     (dgen_readForm form dgen_currentPins))
+        (setq newCvs (append (get sp 'customVars) (list (dgen_cvFactoryEntry kind))))
+        (setq dgen_currentCustomVars newCvs)
+        (setq updated (dgen_specWithCustomVars sp newCvs))
+        (setq src    (get updated 'source))
+        (errset (dgenSaveLastState
+                  (dgen_specToLastState updated dgen_currentDutCell) src) t)
+        (hiRegTimer
+          (sprintf nil "(dgenGui_deferredReopen \"%s\" \"%s\" \"%s\")"
+            dgen_currentDutLib dgen_currentDutCell dgen_currentDutView)
+          1)
+        t))))
+
+; [Delete] per-row callback. Drops customVar at 0-based idx, persists,
+; deferred reopen. idx is embedded into the stringly callback at form-
+; build time (see dgen_buildMiddleFields).
+(defun dgenGui_delCvCB (form idx "gn")
+  (cond
+    ((null dgen_currentPins) nil)  ; DUT-less -> no customVar rows exist
+    (t
+      (let (sp newCvs src updated)
+        (setq sp     (dgen_readForm form dgen_currentPins))
+        (setq newCvs (dgen_listRemoveAt (get sp 'customVars) idx))
+        (setq dgen_currentCustomVars newCvs)
+        (setq updated (dgen_specWithCustomVars sp newCvs))
+        (setq src    (get updated 'source))
+        (errset (dgenSaveLastState
+                  (dgen_specToLastState updated dgen_currentDutCell) src) t)
+        (hiRegTimer
+          (sprintf nil "(dgenGui_deferredReopen \"%s\" \"%s\" \"%s\")"
+            dgen_currentDutLib dgen_currentDutCell dgen_currentDutView)
+          1)
+        t))))
 
 ; defaultMode-change callback. Per-pin "value" fields only used when
 ; mode = "literal"; disable them under other modes. Cyclic-field
@@ -1161,9 +1474,14 @@
               'dvddDefault    "0.9"
               'defaultMode    "literal"
               'defaultPattern "d_*"
-              'pins           pins))
+              'pins           pins
+              'customVars     nil))
             (setq lastState (dgenLoadLastState))
             (setq currentSpec (dgen_resolveCurrentSpec factorySpec lastState dutCell))
+            ; Mirror currentSpec~>customVars into the module-state list so
+            ; per-row callbacks (Delete) and dgen_readForm index against
+            ; the same shape that dgen_buildMiddleFields just laid out.
+            (setq dgen_currentCustomVars (or (get currentSpec 'customVars) nil))
             (setq fields (dgen_buildFields factorySpec currentSpec))
             (setq title (sprintf nil "Dreg Generator -- %s/%s" dutLib dutCell))
             ; OK/Cancel callbacks wrap the cleanup via progn so any
@@ -1194,6 +1512,7 @@
         ; last-state when present (don't auto-render -- wait for user
         ; to confirm via [Load Pins] / [Select from Schematic] / [Browse]).
         (setq dgen_currentPins nil)
+        (setq dgen_currentCustomVars nil)
         (setq dgen_currentDutCell nil)
         (setq dgen_currentDutLib nil)
         (setq dgen_currentDutView nil)
