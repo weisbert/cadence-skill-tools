@@ -16,8 +16,10 @@
 ;      根因 + 修复历史见 simkit DECISIONS #60 (2026-05-18).
 ;
 ; 环境变量:
-;   SKILLBRIDGE_PYTHON   - python 解释器, 默认 /usr/bin/python3
-;                          (本机无裸 'python', 必须绝对路径)
+;   SKILLBRIDGE_PYTHON   - python 解释器绝对路径; 显式覆盖.
+;                          未设置时, sbFindPython() 自动从 PATH 搜索
+;                          python3 / python3.11 / ... / python.
+;                          PATH 上也没有时 -> error() 中止 load.
 ;
 ; 幂等: pyStartServer 自身在已运行时打印 "server is already
 ; running" 并返回 nil; 重复 load 本文件不会重启 server.
@@ -49,6 +51,40 @@ procedure( sbIsAxlWorker()
     )
 )
 
+; -----------------------------------------------------------------
+; sbFindPython -- locate a Python 3.x interpreter on PATH without
+; requiring the user to setenv SKILLBRIDGE_PYTHON.
+;
+; Strategy: one shell invocation tries a `||` cascade of `command -v`
+; calls and prints the first hit. Returns the trimmed absolute path,
+; or nil if none of the candidate names resolve.
+;
+; Why a hand-unrolled `||` chain instead of a `for n in ...; do ...
+; done` loop: ipcBeginProcess substitutes `$VARNAME` references in
+; its command string BEFORE handing it to /bin/sh (verified via live
+; bridge probe 2026-05-19), so any shell-loop using `$n` ends up
+; running the body with `n=""`. `$(...)` command substitution is NOT
+; affected -- only `$VARNAME` is. The `|| true` trailer keeps overall
+; exit 0 so ipcReadProcess returns the empty-string output cleanly on
+; full miss; pcreReplace strips trailing newline before the caller
+; sees it.
+; -----------------------------------------------------------------
+procedure( sbFindPython()
+    let( (proc out trimmed)
+        proc = ipcBeginProcess(
+            "sh -c 'command -v python3 || command -v python3.11 || command -v python3.10 || command -v python3.9 || command -v python3.8 || command -v python || true'"
+        )
+        ipcWait(proc)
+        out = ipcReadProcess(proc)
+        if( and( stringp(out)  strlen(out) > 0 ) then
+            trimmed = pcreReplace(pcreCompile("\\s+$") out "" 0)
+            if( strlen(trimmed) > 0 then trimmed else nil )
+        else
+            nil
+        )
+    )
+)
+
 let( (_thisFile _thisDir _serverIl _python)
 
     ; self-locate: 同款写法见兄弟文件 python_server.il 第 3 行
@@ -74,10 +110,17 @@ let( (_thisFile _thisDir _serverIl _python)
     if( sbIsAxlWorker()
         printf("[skillbridge] axl worker VM detected (cmdline has -axlChildIdFlag); skipping pyStartServer\n")
         progn(
+            ; Python resolution:
+            ;   1. SKILLBRIDGE_PYTHON env var (explicit override)
+            ;   2. sbFindPython() walks PATH for python3/python3.11/.../python
+            ;   3. both fail -> error() with actionable message
             ; Ref: sklangref.pdf p.627 (getShellEnvVar)
             _python = getShellEnvVar("SKILLBRIDGE_PYTHON")
             when( or( null(_python)  equal(_python "") )
-                _python = "/usr/bin/python3"
+                _python = sbFindPython()
+            )
+            when( or( null(_python)  equal(_python "") )
+                error("[skillbridge] no Python 3.x found. Set SKILLBRIDGE_PYTHON=/abs/path/to/python, or add python3 to PATH (e.g. `module load python/3.11`) before launching Virtuoso.")
             )
 
             pyStartServer( ?python _python )
