@@ -4,7 +4,12 @@
 (design + verified API citations + decisions) and `README.md` (user-facing
 status). This file = current state + how to continue.
 
-Last updated: 2026-06-19.
+Last updated: 2026-06-20.
+
+> **Committed.** M3b (resizable pcell symbol) is built, live-verified, and
+> committed to `main` (`nhCore.il`, `nhGui.il`, `README.md`, `HANDOFF.md`) —
+> on top of `1e43443` (M1+M3). Not pushed (repo convention = direct to main,
+> push when the user asks). Next up: **M4**.
 
 ## Where we are
 
@@ -21,6 +26,13 @@ annotations. Built and **live-verified on IC6.1.8** (not just static review):
 - ✅ **M3 — symbol output mode.** `Output=symbol` builds a reusable symbol in
   the current schematic's lib (cell name from "Symbol cell" field), stamps
   `nlAction="ignore"`, 0 pins, then `dbCreateInst` places an instance.
+- ✅ **M3b — resizable (pcell) symbol mode.** `Output=symbol (resizable)`
+  builds a **self-contained schematicSymbol pcell** with one param `scale`.
+  Select the placed note + press `q` → edit "Size scale" → re-renders at the
+  new size. Body bakes the base IR and draws with `db` primitives only (no
+  `nh_*` calls) → renders/resizes with note_helper NOT loaded. nlAction
+  ignore, 0 pins, editable CDF `scale` param. Live-verified (×1→×2, self-
+  contained body confirmed, real table rendered).
 - ✅ **tsv2md** companion (pure Python+Tkinter, CLI fallback) — done, tested.
 - ⬜ **M4 — vector diagram SVG/DXF → lines** (next).
 - ⬜ **M5 — Excel import** (read displayed string).
@@ -42,6 +54,7 @@ note_helper/
 
 Public API: `nhOpenGUI`, `nhParseText`, `nh_buildIR`, `nhEmitTableAt`,
 `nhPlaceTable`, `nhBuildSymbol`, `nh_buildSymbolFromIR`, `nhPlaceTableAsSymbol`,
+`nhBuildResizableSymbol`, `nh_buildResizableFromIR`, `nh_pcellSource`,
 `nhSelfTest`.
 
 ## Verified facts (don't re-derive)
@@ -52,6 +65,19 @@ Public API: `nhOpenGUI`, `nhParseText`, `nh_buildIR`, `nhEmitTableAt`,
 - **Netlist-safety (verified):** `dbReplaceProp(symCv "nlAction" "string"
   "ignore")` IS honored — `ciIgnoreDevice(inst)` returns `t`; note symbol has
   0 pins/terminals. Doubly safe.
+- **Resizable note = self-contained pcell (verified, M3b):**
+  `pcDefinePCell(list(libId cell "symbol" "schematicSymbol") ((scale float 1.0))
+  body)`. View type `schematicSymbol` is valid. **Pcell body may use only
+  `db/dd/cdf/rod/tech` + basic SKILL — NOT `sch*`** (skpcellref p.27), so the
+  body draws with `dbCreateRect/Line/Label` on `("text" "drawing")` (the layer
+  the note shapes already use), font `fixed`, into `pcCellView`. We bake the
+  base-scale IR as a `%L` literal into the body and multiply every coord +
+  height by `scale` — exact because `nh_buildIR` is linear in font height.
+  `dbCreateInst` on the super master places a default-scale instance (0 pins).
+  Editable "Size scale" via `cdfCreateBaseCellCDF`+`cdfCreateParam(?editable
+  "t" ?display "t")` (these flags are STRINGS, not symbol `t`)+`cdfSaveCDF`.
+- **skillbridge gotcha (cost me time):** `ws['evalstring']` evaluates only the
+  FIRST top-level form. Wrap multi-statement probes in one `progn(...)`.
 - **Key APIs (all PDF-cited in REQUIREMENTS §11):** `schCreateNoteShape`/
   `schCreateNoteLabel` (work in schematic AND symbol cv), `enterPoint`
   (callback `(w done pts)`, point=`car(pts)`, guard on `done`),
@@ -82,9 +108,15 @@ Public API: `nhOpenGUI`, `nhParseText`, `nh_buildIR`, `nhEmitTableAt`,
 
 ## Scratch artifacts in `sim_yusheng` (user's lib)
 
-Created during testing — **`note_demo`** (keep, it's the demo the user is
-reviewing) plus test junk **`nh_scratch`, `nh_note_sym`, `nh_inst_test`**
-(user was asked whether to delete; pending). Don't leave more than needed.
+**Keep (present):** `note_demo` (M3 static-symbol demo), `nh_rs_host` + its
+master `nh_note_rs` (M3b resizable demo — open `nh_rs_host/schematic`, select a
+note, press `q`, edit "Size scale"; has ×1 and ×2 instances).
+
+**Probe junk — deleted** (2026-06-20): `nh_pc_host`, `nh_pc_probe`,
+`nh_pc_mini`, `nh_scratch`, `nh_note_sym`, `nh_inst_test`. Cleanup via
+`ddDeleteObj(ddGetObj(lib cell))` (skdfref p.1748). GOTCHA: `hiCloseWindow`
+on a modified-since-save cellview raises a "Save changes?" MODAL that wedges
+the bridge — `dbSave`/clear-modified before closing, or skip the window loop.
 
 ## Next step: M4 (vector SVG/DXF → lines)
 

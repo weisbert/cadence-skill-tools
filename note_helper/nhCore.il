@@ -410,6 +410,95 @@
     (nhPlaceSymbolInst master target)))
 
 ; ===========================================================================
+; Resizable symbol output (M3b): encapsulate the table as a SELF-CONTAINED
+; schematicSymbol PCELL whose single parameter `scale` proportionally resizes
+; the whole note. Select the placed instance and press q (Edit Object
+; Properties) -> edit "Size scale" -> the note re-renders at the new size.
+;
+; "Self-contained" = the pcell body bakes the base IR as a literal and draws
+; it with db primitives only (dbCreateRect / dbCreateLine / dbCreateLabel). It
+; calls NO nh_* helper, so a design carrying the note renders AND resizes
+; without note_helper being loaded -- only the pcell master cell must be
+; present, and it lives in the design's own library (same as any placed
+; symbol). note_helper is needed only to CREATE the note.
+;
+; The base IR is built at scale 1; multiplying every coordinate and font
+; height by `scale` is exactly a re-layout at fontHeight*scale, because
+; nh_buildIR is linear in font height -- so one knob scales text, cells,
+; padding and gaps together.
+;
+; Verified live IC6.1.8: a schematicSymbol pcell re-evaluates geometry from
+; the scale parameter (box width 4 @ s=1 -> 8 @ s=2, text scales with it); the
+; CDF param shows editable "Size scale" on the instance; dbCreateInst on the
+; (super) master places a default-scale instance with 0 pins.
+; Refs: pcDefinePCell skpcellref.pdf p.20 (schematicSymbol is a valid view
+;   type; body restricted to db/dd/cdf/rod/tech + basic SKILL, p.27; pcCellView
+;   is the body's cellview, p.29/143); dbCreateRect/Line/Label skdfref.pdf
+;   p.518/516/524; cdfCreateBaseCellCDF/cdfCreateParam/cdfSaveCDF skartistref
+;   p.952/955/963 (editable/display are STRING "t", not symbol t).
+; ===========================================================================
+
+; SKILL source of the self-contained pcell body. Only db + basic-SKILL calls
+; appear, so the saved master evaluates with nothing else loaded. `irLit` is
+; the base-scale IR rendered re-readably with %L; the body scales it by the
+; `scale` parameter at evaluation time.
+(defun nh_pcellSource (irLit symLib symCell)
+  (buildString
+    (list
+      "pcDefinePCell("
+      (strcat "  list( ddGetObj(\"" symLib "\") \"" symCell "\" \"symbol\" \"schematicSymbol\" )")
+      "  ( (scale float 1.0) )"
+      "  let( (cv s ir el p pts)"
+      "    cv = pcCellView"
+      "    s  = scale"
+      (strcat "    ir = '" irLit)
+      "    foreach( el ir"
+      "      if( eq(get(el 'kind) 'shape) then"
+      "        pts = foreach(mapcar p get(el 'points) list(times(s car(p)) times(s cadr(p))))"
+      "        if( equal(get(el 'stype) \"rectangle\")"
+      "          then dbCreateRect(cv list(\"text\" \"drawing\") pts)"
+      "          else dbCreateLine(cv list(\"text\" \"drawing\") pts) )"
+      "      else"
+      "        p = get(el 'point)"
+      "        dbCreateLabel(cv list(\"text\" \"drawing\")"
+      "          list(times(s car(p)) times(s cadr(p)))"
+      "          get(el 'text) get(el 'just) get(el 'orient) get(el 'font) times(s get(el 'height)))"
+      "      )"
+      "    )"
+      "  )"
+      ")")
+    "\n"))
+
+; Define the resizable-note pcell master from a base-scale IR, stamp it
+; non-netlisting, and attach an editable "Size scale" CDF parameter so q
+; (Edit Object Properties) exposes it. Returns the (super) master cellview,
+; usable straight away as a dbCreateInst master.
+(defun nh_buildResizableFromIR (ir symLib symCell)
+  (let (irLit src master cellId cdf)
+    (when (null ir) (error "note-helper: empty IR for resizable symbol"))
+    (setq irLit  (sprintf nil "%L" ir))
+    (setq src    (nh_pcellSource irLit symLib symCell))
+    (setq master (evalstring src))           ; one form -> the super master
+    (when (null master)
+      (error (strcat "note-helper: pcell define failed for " symLib "/" symCell)))
+    (errset (dbReplaceProp master "nlAction" "string" "ignore") t)
+    (dbSave master)
+    ; editable "Size scale" param (editable/display are strings, not symbol t)
+    (setq cellId (ddGetObj symLib symCell))
+    (when cellId
+      (setq cdf (cdfGetBaseCellCDF cellId))
+      (unless cdf (setq cdf (cdfCreateBaseCellCDF cellId)))
+      (when cdf
+        (errset (cdfCreateParam cdf ?name "scale" ?type "float" ?prompt "Size scale"
+                  ?defValue 1.0 ?editable "t" ?display "t") t)
+        (errset (cdfSaveCDF cdf) t)))
+    master))
+
+; Top-level: parse text -> base IR -> resizable pcell master (no placement).
+(defun nhBuildResizableSymbol (text symLib symCell @optional cfg)
+  (nh_buildResizableFromIR (nh_buildIR (nhParseText text) cfg) symLib symCell))
+
+; ===========================================================================
 ; Top-level conveniences
 ; ===========================================================================
 

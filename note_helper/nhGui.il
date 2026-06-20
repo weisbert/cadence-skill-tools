@@ -69,7 +69,7 @@
 ; Place: parse + build IR, then place either as loose shapes or as a symbol
 ; instance (both pick the spot with one click in the schematic).
 (defun nh_guiPlaceCB (form)
-  (let (mode res table cfg ir schCv lib symCell master)
+  (let (mode res table cfg ir schCv lib symCell master resizable)
     (setq mode (or form->nh_mode->value "loose shapes"))
     (setq res  (errset (nhParseText form->nh_input->value) t))
     (cond
@@ -82,9 +82,11 @@
         (cond
           ((null ir)
             (nh_setFieldVal "nh_form" 'nh_status "layout error -- see CIW"))
-          ((equal mode "symbol")
+          ((or (equal mode "symbol") (equal mode "symbol (resizable)"))
             ; build a reusable non-netlisting symbol in the current schematic's
-            ; library, then place an instance.
+            ; library, then place an instance. "symbol (resizable)" makes it a
+            ; self-contained pcell whose `scale` param resizes it later via q.
+            (setq resizable (equal mode "symbol (resizable)"))
             (setq schCv (geGetEditCellView))
             (cond
               ((null schCv)
@@ -94,13 +96,17 @@
                 (setq lib     schCv~>libName)
                 (setq symCell (or form->nh_symCell->value "nh_note"))
                 (when (equal symCell "") (setq symCell "nh_note"))
-                (setq master (errset (nh_buildSymbolFromIR (car ir) lib symCell) t))
+                (setq master (errset
+                  (if resizable
+                      (nh_buildResizableFromIR (car ir) lib symCell)
+                      (nh_buildSymbolFromIR    (car ir) lib symCell)) t))
                 (cond
                   ((null master)
                     (nh_setFieldVal "nh_form" 'nh_status "symbol build failed -- see CIW"))
                   (t
                     (nh_setFieldVal "nh_form" 'nh_status
-                      (sprintf nil "click to place symbol %s/%s" lib symCell))
+                      (sprintf nil "click to place %s %s/%s"
+                        (if resizable "resizable symbol (q to resize)" "symbol") lib symCell))
                     (nhPlaceSymbolInst (car master) schCv))))))
           (t
             ; loose note shapes
@@ -160,8 +166,8 @@
     ; --- output mode ---
     (setq fields (cons
       (list (hiCreateCyclicField ?name 'nh_mode ?prompt "Output"
-              ?choices (list "loose shapes" "symbol") ?value "loose shapes")
-            (list 0 y) (list 200 rowH) 110)
+              ?choices (list "loose shapes" "symbol" "symbol (resizable)") ?value "loose shapes")
+            (list 0 y) (list 230 rowH) 110)
       fields))
     (setq y (plus y rowH 4))
     ; --- symbol cell name (used only when Output = symbol) ---

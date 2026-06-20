@@ -8,7 +8,7 @@ the **MyTool** banner menu.
 See **[REQUIREMENTS.md](REQUIREMENTS.md)** for the full design, verified API
 citations, decisions, and the milestone plan.
 
-## Status — M1 + M3 (Feature B: table → loose shapes or symbol)
+## Status — M1 + M3 + M3b (Feature B: table → loose shapes / symbol / resizable symbol)
 
 Implemented (pure IL — no Python needed for the table path):
 
@@ -21,13 +21,23 @@ Implemented (pure IL — no Python needed for the table path):
   *entire* table proportionally — text, columns, rows, padding, and gaps all
   together (everything is derived from font height). Set it before placing
   (notes can't be uniformly rescaled after placement).
-- **Two output modes** (GUI "Output" cyclic):
+- **Three output modes** (GUI "Output" cyclic):
   - *loose shapes* (default) — note shapes drawn straight into the schematic.
   - *symbol* — the table is encapsulated as a reusable symbol (cell name from
     the "Symbol cell" field, built in the current schematic's library),
     stamped `nlAction="ignore"` and carrying **zero pins**, then placed as an
     instance with one click. Verified non-netlisting on live IC6.1.8:
     `ciIgnoreDevice(inst)` returns `t`; 0 terminals/pins.
+  - *symbol (resizable)* — same as *symbol*, but built as a **self-contained
+    pcell** with one parameter, `scale`. Select the placed note and press **q**
+    (Edit Object Properties) → change **"Size scale"** → the whole note
+    re-renders at the new size (text + cells + padding together). "Self-
+    contained" = the pcell body bakes the layout and draws it with `db`
+    primitives only, calling no `nh_*` helper, so the note **renders and
+    resizes without note_helper loaded** — only its master cell (which lives in
+    the design's own library, like any symbol) need be present. Verified live
+    IC6.1.8: geometry re-evaluates from `scale` (width ×1 → ×2), `scale` is an
+    editable CDF param on the instance, 0 pins.
 - Emits `schCreateNoteShape` + `schCreateNoteLabel` (both non-electrical).
 - One-click placement via `enterPoint` (the click sets the table's top-left).
 - Minimal `hi*` form (`nhOpenGUI`): input MLT, Parse status, font-height /
