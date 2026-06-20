@@ -24,6 +24,17 @@
 ; (mirrors dgen's nh_tmpFieldVal; see nhGui.il nh_setFieldVal).
 (unless (boundp 'nh_tmpVal) (setq nh_tmpVal nil))
 
+; Feature-A (vector import, M4) external-parser wiring. The SVG parser is a
+; standalone, Cadence-independent Python CLI (note_helper/svg2ir/nh_svg2ir.py)
+; invoked via system(); it writes a SKILL list literal of IR DPLs that the IL
+; side reads back with infile/read. Both are overridable (a site python3, a
+; relocated script) by setq-ing the global before/after loading.
+;   nh_pythonCmd   -- shell command that runs Python 3 (default "python3").
+;   nh_svg2irScript-- absolute path to nh_svg2ir.py; nil => derive from
+;                     note_helperDir at call time (nh_svg2irScriptPath).
+(unless (boundp 'nh_pythonCmd)    (setq nh_pythonCmd "python3"))
+(unless (boundp 'nh_svg2irScript) (setq nh_svg2irScript nil))
+
 ; ---------------------------------------------------------------------------
 ; Default styling config.
 ;   fontHeight  -- note label height, user units (schCreateNoteLabel default

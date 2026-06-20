@@ -8,7 +8,34 @@ the **MyTool** banner menu.
 See **[REQUIREMENTS.md](REQUIREMENTS.md)** for the full design, verified API
 citations, decisions, and the milestone plan.
 
-## Status — M1 + M3 + M3b (Feature B: table → loose shapes / symbol / resizable symbol)
+## Status — M1 + M3 + M3b (Feature B: tables) + M4 (Feature A: SVG vectors)
+
+### Feature A — vector diagram → lines (M4)
+
+Import an **SVG** figure and drop it into a schematic as pure note lines:
+
+- GUI: put the SVG path in **"SVG file"**, a target **"Figure width"** (user
+  units, aspect always preserved), pick the **Output** mode, and click
+  **Import SVG...** — then click once in the schematic to place it.
+- Handles `<path>` (with cubic/quadratic Béziers + elliptic arcs, flattened to
+  polylines), `<line>`, `<polyline>`, `<polygon>`, `<rect>`, `<circle>`,
+  `<ellipse>`, and `<text>`; honours `transform` chains; flips Y (SVG is
+  y-down, a schematic is y-up) and scales the whole figure uniformly to the
+  requested width.
+- A vector figure can go in as *loose shapes*, a *symbol*, or a *resizable
+  symbol* — the same three Output modes as tables (the IR is shared).
+- **How it runs:** the parser is a standalone, Cadence-independent Python CLI
+  (`svg2ir/nh_svg2ir.py`, standard library only — no third-party packages). The
+  IL side shells out to it with `system()`, the parser writes a SKILL list
+  literal of IR elements to a temp file, and the IL reads it straight back into
+  the shared emit core. No `skillbridge` is needed at run time.
+
+> ✅ **Live-verified on IC6.1.8** (2026-06-20): a real SVG (the *game-icons*
+> Mona Lisa, a single path of lines + Béziers) imported, flattened, scaled, and
+> rendered into a schematic as 9 note polylines — visually confirmed upright and
+> faithful to the source.
+
+### Feature B — table → note (M1 / M3 / M3b)
 
 Implemented (pure IL — no Python needed for the table path):
 
@@ -41,7 +68,8 @@ Implemented (pure IL — no Python needed for the table path):
 - Emits `schCreateNoteShape` + `schCreateNoteLabel` (both non-electrical).
 - One-click placement via `enterPoint` (the click sets the table's top-left).
 - Minimal `hi*` form (`nhOpenGUI`): input MLT, Parse status, font-height /
-  max-col / grid / output-mode fields, Parse + Place buttons.
+  max-col / grid / output-mode fields, SVG file + figure-width fields,
+  Parse + Place + Import SVG buttons.
 
 > ✅ **Live-verified on IC6.1.8** (2026-06-19): loads clean, Markdown + TSV
 > parse correct, layout emits the expected db objects, and a sample table was
@@ -51,7 +79,9 @@ Implemented (pure IL — no Python needed for the table path):
 > is set to 1.45 (was a 0.55 guess that made columns far too narrow). Column
 > widths also account for the larger header glyphs.
 
-Not yet implemented: vector diagrams (Feature A), Excel import.
+A raster image → SVG tracer (`img2svg`, see below) lets you bring screenshots
+and photos in too: trace → SVG → Import SVG. Not yet implemented: DXF vectors
+and Excel import.
 
 ## Load
 
@@ -72,11 +102,15 @@ load(".../skill_tools/note_helper/note_helper.il")
 - MyTool → **Note Helper**, or `nhOpenGUI()` in the CIW.
 - Paste a Markdown or TSV table, click **Parse** to sanity-check, then
   **Place...** and click once in the schematic.
+- For an SVG figure: type its path in **"SVG file"**, set **"Figure width"**,
+  then **Import SVG...** and click once to place.
 - Headless / scripting entry points:
   - `nhParseText(text)` → table model
   - `nh_buildIR(table cfg)` → IR
   - `nhEmitTableAt(text cv offset cfg)` → emit directly (no click)
   - `nhSelfTest()` → render a sample into the current edit cellview
+  - `nhImportVector(svgPath width)` → IR for an SVG figure
+  - `nhPlaceVector(svgPath width)` → import + one-click place
 
 Sample input:
 
@@ -100,8 +134,16 @@ python3 note_helper/verify_live.py
 It loads the plugin, exercises parse → layout, and (if a schematic edit
 cellview is open) emits a sample table and reports the shape count.
 
-## Companion: tsv2md
+## Companion tools (standalone, Cadence-independent)
 
-`tsv2md/tsv2md.py` — standalone, Cadence-independent (pure CPython + Tkinter):
-Excel `Ctrl+C` (TSV) → aligned Markdown → clipboard. GUI by default, CLI
-fallback (`--cli`, or pipe stdin). See `tsv2md/README.md`.
+- **`svg2ir/nh_svg2ir.py`** — the Feature-A SVG parser, standard library only.
+  Usable on its own: `nh_svg2ir.py in.svg out.il --width 5`. note_helper calls
+  it for you; documented in `svg2ir/README.md`.
+- **`img2svg/img2svg.py`** — raster image → line-art SVG (Pillow + numpy, no
+  potrace/OpenCV). Two modes: **threshold** (clean line art / diagrams /
+  silhouettes) and **edge** (photos, more detail). Trace a screenshot/photo,
+  save the SVG, then import it here. GUI (live preview) + CLI fallback. The
+  lossy raster step lives here, out of the SKILL core. See `img2svg/README.md`.
+- **`tsv2md/tsv2md.py`** — pure CPython + Tkinter: Excel `Ctrl+C` (TSV) →
+  aligned Markdown → clipboard. GUI by default, CLI fallback (`--cli`, or pipe
+  stdin). See `tsv2md/README.md`.

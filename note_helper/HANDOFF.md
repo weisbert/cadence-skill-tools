@@ -6,10 +6,13 @@ status). This file = current state + how to continue.
 
 Last updated: 2026-06-20.
 
-> **Committed.** M3b (resizable pcell symbol) is built, live-verified, and
-> committed to `main` (`nhCore.il`, `nhGui.il`, `README.md`, `HANDOFF.md`) —
-> on top of `1e43443` (M1+M3). Not pushed (repo convention = direct to main,
-> push when the user asks). Next up: **M4**.
+> **M4 + img2svg done, live-verified, NOT yet committed** (awaiting user OK).
+> New: `svg2ir/nh_svg2ir.py` (+README +samples/mona_lisa.svg), `img2svg/img2svg.py`
+> (+README +samples/shapes.png); edits to `nhStore.il` (parser wiring globals),
+> `nhCore.il` (vector-import section), `nhGui.il` (Import SVG button + shared
+> dispatch), `README.md`/`REQUIREMENTS.md`. M3b (resizable pcell symbol) is the
+> last committed work (`f2bbd38` on `main`). Repo convention = direct to main,
+> push when the user asks. Next up: **M5** (Excel) / DXF.
 
 ## Where we are
 
@@ -33,29 +36,40 @@ annotations. Built and **live-verified on IC6.1.8** (not just static review):
   `nh_*` calls) → renders/resizes with note_helper NOT loaded. nlAction
   ignore, 0 pins, editable CDF `scale` param. Live-verified (×1→×2, self-
   contained body confirmed, real table rendered).
+- ✅ **M4 — SVG vector → note lines.** `Import SVG...` (or `nhImportVector` /
+  `nhPlaceVector`) runs a standalone stdlib-only Python parser
+  (`svg2ir/nh_svg2ir.py`) via `system()`; it flattens paths/Béziers/arcs +
+  primitives + `<text>`, applies transforms, flips Y, scales uniformly to a
+  target width, and writes a **SKILL IR literal** that IL `read`s straight into
+  the shared emit core. A figure can land as loose shapes, a symbol, or a
+  resizable symbol (IR is shared with the table path). Live-verified IC6.1.8:
+  the game-icons Mona Lisa imported → 9 note polylines, rendered upright &
+  faithful. **DXF not done** (only SVG); raster→SVG deferred to a companion.
 - ✅ **tsv2md** companion (pure Python+Tkinter, CLI fallback) — done, tested.
-- ⬜ **M4 — vector diagram SVG/DXF → lines** (next).
-- ⬜ **M5 — Excel import** (read displayed string).
+- ⬜ **M5 — Excel import** (read displayed string); then optionally DXF input
+  and a raster-image→SVG tracer companion.
 
 ## File map
 
 ```
 note_helper/
   note_helper.il   loader (umbrella skill_tools.il loads it after dreg_gen)
-  nhStore.il       config defaults (charAspect 1.45, paddingRatio 0.4, ...) + pending state
-  nhCore.il        parse → IR → emit → place; symbol build/place (nhBuildSymbol etc.)
+  nhStore.il       config defaults (charAspect 1.45, ...) + pending state + parser wiring
+  nhCore.il        parse → IR → emit → place; symbol build/place; vector import (M4)
   nhGui.il         hi* form (nhOpenGUI) + MyTool self-register
   REQUIREMENTS.md  full design + verified citations + decisions
   README.md        user-facing
   HANDOFF.md       this file
   verify_live.py   skillbridge smoke test
+  svg2ir/nh_svg2ir.py + svg2ir/README.md   (Feature A SVG parser, stdlib-only)
+  img2svg/img2svg.py  + img2svg/README.md   (raster->SVG tracer, Pillow+numpy)
   tsv2md/tsv2md.py + tsv2md/README.md
 ```
 
 Public API: `nhOpenGUI`, `nhParseText`, `nh_buildIR`, `nhEmitTableAt`,
 `nhPlaceTable`, `nhBuildSymbol`, `nh_buildSymbolFromIR`, `nhPlaceTableAsSymbol`,
 `nhBuildResizableSymbol`, `nh_buildResizableFromIR`, `nh_pcellSource`,
-`nhSelfTest`.
+`nhImportVector`, `nhPlaceVector`, `nhSelfTest`.
 
 ## Verified facts (don't re-derive)
 
@@ -84,9 +98,24 @@ Public API: `nhOpenGUI`, `nhParseText`, `nh_buildIR`, `nhEmitTableAt`,
   `geGetEditCellView`, `dbOpenCellViewByType(lib cell "symbol" "schematicSymbol"
   "w")`, `dbCreateInst(cv master nil pt "R0")`, `dbReplaceProp`, `parseString`
   (3rd arg `t` preserves empty cells), `substring` (1-indexed).
-- **skillbridge is Python-drives-Skill** — no clean IL→Python return. So the
-  table path is pure IL; M4's vector parser should run via `pyRunScript` →
-  write IR-JSON to a temp file → IL reads it (REQUIREMENTS §13 item 5, lock at M4).
+- **Decision #5 LOCKED (M4 Python integration):** skillbridge is
+  Python-drives-Skill (wrong direction for an unattended tool), and `pyRunScript`
+  only *logs* its result — so instead the IL **shells out**: `system("python3
+  svg2ir/nh_svg2ir.py in.svg out.il --width W")` (sklangref p.638, returns exit
+  code, 0=ok), the parser writes a **SKILL list literal** of IR DPLs (NOT JSON)
+  to a `makeTempFileName "/tmp/nh_svgir"` file (p.446), and IL `infile`(p.423) +
+  `read`(p.461, one s-expr = the whole IR list) + `close`(p.391) reconstructs it
+  with zero translation, then `deleteFile`(p.620). See `nhImportVector` in
+  nhCore.il. Verified live IC6.1.8 end-to-end.
+- **M4 SVG parser facts:** `svg2ir/nh_svg2ir.py` is **stdlib-only** (this box has
+  NO svgpathtools/cairosvg/ezdxf/potrace/inkscape; it does have PIL+numpy but the
+  parser deliberately avoids them for portability). Own path tokenizer +
+  adaptive de Casteljau flatten + arc sampling. **Gotcha fixed:** a relative
+  `m` moveto right after `z` (common, e.g. `...H89zm30 30...`) must add the
+  current point — guard on a `started` flag, not on whether the subpath buffer
+  is non-empty (it was reset by `z`). SVG is y-down → flip Y so the figure is
+  upright. Set `nh_pythonCmd "/usr/bin/python3"` if Virtuoso's `system()` shell
+  can't find `python3` on PATH.
 
 ## Live environment + verification workflow
 
@@ -110,7 +139,8 @@ Public API: `nhOpenGUI`, `nhParseText`, `nh_buildIR`, `nhEmitTableAt`,
 
 **Keep (present):** `note_demo` (M3 static-symbol demo), `nh_rs_host` + its
 master `nh_note_rs` (M3b resizable demo — open `nh_rs_host/schematic`, select a
-note, press `q`, edit "Size scale"; has ×1 and ×2 instances).
+note, press `q`, edit "Size scale"; has ×1 and ×2 instances), `nh_svg_demo`
+(M4 demo — the Mona Lisa SVG imported as loose note shapes in a schematic).
 
 **Probe junk — deleted** (2026-06-20): `nh_pc_host`, `nh_pc_probe`,
 `nh_pc_mini`, `nh_scratch`, `nh_note_sym`, `nh_inst_test`. Cleanup via
@@ -118,15 +148,28 @@ note, press `q`, edit "Size scale"; has ×1 and ×2 instances).
 on a modified-since-save cellview raises a "Save changes?" MODAL that wedges
 the bridge — `dbSave`/clear-modified before closing, or skip the window loop.
 
-## Next step: M4 (vector SVG/DXF → lines)
+## Next step: M5 (Excel import) + optional DXF / raster companion
 
-1. Python parser: SVG/DXF path → flatten Béziers → polylines; scale uniformly
-   (keep aspect). Emit IR-JSON (`{polylines:[...], labels:[...]}`) to a temp file.
-2. IL: `pyRunScript` the parser, read the temp IR-JSON, convert to the same IR
-   the table path uses, then reuse `nh_emitIR` / `nhPlaceIR`. (IR already
-   supports polylines + labels — Feature A and B share the emit core.)
-3. Verify live via the hiExportImage workflow.
-Lock decision #5 (Python integration pattern) at the start of M4.
+M4 (SVG) is done. Remaining Feature-A/B work:
+
+- **M5 — Excel named range → table.** Read the **displayed/formatted string**
+  per cell (never the raw float). Best in Python (`openpyxl`) — but `openpyxl`
+  is NOT installed here; either add it or parse the saved `.xlsx` (a zip of XML)
+  with stdlib, reusing the same `system()` → SKILL-IR-literal → `read` pattern
+  that M4 established (the cleanest precedent).
+- **DXF input** for Feature A — add a DXF branch to `nh_svg2ir.py` (or a sibling)
+  emitting the same IR; `ezdxf` is absent, so either add it or parse the DXF
+  entities (LINE/LWPOLYLINE/ARC/CIRCLE/TEXT) directly. Same IR-literal exchange.
+- **Raster image → SVG tracer** — ✅ DONE as `img2svg/img2svg.py` (Pillow +
+  numpy; NO potrace/OpenCV needed). Marching-squares contour trace + Douglas-
+  Peucker; two modes (threshold=line-art, edge=photo). GUI w/ live preview + CLI
+  fallback. Verified: synthetic shapes, and the REAL Mona Lisa painting photo
+  (edge mode → recognisable face/hands line drawing; threshold → clean figure
+  silhouette), each round-tripped back through `nh_svg2ir` to prove the output
+  imports. Possible next: colour layering, "keep largest N contours" denoise.
+
+The M4 integration pattern (`system()` → temp SKILL-IR-literal → `infile`/`read`)
+is the template to copy for all of the above.
 
 ## Standing rules (also in auto-memory)
 

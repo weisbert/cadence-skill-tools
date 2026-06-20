@@ -66,12 +66,46 @@
             (if (get table 'header) " (header)" "")))))
     t))
 
-; Place: parse + build IR, then place either as loose shapes or as a symbol
-; instance (both pick the spot with one click in the schematic).
-(defun nh_guiPlaceCB (form)
-  (let (mode res table cfg ir schCv lib symCell master resizable)
+; Place a built IR list per the Output cyclic field -- loose note shapes, a
+; reusable non-netlisting symbol, or a self-contained resizable (pcell) symbol
+; whose `scale` param resizes it later via q. Shared by the table Place button
+; and the SVG Import button, so vector figures get the same three modes.
+(defun nh_guiDispatchIR (form ir)
+  (let (mode resizable schCv lib symCell master)
     (setq mode (or form->nh_mode->value "loose shapes"))
-    (setq res  (errset (nhParseText form->nh_input->value) t))
+    (cond
+      ((or (equal mode "symbol") (equal mode "symbol (resizable)"))
+        (setq resizable (equal mode "symbol (resizable)"))
+        (setq schCv (geGetEditCellView))
+        (cond
+          ((null schCv)
+            (nh_setFieldVal "nh_form" 'nh_status
+              "open a schematic first (need somewhere to place the symbol)"))
+          (t
+            (setq lib     schCv~>libName)
+            (setq symCell (or form->nh_symCell->value "nh_note"))
+            (when (equal symCell "") (setq symCell "nh_note"))
+            (setq master (errset
+              (if resizable
+                  (nh_buildResizableFromIR ir lib symCell)
+                  (nh_buildSymbolFromIR    ir lib symCell)) t))
+            (cond
+              ((null master)
+                (nh_setFieldVal "nh_form" 'nh_status "symbol build failed -- see CIW"))
+              (t
+                (nh_setFieldVal "nh_form" 'nh_status
+                  (sprintf nil "click to place %s %s/%s"
+                    (if resizable "resizable symbol (q to resize)" "symbol") lib symCell))
+                (nhPlaceSymbolInst (car master) schCv))))))
+      (t
+        (nh_setFieldVal "nh_form" 'nh_status "click in the schematic to place...")
+        (nhPlaceIR ir)))
+    t))
+
+; Place (table): parse + build IR, then dispatch by Output mode.
+(defun nh_guiPlaceCB (form)
+  (let (res table cfg ir)
+    (setq res (errset (nhParseText form->nh_input->value) t))
     (cond
       ((null res)
         (nh_setFieldVal "nh_form" 'nh_status "parse error -- see CIW"))
@@ -82,36 +116,32 @@
         (cond
           ((null ir)
             (nh_setFieldVal "nh_form" 'nh_status "layout error -- see CIW"))
-          ((or (equal mode "symbol") (equal mode "symbol (resizable)"))
-            ; build a reusable non-netlisting symbol in the current schematic's
-            ; library, then place an instance. "symbol (resizable)" makes it a
-            ; self-contained pcell whose `scale` param resizes it later via q.
-            (setq resizable (equal mode "symbol (resizable)"))
-            (setq schCv (geGetEditCellView))
-            (cond
-              ((null schCv)
-                (nh_setFieldVal "nh_form" 'nh_status
-                  "open a schematic first (need somewhere to place the symbol)"))
-              (t
-                (setq lib     schCv~>libName)
-                (setq symCell (or form->nh_symCell->value "nh_note"))
-                (when (equal symCell "") (setq symCell "nh_note"))
-                (setq master (errset
-                  (if resizable
-                      (nh_buildResizableFromIR (car ir) lib symCell)
-                      (nh_buildSymbolFromIR    (car ir) lib symCell)) t))
-                (cond
-                  ((null master)
-                    (nh_setFieldVal "nh_form" 'nh_status "symbol build failed -- see CIW"))
-                  (t
-                    (nh_setFieldVal "nh_form" 'nh_status
-                      (sprintf nil "click to place %s %s/%s"
-                        (if resizable "resizable symbol (q to resize)" "symbol") lib symCell))
-                    (nhPlaceSymbolInst (car master) schCv))))))
           (t
-            ; loose note shapes
-            (nh_setFieldVal "nh_form" 'nh_status "click in the schematic to place...")
-            (nhPlaceIR (car ir))))))
+            (nh_guiDispatchIR form (car ir))))))
+    t))
+
+; Import SVG (Feature A): run the external parser, then dispatch by Output mode
+; (a vector figure can go in as loose shapes, a symbol, or a resizable symbol).
+(defun nh_guiImportCB (form)
+  (let (svg width res)
+    (setq svg (form->nh_svgPath->value))
+    (cond
+      ((or (null svg) (equal svg ""))
+        (nh_setFieldVal "nh_form" 'nh_status "enter an SVG file path to import"))
+      ((not (isFile svg))
+        (nh_setFieldVal "nh_form" 'nh_status "SVG file not found -- check the path"))
+      (t
+        (setq width (atof (or form->nh_vecWidth->value "5")))
+        (when (or (null width) (leqp width 0)) (setq width 5.0))
+        (nh_setFieldVal "nh_form" 'nh_status "parsing SVG...")
+        (setq res (errset (nhImportVector svg width) t))
+        (cond
+          ((null res)
+            (nh_setFieldVal "nh_form" 'nh_status "SVG import failed -- see CIW"))
+          ((null (car res))
+            (nh_setFieldVal "nh_form" 'nh_status "no drawable geometry in the SVG"))
+          (t
+            (nh_guiDispatchIR form (car res))))))
     t))
 
 ; OK/close: nothing to persist (table text is transient by design).
@@ -177,7 +207,20 @@
             (list 0 y) (list 280 rowH) 190)
       fields))
     (setq y (plus y rowH 8))
-    ; --- buttons: Parse / Place ---
+    ; --- Feature A: SVG vector import (file path + target width) ---
+    (setq fields (cons
+      (list (hiCreateStringField ?name 'nh_svgPath
+              ?prompt "SVG file (vector import)" ?value "")
+            (list 0 y) (list 280 rowH) 190)
+      fields))
+    (setq y (plus y rowH 4))
+    (setq fields (cons
+      (list (hiCreateStringField ?name 'nh_vecWidth
+              ?prompt "Figure width (user units)" ?value "5")
+            (list 0 y) (list 120 rowH) 190)
+      fields))
+    (setq y (plus y rowH 8))
+    ; --- buttons: Parse / Place / Import SVG ---
     (setq fields (cons
       (list (hiCreateButton ?name 'nh_btnParse ?buttonText "Parse"
               ?callback "(nh_guiParseCB nh_form)")
@@ -187,6 +230,11 @@
       (list (hiCreateButton ?name 'nh_btnPlace ?buttonText "Place..."
               ?callback "(nh_guiPlaceCB nh_form)")
             (list 100 y) (list 90 rowH) 0)
+      fields))
+    (setq fields (cons
+      (list (hiCreateButton ?name 'nh_btnImport ?buttonText "Import SVG..."
+              ?callback "(nh_guiImportCB nh_form)")
+            (list 200 y) (list 120 rowH) 0)
       fields))
     (setq y (plus y rowH 8))
     ; --- form ---

@@ -91,9 +91,10 @@ to the Feature-A milestone** (§13, item 5) — it does not block v1.
 
 - **Main path (≈80%): vector source SVG/DXF.** Python parses paths, flattens Béziers to
   polylines, scales uniformly (preserve aspect ratio) → IR polylines → `schCreateNoteShape`.
-- **Secondary: raster/screenshot tracing.** Python (OpenCV Canny → findContours →
-  `approxPolyDP`, or potrace) + Douglas-Peucker simplification + a hard segment-count cap.
-  **Lossy; gated behind a default-off flag** (decision §13 item 3).
+- **Secondary: raster/screenshot tracing.** Handled by the standalone
+  `img2svg/` companion (Pillow + numpy — marching-squares contours +
+  Douglas-Peucker; threshold/edge modes), **outside** the SKILL core: it writes
+  an SVG you then Import. Lossy by nature (decision §13 item 3).
 - **Limits (inherent to note shapes):** single-layer lines, no fill, no per-shape color,
   text not bold. A polyline maps to one shape; closed boxes → `rectangle`, free outlines →
   `polygon`.
@@ -254,13 +255,19 @@ mytool — note_helper inherits it for free. Umbrella wiring: add to `skill_tool
 
 ---
 
-## 10. Companion tool — tsv2md (separate, Cadence-independent)
+## 10. Companion tools (separate, Cadence-independent)
 
-Pure Python + Tkinter (zero-dep, ships with CPython), no Cadence coupling: Excel `Ctrl+C` (TSV)
-→ alignment-beautified Markdown → write back to clipboard. Optional per-column alignment
-buttons, header toggle, live conversion. **note-helper does not depend on it** (the form ingests
-TSV directly). Probe `python3 -m tkinter` for availability; fall back to a windowless CLI if
-absent. Timing per §13 item 4.
+All standalone Python, no Cadence coupling; note-helper does not depend on any
+of them — they just produce input it can ingest. Each is GUI-first with a
+windowless CLI fallback when Tkinter/headless.
+
+- **tsv2md** (stdlib + Tkinter): Excel `Ctrl+C` (TSV) → alignment-beautified
+  Markdown → clipboard. Timing per §13 item 4.
+- **svg2ir** (`svg2ir/nh_svg2ir.py`, stdlib only): the Feature-A SVG parser
+  itself — note-helper calls it via `system()`; also usable standalone.
+- **img2svg** (Pillow + numpy): raster image → line-art SVG (threshold + edge
+  modes, marching-squares + Douglas-Peucker). Trace a screenshot/photo, then
+  Import the SVG. Keeps the lossy raster step out of the SKILL core (§13 item 3).
 
 ---
 
@@ -291,9 +298,12 @@ absent. Timing per §13 item 4.
    the `hi*` form GUI.
 3. **M3 — symbol output mode:** ✅ DONE & live-verified — `dbOpenCellViewByType` symbol +
    `nlAction="ignore"` (0 pins; `ciIgnoreDevice` = t) + `dbCreateInst` one-click placement.
-4. **M4 — Feature A vector:** SVG/DXF Python parser + IR-JSON exchange (lock the Python
-   pattern, §13 item 5).
-5. **M5 — Excel import** (displayed-string), then optionally **raster trace** and **tsv2md**.
+4. **M4 — Feature A vector:** ✅ DONE & live-verified — standalone stdlib-only Python
+   SVG parser (`svg2ir/nh_svg2ir.py`) invoked via `system()`, writing a SKILL IR
+   literal that IL `read`s into the shared emit core (decision §13 item 5, locked).
+   SVG only so far; DXF deferred.
+5. **M5 — Excel import** (displayed-string), then optionally **DXF**, **raster trace**,
+   and **tsv2md** (done).
 
 ---
 
@@ -305,14 +315,14 @@ absent. Timing per §13 item 4.
 |---|----------|-----------|
 | 1 | Merged cells in scope? | **v1: NO** — skip spans; the canonical model carries a `merge` field but the parser/emit ignore it in v1. Add later. |
 | 2 | Long-cell behavior | **Widen column by default**, plus a “max column width” knob that switches the column to truncate (…). |
-| 3 | Raster tracing in v1? | **Vector-only (SVG/DXF) in v1**; raster/screenshot tracing deferred. |
+| 3 | Raster tracing in v1? | **SKILL core stays vector-only.** Raster/screenshot tracing is done **outside** the core, as a standalone Python companion `img2svg/` (Pillow+numpy; threshold + edge modes) that emits an SVG you then Import — same split as `tsv2md` for Excel. Built 2026-06-20 (user's steer). |
 | 4 | tsv2md timing | **Build now, in parallel** with note-helper (standalone Python+Tkinter). |
 
 **Still open (resolve at the relevant milestone):**
 
 | # | Decision | Plan |
 |---|----------|------|
-| 5 | Python integration pattern (Feature A) | IL-driven `pyRunScript` → temp **IR-JSON** → IL reads it (keeps IL the driver). Lock at M4. |
+| 5 | ~~Python integration pattern (Feature A)~~ | **RESOLVED/LOCKED 2026-06-20 at M4:** IL **shells out** with `system()` to a standalone stdlib-only Python CLI (`svg2ir/nh_svg2ir.py`); the parser writes a **SKILL list literal** of IR DPLs (not JSON) to a `makeTempFileName` temp file; IL `infile`+`read`+`close` reconstructs the IR with zero translation. Chosen over `pyRunScript` (only *logs* its result) and over skillbridge (Python-drives-Skill, wrong direction for an unattended tool). Verified live IC6.1.8. |
 | 6 | ~~Default grid style & font heights~~ | **RESOLVED 2026-06-19 from live measurement:** grid `full`, fontHeight 0.125, headerScale 1.15, and `charAspect 1.45` — measured: the `fixed` font (only true monospace among the note fonts) advances 1.435×height/glyph; column widths account for scaled header glyphs. |
 
 ---

@@ -499,6 +499,74 @@
   (nh_buildResizableFromIR (nh_buildIR (nhParseText text) cfg) symLib symCell))
 
 ; ===========================================================================
+; Feature A -- vector import (M4): SVG -> note lines.
+;
+; Decision #5 (Python integration), now LOCKED: the SVG/DXF parser is a
+; standalone, Cadence-independent Python CLI. The IL side stays the driver --
+; it shells out with system(), the parser writes a SKILL list literal of IR
+; DPLs (the SAME IR the table path emits) to a temp file, and we infile/read it
+; straight back and hand it to the shared place/emit core. No IR translation in
+; SKILL, no skillbridge needed at runtime (skillbridge is Python->SKILL, the
+; wrong direction for a tool that must run unattended).
+;
+; Refs: system sklangref.pdf p.638 (spawns a UNIX process, returns exit code,
+;   0 = ok); makeTempFileName p.446; infile p.423; read p.461 (returns one
+;   s-expression -- our whole IR is a single top-level list); close p.391;
+;   deleteFile p.620; isFile p.428.
+; ===========================================================================
+
+; Resolve the parser path: explicit override, else relative to note_helperDir.
+(defun nh_svg2irScriptPath ()
+  (cond
+    ((and (boundp 'nh_svg2irScript) nh_svg2irScript) nh_svg2irScript)
+    ((and (boundp 'note_helperDir) note_helperDir)
+      (strcat note_helperDir "svg2ir/nh_svg2ir.py"))
+    (t "nh_svg2ir.py")))
+
+; Build the shell command. Paths are double-quoted for spaces; width/font are
+; passed as parser options (aspect is always preserved by the parser).
+(defun nh_svg2irCmd (svgPath outPath width fontHeight)
+  (let ((script (nh_svg2irScriptPath)) (extra ""))
+    (when (and fontHeight (greaterp fontHeight 0))
+      (setq extra (sprintf nil " --font-height %f" fontHeight)))
+    (sprintf nil "%s \"%s\" \"%s\" \"%s\" --width %f%s"
+      nh_pythonCmd script svgPath outPath width extra)))
+
+; Read the single top-level IR list back from the parser's output file.
+(defun nh_irFileToIR (path)
+  (let (port ir)
+    (setq port (infile path))                       ; sklangref.pdf p.423
+    (unless port (error (strcat "note-helper: cannot open IR file " path)))
+    (setq ir (read port))                           ; sklangref.pdf p.461 (one s-expr)
+    (close port)                                    ; sklangref.pdf p.391
+    (if (or (null ir) (eq ir t)) nil ir)))
+
+; Parse an SVG file into note-helper IR (loose-shape polylines + any text
+; labels), scaled uniformly to `width` user units (aspect preserved). Returns
+; the IR list (consumable by nhPlaceIR / nh_buildSymbolFromIR / nh_emitIR), or
+; nil if the SVG had no drawable geometry.
+(defun nhImportVector (svgPath @optional width fontHeight)
+  (let (outPath cmd rc ir)
+    (unless (and (stringp svgPath) (isFile svgPath))
+      (error (strcat "note-helper: SVG file not found: "
+                     (if (stringp svgPath) svgPath "(nil)"))))
+    (when (or (null width) (leqp width 0)) (setq width 5.0))
+    (setq outPath (makeTempFileName "/tmp/nh_svgir"))   ; sklangref.pdf p.446
+    (setq cmd (nh_svg2irCmd svgPath outPath width fontHeight))
+    (setq rc  (system cmd))                             ; sklangref.pdf p.638
+    (unless (equal rc 0)
+      (error (sprintf nil "note-helper: SVG parser exited %d\n  %s" rc cmd)))
+    (unless (isFile outPath)
+      (error "note-helper: SVG parser produced no output file"))
+    (setq ir (nh_irFileToIR outPath))
+    (errset (deleteFile outPath) t)                    ; sklangref.pdf p.620 (tidy)
+    ir))
+
+; Top-level: import an SVG and place it as loose note shapes at one click.
+(defun nhPlaceVector (svgPath @optional width fontHeight cv)
+  (nhPlaceIR (nhImportVector svgPath width fontHeight) cv))
+
+; ===========================================================================
 ; Top-level conveniences
 ; ===========================================================================
 
