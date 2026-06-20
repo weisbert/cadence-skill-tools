@@ -22,10 +22,14 @@ python3 tsv2md.py
 4. Click **Convert →** — the Markdown appears below and is copied to the
    clipboard automatically.
 
-CLI (no window; reads TSV on stdin, writes Markdown on stdout):
+Files: **Open file...** loads a `.tsv`/`.txt`/`.md` into the input;
+**Save .md...** writes the converted Markdown to a file.
+
+CLI (no window; stdin/stdout by default, or `--in`/`--out` files):
 
 ```bash
 python3 tsv2md.py --cli [--no-header] [--align l,r,c] [--no-pad] < table.tsv
+python3 tsv2md.py --in table.tsv --out table.md
 xclip -o | python3 tsv2md.py --cli            # from the X clipboard
 ```
 

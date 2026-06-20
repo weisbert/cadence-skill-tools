@@ -67,9 +67,14 @@ Implemented (pure IL — no Python needed for the table path):
     editable CDF param on the instance, 0 pins.
 - Emits `schCreateNoteShape` + `schCreateNoteLabel` (both non-electrical).
 - One-click placement via `enterPoint` (the click sets the table's top-left).
-- Minimal `hi*` form (`nhOpenGUI`): input MLT, Parse status, font-height /
+- Minimal `hi*` form (`nhOpenGUI`): input MLT, Parse status, a table-file
+  (`.md`/`.tsv`) path with **Load file** / **Save .md** buttons, font-height /
   max-col / grid / output-mode fields, SVG file + figure-width fields,
   Parse + Place + Import SVG buttons.
+- **Markdown file import/export (Cadence side):** put a path in **Table file**,
+  click **Load file** to pull a `.md`/`.tsv` into the input, or **Save .md** to
+  write the current table back out as normalized, aligned Markdown
+  (`nhTextToMarkdown` — same output as the Python `tsv2md`).
 
 > ✅ **Live-verified on IC6.1.8** (2026-06-19): loads clean, Markdown + TSV
 > parse correct, layout emits the expected db objects, and a sample table was
@@ -136,6 +141,11 @@ cellview is open) emits a sample table and reports the shape count.
 
 ## Companion tools (standalone, Cadence-independent)
 
+- **`toolbox/toolbox.py`** — a single Tkinter GUI bundling the two data-prep
+  front-ends below as tabs (**Image → SVG** + **Table → Markdown**); they're
+  logically one job — clean/convert data on the Python side for a schematic.
+  Reuses the modules' core logic. `python3 toolbox/toolbox.py`. See
+  `toolbox/README.md` (incl. the Linux `python3.11-tkinter` note).
 - **`svg2ir/nh_svg2ir.py`** — the Feature-A SVG parser, standard library only.
   Usable on its own: `nh_svg2ir.py in.svg out.il --width 5`. note_helper calls
   it for you; documented in `svg2ir/README.md`.

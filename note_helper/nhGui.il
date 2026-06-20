@@ -148,6 +148,47 @@
 (defun nh_guiCloseCB (form)
   t)
 
+; Load file: read the path in nh_mdPath into the input MLT (Markdown or TSV;
+; the parser auto-detects either on Parse/Place).
+(defun nh_guiLoadFileCB (form)
+  (let (path txt)
+    (setq path (form->nh_mdPath->value))
+    (cond
+      ((or (null path) (equal path ""))
+        (nh_setFieldVal "nh_form" 'nh_status "enter a file path to load"))
+      ((not (isFile path))
+        (nh_setFieldVal "nh_form" 'nh_status "file not found -- check the path"))
+      (t
+        (setq txt (errset (nh_readFile path) t))
+        (cond
+          ((null txt)
+            (nh_setFieldVal "nh_form" 'nh_status "read failed -- see CIW"))
+          (t
+            (nh_setFieldVal "nh_form" 'nh_input (car txt))
+            (nh_setFieldVal "nh_form" 'nh_status
+              (sprintf nil "loaded %s -- click Parse" path))))))
+    t))
+
+; Save .md: parse the input (Markdown or TSV) and write it back out as a
+; normalized, aligned Markdown file at nh_mdPath.
+(defun nh_guiSaveMdCB (form)
+  (let (path res ok)
+    (setq path (form->nh_mdPath->value))
+    (cond
+      ((or (null path) (equal path ""))
+        (nh_setFieldVal "nh_form" 'nh_status "enter a file path to save to"))
+      (t
+        (setq res (errset (nhTextToMarkdown form->nh_input->value) t))
+        (cond
+          ((null res)
+            (nh_setFieldVal "nh_form" 'nh_status "parse/convert error -- see CIW"))
+          (t
+            (setq ok (errset (nh_writeFile path (car res)) t))
+            (if (and ok (car ok))
+                (nh_setFieldVal "nh_form" 'nh_status (sprintf nil "saved %s" path))
+                (nh_setFieldVal "nh_form" 'nh_status "write failed -- see CIW"))))))
+    t))
+
 ; ---------------------------------------------------------------------------
 ; Form
 ; ---------------------------------------------------------------------------
@@ -173,6 +214,24 @@
             (list 0 y) (list mlW rowH) 80)
       fields))
     (setq y (plus y rowH 4))
+    ; --- table file: path + Load/Save (import a .md/.tsv, export normalized .md) ---
+    (setq fields (cons
+      (list (hiCreateStringField ?name 'nh_mdPath
+              ?prompt "Table file (.md / .tsv)" ?value "")
+            (list 0 y) (list 280 rowH) 190)
+      fields))
+    (setq y (plus y rowH 4))
+    (setq fields (cons
+      (list (hiCreateButton ?name 'nh_btnLoad ?buttonText "Load file"
+              ?callback "(nh_guiLoadFileCB nh_form)")
+            (list 0 y) (list 90 rowH) 0)
+      fields))
+    (setq fields (cons
+      (list (hiCreateButton ?name 'nh_btnSaveMd ?buttonText "Save .md"
+              ?callback "(nh_guiSaveMdCB nh_form)")
+            (list 100 y) (list 90 rowH) 0)
+      fields))
+    (setq y (plus y rowH 8))
     ; --- font height ---
     (setq fields (cons
       (list (hiCreateStringField ?name 'nh_fontHeight

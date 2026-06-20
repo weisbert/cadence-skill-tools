@@ -11,8 +11,9 @@ Usage
 GUI (default):
     python3 tsv2md.py
 
-CLI (no window; reads TSV on stdin, writes Markdown on stdout):
+CLI (no window; stdin/stdout by default, or --in/--out files):
     python3 tsv2md.py --cli [--no-header] [--align l,r,c] < table.tsv
+    python3 tsv2md.py --in table.tsv --out table.md
     pbpaste | python3 tsv2md.py --cli            # or xclip -o, etc.
 
 The GUI auto-falls back to CLI if Tkinter is unavailable (headless box).
@@ -136,11 +137,21 @@ def run_cli(argv):
                     help="per-column alignment, e.g. 'l,r,c' or 'lrc'")
     ap.add_argument("--no-pad", action="store_true",
                     help="do not space-pad cells in the output source")
+    ap.add_argument("--in", dest="infile", default=None,
+                    help="read TSV from this file (default: stdin)")
+    ap.add_argument("--out", dest="outfile", default=None,
+                    help="write Markdown to this file (default: stdout)")
     args = ap.parse_args(argv)
-    tsv = sys.stdin.read()
+    tsv = open(args.infile).read() if args.infile else sys.stdin.read()
     md = tsv_to_md(tsv, has_header=not args.no_header,
                    align_spec=args.align, pad=not args.no_pad)
-    sys.stdout.write(md + ("\n" if md and not md.endswith("\n") else ""))
+    text = md + ("\n" if md and not md.endswith("\n") else "")
+    if args.outfile:
+        with open(args.outfile, "w") as f:
+            f.write(text)
+        sys.stderr.write("tsv2md: wrote %s\n" % args.outfile)
+    else:
+        sys.stdout.write(text)
     return 0
 
 
@@ -149,8 +160,9 @@ def run_cli(argv):
 # --------------------------------------------------------------------------
 
 def run_gui():
+    import os
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import ttk, filedialog
 
     root = tk.Tk()
     root.title("tsv2md  --  TSV to Markdown table")
@@ -212,9 +224,36 @@ def run_gui():
             root.clipboard_append(md)
             status.config(text="Output copied to clipboard.")
 
-    ttk.Button(btns, text="Paste from clipboard", command=do_paste).pack(side="left")
-    ttk.Button(btns, text="Convert  →", command=do_convert).pack(side="left", padx=6)
-    ttk.Button(btns, text="Copy output", command=do_copy).pack(side="left")
+    def do_open():
+        p = filedialog.askopenfilename(
+            filetypes=[("Table / text", "*.tsv *.txt *.md *.csv *.markdown"),
+                       ("All files", "*.*")])
+        if not p:
+            return
+        with open(p) as f:
+            data = f.read()
+        in_txt.delete("1.0", "end")
+        in_txt.insert("1.0", data)
+        status.config(text="Loaded %s" % os.path.basename(p))
+
+    def do_save():
+        md = out_txt.get("1.0", "end").rstrip("\n")
+        if not md:
+            status.config(text="Convert first.")
+            return
+        p = filedialog.asksaveasfilename(defaultextension=".md",
+                                         filetypes=[("Markdown", "*.md")])
+        if not p:
+            return
+        with open(p, "w") as f:
+            f.write(md + "\n")
+        status.config(text="Saved %s" % os.path.basename(p))
+
+    ttk.Button(btns, text="Open file...", command=do_open).pack(side="left")
+    ttk.Button(btns, text="Paste", command=do_paste).pack(side="left", padx=6)
+    ttk.Button(btns, text="Convert  →", command=do_convert).pack(side="left")
+    ttk.Button(btns, text="Copy", command=do_copy).pack(side="left", padx=6)
+    ttk.Button(btns, text="Save .md...", command=do_save).pack(side="left")
     status.pack(side="left", padx=12)
 
     # Output.
@@ -231,17 +270,18 @@ def run_gui():
 
 def main():
     argv = sys.argv[1:]
-    if "--cli" in argv or not sys.stdin.isatty() and argv == []:
-        # Piped stdin with no args -> behave as a filter.
-        return run_cli([a for a in argv])
-    if "--cli" in argv or "--no-header" in argv or "--align" in argv or "--no-pad" in argv:
+    if argv:
+        # any argument -> CLI (argparse validates; --cli is accepted and ignored)
         return run_cli(argv)
+    if not sys.stdin.isatty():
+        # piped data with no args -> behave as a filter
+        return run_cli([])
     try:
         import tkinter  # noqa: F401
     except Exception:
-        sys.stderr.write("tkinter unavailable; falling back to CLI "
-                         "(reads stdin, writes stdout).\n")
-        return run_cli(["--cli"])
+        sys.stderr.write("tkinter unavailable; reading stdin as TSV "
+                         "(writes Markdown to stdout).\n")
+        return run_cli([])
     return run_gui()
 
 

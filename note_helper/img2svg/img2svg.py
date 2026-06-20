@@ -227,16 +227,90 @@ def _poly_len(pts):
                for i in range(len(pts) - 1))
 
 
+def foreground_mask(gray):
+    """Background = the low-gradient region flood-filled inward from the image
+    border (it stops at the subject's strong silhouette edge); foreground = its
+    complement. Used by --rmbg to drop border-connected background contours
+    without touching the subject. Pure numpy morphological reconstruction."""
+    import numpy as np
+    mag = sobel_mag(gray)
+    smooth = mag < max(otsu(mag), 1)
+    # erode the smooth mask by one pixel (a pixel stays floodable only if all 4
+    # neighbours are smooth too) so the flood can't sneak through thin weak-edge
+    # gaps in the subject's silhouette and eat interior detail.
+    er = smooth.copy()
+    er[1:, :] &= smooth[:-1, :]
+    er[:-1, :] &= smooth[1:, :]
+    er[:, 1:] &= smooth[:, :-1]
+    er[:, :-1] &= smooth[:, 1:]
+    smooth = er
+    H, W = gray.shape
+    bg = np.zeros((H, W), dtype=bool)
+    bg[0, :] |= smooth[0, :]; bg[-1, :] |= smooth[-1, :]
+    bg[:, 0] |= smooth[:, 0]; bg[:, -1] |= smooth[:, -1]
+    for _ in range(H + W):
+        g = bg.copy()
+        g[1:, :] |= bg[:-1, :]
+        g[:-1, :] |= bg[1:, :]
+        g[:, 1:] |= bg[:, :-1]
+        g[:, :-1] |= bg[:, 1:]
+        g &= smooth
+        if int(g.sum()) == int(bg.sum()):
+            bg = g
+            break
+        bg = g
+    return ~bg
+
+
+def _mostly_in(poly, fg, frac=0.5):
+    H, W = fg.shape
+    inside = 0
+    for (x, y) in poly:
+        xi = min(max(int(x), 0), W - 1)
+        yi = min(max(int(y), 0), H - 1)
+        if fg[yi, xi]:
+            inside += 1
+    return inside >= frac * len(poly)
+
+
+def _binary_masks(gray, mode, threshold, invert, levels):
+    """One or more 0/1 masks to trace. levels>1 (threshold mode) posterises the
+    tonal range into `levels` bands and returns the level-to-level boundaries,
+    which adds interior detail (shading, folds) as nested iso-tone contours."""
+    import numpy as np
+    if mode == "edge":
+        return [to_binary(gray, mode="edge", threshold=threshold)]
+    if levels and levels > 1:
+        lo = float(np.percentile(gray, 3))
+        hi = float(np.percentile(gray, 97))
+        if hi <= lo:
+            lo, hi = float(gray.min()), float(gray.max()) + 1.0
+        masks = []
+        for k in range(1, levels):
+            t = lo + (hi - lo) * (k / float(levels))
+            B = (gray <= t) if not invert else (gray > t)
+            masks.append(B.astype(np.uint8))
+        return masks
+    return [to_binary(gray, mode="threshold", threshold=threshold, invert=invert)]
+
+
 def trace(gray, mode="threshold", threshold=None, invert=False,
-          simplify=1.5, min_len=8.0):
-    """Grayscale array -> list of simplified polylines (image coords, y-down)."""
-    B = to_binary(gray, mode=mode, threshold=threshold, invert=invert)
-    polys = stitch(marching_squares(B))
+          simplify=1.5, min_len=8.0, levels=1, rmbg=False):
+    """Grayscale array -> list of simplified polylines (image coords, y-down).
+    levels>1 traces multiple tonal bands for a more detailed line drawing;
+    rmbg drops contours lying in the border-connected background."""
+    fg = foreground_mask(gray) if rmbg else None
+    polys = []
+    for B in _binary_masks(gray, mode, threshold, invert, levels):
+        polys += stitch(marching_squares(B))
     out = []
     for p in polys:
         sp = douglas_peucker(p, simplify)
-        if len(sp) >= 2 and _poly_len(sp) >= min_len:
-            out.append(sp)
+        if len(sp) < 2 or _poly_len(sp) < min_len:
+            continue
+        if fg is not None and not _mostly_in(sp, fg):
+            continue
+        out.append(sp)
     return out
 
 
@@ -256,13 +330,14 @@ def to_svg(polylines, W, H, stroke=1.0):
 
 
 def convert_file(in_path, out_path, mode="threshold", threshold=None, invert=False,
-                 simplify=1.5, min_len=8.0, stroke=1.0, max_dim=1000, blur=0.0):
+                 simplify=1.5, min_len=8.0, stroke=1.0, max_dim=1000, blur=0.0,
+                 levels=1, rmbg=False):
     """Full pipeline: image file -> SVG file. Returns (n_contours, W, H)."""
     _require_libs()
     gray = load_gray(in_path, max_dim=max_dim, blur=blur)
     H, W = gray.shape
     polys = trace(gray, mode=mode, threshold=threshold, invert=invert,
-                  simplify=simplify, min_len=min_len)
+                  simplify=simplify, min_len=min_len, levels=levels, rmbg=rmbg)
     svg = to_svg(polys, W, H, stroke=stroke)
     with open(out_path, "w") as f:
         f.write(svg)
@@ -281,8 +356,13 @@ def run_cli(argv):
     ap.add_argument("--mode", choices=["threshold", "edge"], default="threshold")
     ap.add_argument("--threshold", type=int, default=None,
                     help="0..255 cut (default: Otsu auto)")
+    ap.add_argument("--levels", type=int, default=1,
+                    help="threshold mode: trace this many tonal bands for more "
+                         "detail (1 = single Otsu split; try 4-6)")
     ap.add_argument("--invert", action="store_true",
                     help="threshold mode: treat light pixels as foreground")
+    ap.add_argument("--rmbg", action="store_true",
+                    help="drop the border-connected background (keep the subject)")
     ap.add_argument("--simplify", type=float, default=1.5,
                     help="Douglas-Peucker epsilon in pixels (default 1.5)")
     ap.add_argument("--min-len", type=float, default=8.0,
@@ -296,7 +376,8 @@ def run_cli(argv):
     n, W, H = convert_file(args.infile, args.outfile, mode=args.mode,
                            threshold=args.threshold, invert=args.invert,
                            simplify=args.simplify, min_len=args.min_len,
-                           stroke=args.stroke, max_dim=args.max_dim, blur=args.blur)
+                           stroke=args.stroke, max_dim=args.max_dim, blur=args.blur,
+                           levels=args.levels, rmbg=args.rmbg)
     sys.stderr.write("img2svg: %s -> %s  (%d contours, %dx%d, mode=%s)\n"
                      % (args.infile, args.outfile, n, W, H, args.mode))
     return 0
@@ -339,7 +420,9 @@ def run_gui():
     simp_var = tk.DoubleVar(value=1.5)
     minlen_var = tk.DoubleVar(value=8.0)
     invert_var = tk.BooleanVar(value=False)
+    rmbg_var = tk.BooleanVar(value=False)
     maxdim_var = tk.IntVar(value=1000)
+    levels_var = tk.IntVar(value=1)    # threshold-mode tonal bands (detail)
 
     def labeled(parent, text, var, frm, to, width=120):
         f = ttk.Frame(parent)
@@ -349,10 +432,12 @@ def run_gui():
         f.pack(side="left", padx=6)
 
     labeled(sl, "Threshold (0=auto)", thr_var, 0, 255)
+    labeled(sl, "Levels (detail)", levels_var, 1, 8)
     labeled(sl, "Simplify (px)", simp_var, 0, 8)
     labeled(sl, "Min length (px)", minlen_var, 0, 60)
     labeled(sl, "Max dim", maxdim_var, 200, 2000)
     ttk.Checkbutton(sl, text="invert", variable=invert_var).pack(side="left", padx=8)
+    ttk.Checkbutton(sl, text="rm bg", variable=rmbg_var).pack(side="left")
 
     # --- buttons + status ---
     btns = ttk.Frame(main)
@@ -386,7 +471,8 @@ def run_gui():
             thr = int(thr_var.get()) or None
             polys = trace(gray, mode=mode_var.get(), threshold=thr,
                           invert=invert_var.get(), simplify=float(simp_var.get()),
-                          min_len=float(minlen_var.get()))
+                          min_len=float(minlen_var.get()), levels=int(levels_var.get()),
+                          rmbg=rmbg_var.get())
             state.update(polys=polys, W=W, H=H)
             status.config(text="%d contours (%dx%d). Save SVG when happy." % (len(polys), W, H))
             draw_preview()

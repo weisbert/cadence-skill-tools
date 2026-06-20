@@ -36,6 +36,8 @@ python3 img2svg.py photo.jpg OUT.svg --mode edge --min-len 12 --simplify 1.2
 |--------|---------|---------|
 | `--mode threshold\|edge` | tracing mode | threshold |
 | `--threshold T` | 0..255 cut | Otsu auto |
+| `--levels N` | threshold mode: trace N tonal bands for **more detail** (1 = single Otsu split; try 4–6) | 1 |
+| `--rmbg` | drop the **border-connected background** (keep the subject) | off |
 | `--invert` | threshold mode: light pixels are foreground | off |
 | `--simplify EPS` | Douglas–Peucker epsilon (px) — higher = fewer points | 1.5 |
 | `--min-len L` | drop contours shorter than this perimeter (px) — denoise | 8 |
@@ -43,8 +45,18 @@ python3 img2svg.py photo.jpg OUT.svg --mode edge --min-len 12 --simplify 1.2
 | `--max-dim N` | downscale longer side to N before tracing | 1000 |
 | `--blur R` | Gaussian denoise radius before tracing | 0 |
 
+The GUI exposes the same knobs as sliders/checkboxes (incl. **Levels** and
+**rm bg**) with a live preview.
+
 ## Tuning tips
 
+- **More detail** (faces, shading, folds) → raise `--levels` (4–6). It traces
+  several tonal bands, like iso-tone contour lines.
+- **Clean the background** → `--rmbg` removes the border-connected background.
+  Works best when the subject is clearly darker/different from a fairly uniform
+  background (logos, diagrams, dark-subject photos). On a **bright subject over
+  a bright background** the flood can reach into the subject and flatten interior
+  detail — there, prefer `--blur` + a higher `--min-len` instead.
 - Too much speckle/background noise → raise `--min-len`, raise `--simplify`,
   or add a little `--blur`.
 - Faint lines dropped → lower `--threshold` (or `--invert` if your art is
@@ -72,5 +84,6 @@ python3 img2svg.py samples/shapes.png /tmp/shapes.svg --mode threshold
 
 ## Not yet
 
-Colour layering (per-level posterised contours), and "keep largest N contours"
-background suppression. Tune `--min-len` / `--threshold` for now.
+Colour/region layering into separate SVG groups, and a "keep largest N
+contours" denoise. (Multi-level detail = `--levels`; background removal =
+`--rmbg` are done.)

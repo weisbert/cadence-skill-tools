@@ -58,6 +58,12 @@
           (substring c 1 1)))
     (t c)))
 
+; Repeat the string s n times (for markdown separator rules / padding).
+(defun nh_repeatStr (s n)
+  (let ((out "") (i 0))
+    (while (lessp i n) (setq out (strcat out s)) (setq i (add1 i)))
+    out))
+
 ; ===========================================================================
 ; List helpers
 ; ===========================================================================
@@ -565,6 +571,104 @@
 ; Top-level: import an SVG and place it as loose note shapes at one click.
 (defun nhPlaceVector (svgPath @optional width fontHeight cv)
   (nhPlaceIR (nhImportVector svgPath width fontHeight) cv))
+
+; ===========================================================================
+; Markdown / TSV file import + export (Cadence-side, symmetric with the Python
+; tsv2md/toolbox tools). Read a table file into the form, or write the current
+; table back out as a normalized aligned Markdown file.
+;
+; Refs: infile sklangref.pdf p.423; gets p.420 (reads a line, KEEPS the newline,
+;   nil at EOF -> concatenating the lines rebuilds the file); outfile p.450
+;   ("w" mode creates/overwrites); fprintf p.409 ("%s" prints a string, the
+;   data is the ARG so any '%' in it is literal); close p.391.
+; ===========================================================================
+
+; Read a whole text file into a string (preserving newlines).
+(defun nh_readFile (path)
+  (let (port line out)
+    (setq port (infile path))
+    (unless port (error (strcat "note-helper: cannot read file " path)))
+    (setq out "")
+    (while (gets line port) (setq out (strcat out line)))
+    (close port)
+    out))
+
+; Write a string to a file (overwriting). Returns t.
+(defun nh_writeFile (path str)
+  (let (port)
+    (setq port (outfile path "w"))
+    (unless port (error (strcat "note-helper: cannot write file " path)))
+    (fprintf port "%s" (or str ""))
+    (close port)
+    t))
+
+; --- normalized Markdown emit from the canonical table model ----------------
+
+; Escape a cell so it can't break a Markdown pipe row ("|" -> "\|").
+(defun nh_mdEsc (s)
+  (if (stringp s) (buildString (parseString s "|" t) "\\|") s))
+
+; Separator-row cell of visible width w for the given alignment symbol.
+(defun nh_md_sepCell (w align)
+  (let ((n (max w 3)))
+    (cond
+      ((eq align 'center) (strcat ":" (nh_repeatStr "-" (difference n 2)) ":"))
+      ((eq align 'right)  (strcat (nh_repeatStr "-" (sub1 n)) ":"))
+      ((eq align 'left)   (strcat ":" (nh_repeatStr "-" (sub1 n))))
+      (t                  (nh_repeatStr "-" n)))))
+
+; Pad a cell to width w per alignment (pretty source; parsers ignore padding).
+(defun nh_md_pad (cell w align)
+  (let ((gap (difference w (strlen cell))) l)
+    (cond
+      ((leqp gap 0) cell)
+      ((eq align 'right)  (strcat (nh_repeatStr " " gap) cell))
+      ((eq align 'center) (setq l (quotient gap 2))
+                          (strcat (nh_repeatStr " " l) cell (nh_repeatStr " " (difference gap l))))
+      (t                  (strcat cell (nh_repeatStr " " gap))))))
+
+(defun nh_md_row (cells widths aligns)
+  (let ((out "|") (j 0) cell)
+    (for j 0 (sub1 (length widths))
+      (setq cell (or (nth j cells) ""))
+      (setq out (strcat out " " (nh_md_pad cell (nth j widths) (or (nth j aligns) 'left)) " |")))
+    out))
+
+(defun nh_md_sepRow (widths aligns)
+  (let ((out "|") (j 0))
+    (for j 0 (sub1 (length widths))
+      (setq out (strcat out " " (nh_md_sepCell (nth j widths) (or (nth j aligns) 'left)) " |")))
+    out))
+
+; Canonical table model -> a normalized aligned GitHub-style Markdown string.
+; A headerless model gets synthesized "Col1..ColN" headers (Markdown needs a
+; header row). Reuses the declared per-column alignment.
+(defun nh_tableToMarkdown (table)
+  (let (rows ncols aligns header hdr body widths j w row cell lines)
+    (setq rows   (get table 'rows))
+    (setq ncols  (get table 'ncols))
+    (setq aligns (get table 'aligns))
+    (setq header (get table 'header))
+    (cond
+      (header (setq hdr (car rows)) (setq body (cdr rows)))
+      (t      (for j 0 (sub1 ncols) (setq hdr (cons (sprintf nil "Col%d" (add1 j)) hdr)))
+              (setq hdr (reverse hdr)) (setq body rows)))
+    (setq hdr  (foreach mapcar cell hdr (nh_mdEsc cell)))
+    (setq body (foreach mapcar row body (foreach mapcar cell row (nh_mdEsc cell))))
+    (setq widths nil)
+    (for j 0 (sub1 ncols)
+      (setq w (strlen (or (nth j hdr) "")))
+      (foreach row body (setq w (max w (strlen (or (nth j row) "")))))
+      (setq widths (cons (max w 3) widths)))
+    (setq widths (reverse widths))
+    (setq lines (cons (nh_md_row hdr widths aligns)
+                      (cons (nh_md_sepRow widths aligns)
+                            (foreach mapcar row body (nh_md_row row widths aligns)))))
+    (strcat (buildString lines "\n") "\n")))
+
+; Parse a Markdown/TSV string and re-emit it as normalized Markdown.
+(defun nhTextToMarkdown (text)
+  (nh_tableToMarkdown (nhParseText text)))
 
 ; ===========================================================================
 ; Top-level conveniences
