@@ -12,17 +12,49 @@
 ; Module-global state (idempotent: never clobber on reload).
 ; ---------------------------------------------------------------------------
 
-; Pending placement state, stashed for the enterPoint done-callback (which
-; runs later, after the user clicks). nh_pendingKind selects what the
-; callback does: 'shapes -> emit IR directly; 'symbol -> instance a master.
-(unless (boundp 'nh_pendingKind)   (setq nh_pendingKind nil))
-(unless (boundp 'nh_pendingIR)     (setq nh_pendingIR nil))
-(unless (boundp 'nh_pendingCv)     (setq nh_pendingCv nil))
-(unless (boundp 'nh_pendingMaster) (setq nh_pendingMaster nil))
+; Deferred ghost-placement state. All three Output modes now place by dragging
+; a SYMBOL master with the native schHiCreateInst ghost (so a live preview
+; follows the cursor, exactly like pressing i to insert a symbol). The button
+; callback only ARMS the placement and stashes these globals; the interactive
+; command is launched from an hiRegTimer tick (nh_launchPlace) AFTER the form
+; callback returns -- starting an enterfunction directly inside a form callback
+; silently fails to arm, which was the "click does nothing" bug.
+;   nh_plLib/nh_plCell/nh_plView -- master to drag (lib + cell + "symbol")
+;   nh_plCv  -- target schematic cellview
+;   nh_plWin -- its window (set current before schHiCreateInst so the command
+;               targets the schematic, not the still-focused form)
+;   nh_plTmp -- loose mode only: the throwaway temp symbol cell name to flatten
+;               into loose note shapes + delete after placement; nil otherwise
+;   nh_plPoll-- idle-tick counter for the loose flatten poll (nh_loosePoll)
+(unless (boundp 'nh_plLib)    (setq nh_plLib nil))
+(unless (boundp 'nh_plCell)   (setq nh_plCell nil))
+(unless (boundp 'nh_plView)   (setq nh_plView "symbol"))
+(unless (boundp 'nh_plCv)     (setq nh_plCv nil))
+(unless (boundp 'nh_plWin)    (setq nh_plWin nil))
+(unless (boundp 'nh_plTmp)    (setq nh_plTmp nil))
+(unless (boundp 'nh_plMaster) (setq nh_plMaster nil))   ; temp master cv (loose)
+(unless (boundp 'nh_plPoll)   (setq nh_plPoll 0))
+; Monotonic counter so each loose placement gets a unique temp cell name
+; (no clash with a leftover temp cell from a prior, still-cleaning placement).
+(unless (boundp 'nh_looseSeq) (setq nh_looseSeq 0))
 
 ; Top-level scratch global for the evalstring form-field write idiom
 ; (mirrors dgen's nh_tmpFieldVal; see nhGui.il nh_setFieldVal).
 (unless (boundp 'nh_tmpVal) (setq nh_tmpVal nil))
+
+; Stashed Tab-page field handles + scratch handle for nh_setHandleVal. Fields
+; inside a hiCreateTabField page are not reachable as form->name, so the GUI
+; keeps their handles here and the callbacks read/write them directly.
+; Default folder for the GUI file-browse buttons. nil => resolve at open time:
+; $WORK_ROOT2 (the company workarea), else the workarea derived from
+; note_helperDir, else ".". setq this to pin a fixed browse directory.
+(unless (boundp 'nh_browseDir)  (setq nh_browseDir nil))
+
+(unless (boundp 'nh_fInput)    (setq nh_fInput nil))
+(unless (boundp 'nh_fMdPath)   (setq nh_fMdPath nil))
+(unless (boundp 'nh_fSvg)      (setq nh_fSvg nil))
+(unless (boundp 'nh_fVecW)     (setq nh_fVecW nil))
+(unless (boundp 'nh_tmpHandle) (setq nh_tmpHandle nil))
 
 ; Feature-A (vector import, M4) external-parser wiring. The SVG parser is a
 ; standalone, Cadence-independent Python CLI (note_helper/svg2ir/nh_svg2ir.py)

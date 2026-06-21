@@ -316,56 +316,171 @@
     cnt))
 
 ; ===========================================================================
-; Interactive placement:  build at origin, place at one click
+; Interactive placement (M5): drag a SYMBOL master with the native ghost
+; (schHiCreateInst) so a live preview follows the cursor and one click drops
+; it -- exactly like the i bindkey "insert symbol" flow. All three Output
+; modes share this single path:
+;   loose      -> build a throwaway temp note-symbol, drag+drop it, then
+;                 dbFlattenInst it into LOOSE note shapes and delete the temp
+;   symbol     -> build/reuse a non-netlisting note symbol, drop instance(s)
+;   resizable  -> build/reuse a self-contained resizable (pcell) symbol
+;
+; schHiCreateInst is schematic-only, acts on the CURRENT window, and must run
+; OUTSIDE the form button callback: an enterfunction/command armed from inside
+; a form callback never engages (this WAS the "click does nothing" bug). So the
+; GUI only ARMS placement (stash globals) and defers the actual launch to an
+; hiRegTimer tick (nh_launchPlace), which first makes the schematic the current
+; window (the form steals focus otherwise).
+;
+; Refs: schHiCreateInst skcompref.pdf p.65 ("drags the requested symbol until
+;   you click to place it"); hiRegTimer skuiref.pdf p.84; hiGetWindowList p.945
+;   + hiSetCurrentWindow p.958 (target the schematic, not the form); hiRedraw
+;   p.1015; dbFlattenInst skdfref.pdf p.882 (1 level, pcells NOT flattened ->
+;   leaves loose note shapes); ddDeleteObj / dbClose (temp-cell cleanup).
 ; ===========================================================================
 
 ; Resolve the schematic cellview to draw into (current edit cellview).
-; geGetEditCellView() -> d_cellview  (skdfref.pdf p.104)
+; geGetEditCellView() -> d_cellview  (skdfref.pdf p.106)
 (defun nh_targetCv (@optional cv)
   (or cv (geGetEditCellView)))
 
-; Stash IR + cv, then prompt for a single point. The actual emit happens in
-; nh_placeDoneCB after the user clicks.
-; enterPoint(?prompts ... ?doneProc "fn") ; skuiref.pdf p.1197 (callback (w done pts))
-(defun nhPlaceIR (ir @optional cv)
-  (let ((target (nh_targetCv cv)))
-    (cond
-      ((null ir)     (warn "nhPlaceIR: empty IR -- nothing to place.\n") nil)
-      ((null target) (warn "nhPlaceIR: no editable cellview. Open a schematic first.\n") nil)
-      (t
-        (setq nh_pendingKind 'shapes)
-        (setq nh_pendingIR ir)
-        (setq nh_pendingCv target)
-        (enterPoint
-          ?prompts  (list "note-helper: click to place the note group")
-          ?doneProc "nh_placeDoneCB")
-        t))))
+; The window currently displaying cellview cv, so we can make it current before
+; launching the schematic command. hiGetWindowList skuiref.pdf p.945.
+(defun nh_windowForCv (cv)
+  (let ((found nil) w)
+    (foreach w (hiGetWindowList)
+      (when (and (null found) (equal w~>cellView cv)) (setq found w)))
+    found))
 
-; enterPoint done-callback. done=t and car(pts) is the entered point.
-; Dispatches on nh_pendingKind: 'shapes emits the IR; 'symbol instances the
-; pending master (and stamps the instance non-netlisting too).
-(defun nh_placeDoneCB (w done pts)
-  (let (off kind inst)
-    (when (and done pts)
-      (setq off  (car pts))
-      (setq kind (and (boundp 'nh_pendingKind) nh_pendingKind))
-      (cond
-        ((eq kind 'symbol)
-          (when (and nh_pendingMaster nh_pendingCv)
-            ; dbCreateInst(cv master name point orient) ; skdfref.pdf p.941
-            (setq inst (errset (dbCreateInst nh_pendingCv nh_pendingMaster nil off "R0") t))
-            (when (and inst (car inst))
-              (errset (dbReplaceProp (car inst) "nlAction" "string" "ignore") t))
-            (errset (hiRedraw w) t)))
-        (t
-          (when (and nh_pendingIR nh_pendingCv)
-            (errset (nh_emitIR nh_pendingCv nh_pendingIR off) t)
-            (errset (hiRedraw w) t))))))     ; hiRedraw(w) ; skuiref.pdf p.1015
-  (setq nh_pendingKind nil)
-  (setq nh_pendingIR nil)
-  (setq nh_pendingCv nil)
-  (setq nh_pendingMaster nil)
+; Map the GUI Output string (or a symbol) to a mode symbol.
+(defun nh_modeSym (mode)
+  (cond
+    ((or (eq mode 'symbol)    (equal mode "symbol"))             'symbol)
+    ((or (eq mode 'resizable) (equal mode "symbol (resizable)")) 'resizable)
+    (t                                                           'loose)))
+
+; Build the symbol/pcell master to drag for a given mode. Returns the master
+; cellview (usable as a schHiCreateInst source) or nil on failure. For loose
+; mode the cell is a uniquely named throwaway (flattened + deleted after
+; placement); for symbol/resizable it is the user-chosen cell (default
+; "nh_note"). The master is created in the target schematic's own library.
+(defun nh_buildMasterForMode (ir lib modeSym userCell)
+  (let (cell)
+    (cond
+      ((eq modeSym 'resizable)
+        (setq cell (if (and userCell (not (equal userCell ""))) userCell "nh_note"))
+        (nh_buildResizableFromIR ir lib cell))
+      ((eq modeSym 'symbol)
+        (setq cell (if (and userCell (not (equal userCell ""))) userCell "nh_note"))
+        (nh_buildSymbolFromIR ir lib cell))
+      (t
+        (setq nh_looseSeq (add1 nh_looseSeq))
+        (setq cell (sprintf nil "nh_loose_tmp_%d" nh_looseSeq))
+        (nh_buildSymbolFromIR ir lib cell)))))
+
+; Arm a ghost placement of IR per mode, then defer the interactive launch to an
+; hiRegTimer tick. Returns t when armed, nil (with a warn) when it cannot place.
+(defun nhPlaceIRGhost (ir modeSym @optional userCell userLib cv)
+  (let (target lib master)
+    (setq target  (nh_targetCv cv))
+    (setq modeSym (nh_modeSym modeSym))
+    (cond
+      ((null ir)
+        (warn "note-helper: empty IR -- nothing to place.\n") nil)
+      ((null target)
+        (warn "note-helper: open a schematic first (nothing to place into).\n") nil)
+      ((not (equal target~>cellViewType "schematic"))
+        (warn "note-helper: the drag-place ghost needs a SCHEMATIC window.\n") nil)
+      (t
+        ; symbol/resizable may target a user-named library (cross-lib instance
+        ; placement is fine); loose always uses the schematic's own lib (its
+        ; throwaway temp cell is built and deleted there).
+        (setq lib (if (and (not (eq modeSym 'loose)) userLib (not (equal userLib "")))
+                      userLib target~>libName))
+        (setq master (car (errset (nh_buildMasterForMode ir lib modeSym userCell) t)))
+        (cond
+          ((null master)
+            (warn "note-helper: building the placement master failed -- see CIW.\n") nil)
+          (t
+            (setq nh_plLib    lib)
+            (setq nh_plCell   master~>cellName)
+            (setq nh_plView   "symbol")
+            (setq nh_plCv     target)
+            (setq nh_plWin    (nh_windowForCv target))
+            (setq nh_plTmp    (if (eq modeSym 'loose) master~>cellName nil))
+            (setq nh_plMaster (if (eq modeSym 'loose) master nil))
+            (setq nh_plPoll   0)
+            (hiRegTimer "nh_launchPlace()" 1)   ; launch after the callback returns
+            t))))))
+
+; hiRegTimer tick: make the schematic window current, then start the native
+; instance-drag (live ghost). For loose mode also start the flatten poll.
+(defun nh_launchPlace ()
+  (when (and nh_plLib nh_plCell nh_plCv)
+    (when nh_plWin (errset (hiSetCurrentWindow nh_plWin) t))
+    (errset
+      (schHiCreateInst                                   ; skcompref.pdf p.65
+        ?libraryName nh_plLib ?cellName nh_plCell ?viewName nh_plView)
+      t)
+    (when nh_plTmp
+      (setq nh_plPoll 0)
+      (hiRegTimer "nh_loosePoll()" 2)))
   t)
+
+; Instances of the pending temp cell currently sitting in the target cellview.
+(defun nh_looseInsts ()
+  (let ((out nil) inst)
+    (when (and nh_plCv nh_plTmp)
+      (foreach inst nh_plCv~>instances
+        (when (and (equal inst~>cellName nh_plTmp)
+                   (equal inst~>libName  nh_plLib))
+          (setq out (cons inst out)))))
+    out))
+
+; Close + delete the throwaway temp symbol cell (loose mode), after its
+; instances were flattened away. dbClose first to drop the open master handle.
+(defun nh_looseCleanupTmp ()
+  (when nh_plMaster (errset (dbClose nh_plMaster) t))
+  (when (and nh_plLib nh_plTmp)
+    (let ((cid (ddGetObj nh_plLib nh_plTmp)))
+      (when cid (errset (ddDeleteObj cid) t))))
+  t)
+
+; Reset the pending-placement globals (no disk side-effects -- cleanup of the
+; temp cell is nh_looseCleanupTmp's job).
+(defun nh_plClear ()
+  (setq nh_plLib nil)  (setq nh_plCell nil) (setq nh_plCv nil)
+  (setq nh_plWin nil)  (setq nh_plTmp nil)  (setq nh_plMaster nil)
+  (setq nh_plPoll 0)
+  t)
+
+; Loose-mode flatten poll. schHiCreateInst gives no completion callback, so we
+; watch the cellview: each newly dropped temp instance is flattened in place
+; into loose note shapes (the create command keeps repeating in Virtuoso, so we
+; handle multiple drops); after ~60s with no new drop we assume the user is
+; done (or pressed Esc) and delete the temp cell. Re-registers itself each tick.
+(defun nh_loosePoll ()
+  (when nh_plTmp
+    (let ((insts (nh_looseInsts)))
+      (cond
+        (insts
+          (foreach inst insts (errset (dbFlattenInst inst 1 nil) t))   ; p.882
+          (when nh_plWin (errset (hiRedraw nh_plWin) t))
+          (setq nh_plPoll 0)                      ; activity -> reset idle budget
+          (hiRegTimer "nh_loosePoll()" 2))        ; keep watching for more drops
+        (t
+          (setq nh_plPoll (add1 nh_plPoll))
+          (cond
+            ((lessp nh_plPoll 300)                ; ~60s @ 0.2s ticks idle budget
+              (hiRegTimer "nh_loosePoll()" 2))
+            (t
+              (nh_looseCleanupTmp)
+              (nh_plClear)))))))
+  t)
+
+; Back-compat: drag-place IR as loose note shapes (CIW convenience).
+(defun nhPlaceIR (ir @optional cv)
+  (nhPlaceIRGhost ir 'loose nil nil cv))
 
 ; ===========================================================================
 ; Symbol output mode (M3): encapsulate the table as a reusable, non-netlisting
@@ -393,27 +508,12 @@
 (defun nhBuildSymbol (text symLib symCell @optional cfg)
   (nh_buildSymbolFromIR (nh_buildIR (nhParseText text) cfg) symLib symCell))
 
-; Place an instance of a (note) symbol into a schematic at one click.
-(defun nhPlaceSymbolInst (master schematicCv)
-  (cond
-    ((null master)      (warn "nhPlaceSymbolInst: no symbol master.\n") nil)
-    ((null schematicCv) (warn "nhPlaceSymbolInst: no schematic cellview.\n") nil)
-    (t
-      (setq nh_pendingKind 'symbol)
-      (setq nh_pendingMaster master)
-      (setq nh_pendingCv schematicCv)
-      (enterPoint
-        ?prompts  (list "note-helper: click to place the note symbol")
-        ?doneProc "nh_placeDoneCB")
-      t)))
-
-; Top-level: build the symbol from text, then place an instance interactively.
+; Top-level: build the symbol from text, then drag-place an instance with the
+; native ghost (schHiCreateInst). The master is created in the target
+; schematic's own library; symLib is kept for back-compat but the ghost places
+; from the schematic's library. Mode 'symbol -> reusable non-netlisting symbol.
 (defun nhPlaceTableAsSymbol (text symLib symCell @optional cfg schematicCv)
-  (let (target master)
-    (setq target (or schematicCv (geGetEditCellView)))
-    (when (null target) (error "nhPlaceTableAsSymbol: no schematic edit cellview"))
-    (setq master (nhBuildSymbol text symLib symCell cfg))
-    (nhPlaceSymbolInst master target)))
+  (nhPlaceIRGhost (nh_buildIR (nhParseText text) cfg) 'symbol symCell symLib schematicCv))
 
 ; ===========================================================================
 ; Resizable symbol output (M3b): encapsulate the table as a SELF-CONTAINED
