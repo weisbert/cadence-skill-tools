@@ -9,9 +9,9 @@ Last updated: 2026-06-21.
 > **M5-UX: live drag-ghost placement + Table/SVG tabs + file Browse — committed
 > & pushed to `main` (`39433e6`).** This session reworked the GUI/placement after
 > the user hit four issues testing the form live. All fixes verified
-> non-interactively via skillbridge; the **interactive drag-ghost itself still
-> needs a human click to fully confirm** (can't drive it from the bridge without
-> wedging it). User confirmed the Table path works after reopening.
+> non-interactively via skillbridge, AND the **interactive drag-ghost +
+> click-to-drop is user-confirmed working live (2026-06-21)** for all Output
+> modes (loose flatten / symbol / resizable). All four issues closed.
 >
 > Four issues → fixes:
 > 1. **"click in schematic does nothing"** — `enterPoint` started SYNCHRONOUSLY
