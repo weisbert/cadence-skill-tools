@@ -36,10 +36,14 @@ Upload **both** files to the red zone, into `.../workarea/skill_tools/`.
 
 ## 2. Red zone (Linux) — deploy
 
-```bash
+```tcsh
 cd .../workarea/skill_tools
-./deploy/deploy.sh skill_tools_<shorthash>.tar.gz
+bash deploy/deploy.sh skill_tools_<shorthash>.tar.gz
 ```
+
+> Invoke with **`bash`**, not `./deploy/deploy.sh`: the red zone's login shell is
+> often **tcsh/csh**, and an upload channel may drop the exec bit — `bash` needs
+> neither. Run it as a script; don't `source` it.
 
 It verifies the sha256, extracts to staging, **backs up** the current install to
 `.deploy/backups/<timestamp>/` (keeps the newest 3), then swaps the new content
@@ -57,7 +61,7 @@ load(".../workarea/skill_tools/skill_tools.il")
 `deploy.sh` ships *inside* the package, so it self-refreshes on every update —
 but the very first time there's nothing to run it with. Once:
 
-```bash
+```tcsh
 cd .../workarea
 tar -xzf skill_tools_<shorthash>.tar.gz   # yields ./skill_tools/
 # move/merge ./skill_tools into place as .../workarea/skill_tools

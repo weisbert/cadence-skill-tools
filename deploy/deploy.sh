@@ -14,7 +14,11 @@
 #
 # Usage (after the one-time bootstrap below):
 #   cd .../workarea/skill_tools
-#   ./deploy/deploy.sh skill_tools_<hash>.tar.gz
+#   bash deploy/deploy.sh skill_tools_<hash>.tar.gz
+#
+# Invoke via `bash` (not ./deploy.sh): the red zone's login shell is often
+# tcsh/csh, and an upload channel may drop the exec bit. `bash` needs neither.
+# Run it as a script -- never `source` it (it is bash, and it exits on success).
 #
 # The tarball + its .sha256 sidecar should be uploaded together (typically into
 # skill_tools/ itself); both are copied into .deploy/incoming/ before the swap.
@@ -63,6 +67,7 @@ cp -f "$TARBALL_SRC" "$INCOMING/$TAR_NAME"
 
 # --- verify checksum (abort before touching the install) ---------------------
 if [[ -f "$INCOMING/$TAR_NAME.sha256" ]]; then
+  sed -i 's/\r$//' "$INCOMING/$TAR_NAME.sha256"   # tolerate a CRLF sidecar (Windows-edited)
   if command -v sha256sum >/dev/null 2>&1; then
     echo ">> verifying sha256..."
     ( cd "$INCOMING" && sha256sum -c "$TAR_NAME.sha256" ) \
