@@ -4,7 +4,56 @@
 (design + verified API citations + decisions) and `README.md` (user-facing
 status). This file = current state + how to continue.
 
-Last updated: 2026-06-20.
+Last updated: 2026-06-21.
+
+> **M5-UX: live drag-ghost placement + Table/SVG tabs + file Browse — committed
+> & pushed to `main` (`39433e6`).** This session reworked the GUI/placement after
+> the user hit four issues testing the form live. All fixes verified
+> non-interactively via skillbridge; the **interactive drag-ghost itself still
+> needs a human click to fully confirm** (can't drive it from the bridge without
+> wedging it). User confirmed the Table path works after reopening.
+>
+> Four issues → fixes:
+> 1. **"click in schematic does nothing"** — `enterPoint` started SYNCHRONOUSLY
+>    from a form button callback never arms. Now the callback only ARMS (stash
+>    `nh_pl*` globals) and DEFERS the launch to `hiRegTimer("nh_launchPlace()" 1)`;
+>    the timer makes the schematic window current (`hiSetCurrentWindow` of the
+>    window from `hiGetWindowList` matching `w~>cellView`) then runs the command.
+> 2. **no cursor preview** — `enterPoint` draws nothing. Replaced with
+>    `schHiCreateInst(?libraryName ?cellName ?viewName "symbol")` = native ghost
+>    that drags with the cursor, one click drops. Used for ALL three Output modes.
+>    Loose mode: build a throwaway temp note-symbol, drag-drop it, then
+>    `dbFlattenInst(inst 1 nil)` the dropped instance into LOOSE note shapes and
+>    delete the temp cell (poll via self-re-registering `hiRegTimer` since
+>    schHiCreateInst has no done callback; flattened shapes stay non-electrical on
+>    `("text" "drawing")`). symbol/resizable leave the instance.
+> 3. **no Table/SVG separation + no field show/hide** — top `hiCreateTabField`
+>    with **Table** / **SVG** pages; shared styling+Output below. Output cyclic
+>    `?callback 'nh_guiOnMode` → `nh_guiSyncFields` greys out Symbol library/cell
+>    via `hiSetFieldEnabled` unless a symbol mode.
+> 4. follow-ups: added a **Symbol library** field (blank = schematic's lib;
+>    cross-lib place is fine); fixed the SVG width field sliver (promptWidth was ≥
+>    field width); made **SVG file + Table file** fields `hiCreateFileSelectorField`
+>    with a **Browse** button defaulting to `$WORK_ROOT2` (the workarea), absolute
+>    path returned (`hiSimplifyFilename=t`).
+>
+> **Two new gotchas (now in auto-memory — [[reference_skill_tabfield_access]],
+> [[reference_skill_interactive_defer]]):**
+> - **Fields inside a tab page are NOT reachable as `form->name`** (returns nil!).
+>   The GUI stashes the four tab-page handles in globals (`nh_fInput`, `nh_fMdPath`,
+>   `nh_fSvg`, `nh_fVecW`) and callbacks read/write them directly (`handle->value`,
+>   or `nh_setHandleVal` for writes). Shared (non-tab) fields still use `form->name`.
+> - **`hiCreateAppForm` can't replace a MAPPED same-name form** — after a reload,
+>   the user must CLOSE the open Note Helper window before reopening to get the new
+>   layout. `nhOpenGUI` was split into `nh_guiBuild` (build+instantiate, returns
+>   form, no display — used for headless skillbridge verify) + `nhOpenGUI`
+>   (build + `hiDisplayForm`).
+>
+> Test fixtures (NOT committed, untracked): `naoda.jpg` (Kobe photo the user
+> dropped in) + `naoda.svg` (traced with `img2svg --mode threshold --levels 5
+> --rmbg`; parses to 100 note shapes). **README/REQUIREMENTS not yet updated** for
+> the tabs/ghost/Browse rework — they still describe the old flat form + one-click
+> `enterPoint` placement.
 
 > **M4 + img2svg + toolbox + Markdown file I/O — DONE, live-verified, committed &
 > pushed to `main`.** This batch added: SVG vector import (Feature A); the
@@ -27,7 +76,8 @@ annotations. Built and **live-verified on IC6.1.8** (not just static review):
 - ✅ **M1/M2 — table → loose note shapes.** Markdown + TSV auto-detect →
   canonical model (text + per-column align + header) → monospace auto-layout
   (grid styles, header double-rule, alignment, optional max-col truncation) →
-  `schCreateNoteShape`/`schCreateNoteLabel` → one-click `enterPoint` placement.
+  `schCreateNoteShape`/`schCreateNoteLabel` → **drag-ghost placement** (M5:
+  `schHiCreateInst`; loose flattens a temp symbol — was one-click `enterPoint`).
 - ✅ **Proportional size knob.** GUI "Size = text height" scales the *whole*
   table (text+cells+padding+gaps) uniformly — everything derives from font
   height (`paddingRatio` makes padding proportional).
@@ -66,9 +116,9 @@ annotations. Built and **live-verified on IC6.1.8** (not just static review):
 ```
 note_helper/
   note_helper.il   loader (umbrella skill_tools.il loads it after dreg_gen)
-  nhStore.il       config defaults (charAspect 1.45, ...) + pending state + parser wiring
-  nhCore.il        parse → IR → emit → place; symbol build/place; vector import (M4)
-  nhGui.il         hi* form (nhOpenGUI) + MyTool self-register
+  nhStore.il       config defaults (charAspect 1.45) + nh_pl* placement state + tab-field handles + nh_browseDir + parser wiring
+  nhCore.il        parse → IR → emit → ghost-place (nhPlaceIRGhost/nh_launchPlace/nh_loosePoll); symbol/pcell build; vector import (M4)
+  nhGui.il         tabbed hi* form (nh_guiBuild + nhOpenGUI) + file-selector helpers + MyTool self-register
   REQUIREMENTS.md  full design + verified citations + decisions
   README.md        user-facing
   HANDOFF.md       this file
@@ -88,11 +138,14 @@ GUI verification I also installed `Xvfb`; the unified GUI was built+driven and
 screenshotted under `xvfb-run` + `PIL.ImageGrab(xdisplay=...)`. `--selftest`
 exercises both tabs headlessly.
 
-Public API: `nhOpenGUI`, `nhParseText`, `nh_buildIR`, `nhEmitTableAt`,
-`nhPlaceTable`, `nhBuildSymbol`, `nh_buildSymbolFromIR`, `nhPlaceTableAsSymbol`,
-`nhBuildResizableSymbol`, `nh_buildResizableFromIR`, `nh_pcellSource`,
-`nhImportVector`, `nhPlaceVector`, `nh_readFile`, `nh_writeFile`,
-`nh_tableToMarkdown`, `nhTextToMarkdown`, `nhSelfTest`.
+Public API: `nhOpenGUI`, `nh_guiBuild`, `nhParseText`, `nh_buildIR`,
+`nhEmitTableAt`, `nhPlaceTable`, `nhPlaceIRGhost` (M5 ghost placer; `nhPlaceIR`,
+`nhPlaceTable`, `nhPlaceVector`, `nhPlaceTableAsSymbol` all route through it),
+`nhBuildSymbol`, `nh_buildSymbolFromIR`, `nhBuildResizableSymbol`,
+`nh_buildResizableFromIR`, `nh_pcellSource`, `nhImportVector`, `nhPlaceVector`,
+`nh_readFile`, `nh_writeFile`, `nh_tableToMarkdown`, `nhTextToMarkdown`,
+`nhSelfTest`. (Removed: `nhPlaceSymbolInst`, `nh_placeDoneCB` — the old
+`enterPoint` path.)
 
 ## Verified facts (don't re-derive)
 
