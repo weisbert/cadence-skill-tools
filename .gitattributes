@@ -1,0 +1,31 @@
+# Red-zone deploy pipeline depends on this file. See deploy/pack.ps1 + deploy/deploy.sh.
+#
+# Normalize ALL text to LF in the object store (and on checkout). The yellow
+# zone is Windows; without this a Windows-side commit could push CRLF into the
+# repo, and a .py shebang with a trailing \r becomes "bad interpreter" on Linux.
+# `git archive` reads committed blobs (not the Windows working tree), so with LF
+# blobs the package is correct regardless of the yellow zone's autocrlf setting.
+* text=auto eol=lf
+
+# Source we ship — be explicit (defensive even though * already covers them).
+*.il  text eol=lf
+*.py  text eol=lf
+*.sh  text eol=lf
+*.md  text eol=lf
+*.svg text eol=lf
+
+# Binary assets — never touch.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+
+# Stamped at package time by `git archive` (export-subst expands $Format:..$).
+# The red zone reads this with plain `cat` — no git needed.
+VERSION export-subst
+
+# Keep the package git-free and minimal: these never reach the red zone.
+.gitattributes  export-ignore
+.gitignore      export-ignore
+deploy/pack.ps1 export-ignore
+PLAN.md         export-ignore
