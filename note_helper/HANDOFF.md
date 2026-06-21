@@ -51,9 +51,9 @@ Last updated: 2026-06-21.
 >
 > Test fixtures (NOT committed, untracked): `naoda.jpg` (Kobe photo the user
 > dropped in) + `naoda.svg` (traced with `img2svg --mode threshold --levels 5
-> --rmbg`; parses to 100 note shapes). **README/REQUIREMENTS not yet updated** for
-> the tabs/ghost/Browse rework — they still describe the old flat form + one-click
-> `enterPoint` placement.
+> --rmbg`; parses to 100 note shapes). **README + REQUIREMENTS updated** for the
+> tabs/ghost/Browse rework (REQUIREMENTS §6/§7/§8 carry dated supersede notes;
+> original spec kept as design history).
 
 > **M4 + img2svg + toolbox + Markdown file I/O — DONE, live-verified, committed &
 > pushed to `main`.** This batch added: SVG vector import (Feature A); the

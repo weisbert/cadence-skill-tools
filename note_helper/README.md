@@ -10,13 +10,19 @@ citations, decisions, and the milestone plan.
 
 ## Status — M1 + M3 + M3b (Feature B: tables) + M4 (Feature A: SVG vectors)
 
+> **GUI reworked (2026-06-21):** **Table / SVG tabs**, **live drag-ghost**
+> placement for all Output modes (like pressing **i**), file **Browse** buttons
+> (default `$WORK_ROOT2` / the workarea), a **Symbol library** field, and
+> Output-driven field greying. All live-confirmed.
+
 ### Feature A — vector diagram → lines (M4)
 
 Import an **SVG** figure and drop it into a schematic as pure note lines:
 
-- GUI: put the SVG path in **"SVG file"**, a target **"Figure width"** (user
-  units, aspect always preserved), pick the **Output** mode, and click
-  **Import SVG...** — then click once in the schematic to place it.
+- GUI (**SVG** tab): set the **"SVG file"** path (a **Browse** button opens a
+  file picker in `$WORK_ROOT2` / the workarea), a target **"Figure width"**
+  (user units, aspect always preserved), pick the **Output** mode, and click
+  **Import SVG...** — a live ghost then follows the cursor; one click drops it.
 - Handles `<path>` (with cubic/quadratic Béziers + elliptic arcs, flattened to
   polylines), `<line>`, `<polyline>`, `<polygon>`, `<rect>`, `<circle>`,
   `<ellipse>`, and `<text>`; honours `transform` chains; flips Y (SVG is
@@ -49,12 +55,14 @@ Implemented (pure IL — no Python needed for the table path):
   together (everything is derived from font height). Set it before placing
   (notes can't be uniformly rescaled after placement).
 - **Three output modes** (GUI "Output" cyclic):
-  - *loose shapes* (default) — note shapes drawn straight into the schematic.
+  - *loose shapes* (default) — note shapes in the schematic (placed by dragging
+    a throwaway symbol ghost, then flattened to loose shapes on drop).
   - *symbol* — the table is encapsulated as a reusable symbol (cell name from
-    the "Symbol cell" field, built in the current schematic's library),
-    stamped `nlAction="ignore"` and carrying **zero pins**, then placed as an
-    instance with one click. Verified non-netlisting on live IC6.1.8:
-    `ciIgnoreDevice(inst)` returns `t`; 0 terminals/pins.
+    the **"Symbol cell"** field, in the **"Symbol library"** field's library —
+    blank = the schematic's own library), stamped `nlAction="ignore"` and
+    carrying **zero pins**, then drag-placed as an instance. Verified
+    non-netlisting on live IC6.1.8: `ciIgnoreDevice(inst)` returns `t`; 0
+    terminals/pins.
   - *symbol (resizable)* — same as *symbol*, but built as a **self-contained
     pcell** with one parameter, `scale`. Select the placed note and press **q**
     (Edit Object Properties) → change **"Size scale"** → the whole note
@@ -66,11 +74,19 @@ Implemented (pure IL — no Python needed for the table path):
     IC6.1.8: geometry re-evaluates from `scale` (width ×1 → ×2), `scale` is an
     editable CDF param on the instance, 0 pins.
 - Emits `schCreateNoteShape` + `schCreateNoteLabel` (both non-electrical).
-- One-click placement via `enterPoint` (the click sets the table's top-left).
-- Minimal `hi*` form (`nhOpenGUI`): input MLT, Parse status, a table-file
-  (`.md`/`.tsv`) path with **Load file** / **Save .md** buttons, font-height /
-  max-col / grid / output-mode fields, SVG file + figure-width fields,
-  Parse + Place + Import SVG buttons.
+- **Live drag-ghost placement** (`schHiCreateInst`): after **Place...** /
+  **Import SVG...** a preview of the note follows the cursor and one click
+  drops it — like pressing **i** to insert a symbol. Loose mode drags a
+  throwaway symbol, then `dbFlattenInst`s it into loose note shapes and deletes
+  the temp cell. (The interactive launch is deferred via `hiRegTimer` — an
+  enterfunction started inside a form callback never arms.)
+- **Tabbed `hi*` form** (`nhOpenGUI`): a **Table** tab (input MLT + a table-file
+  `.md`/`.tsv` field with a **Browse** button and **Load file** / **Save .md**)
+  and an **SVG** tab (SVG-file Browse field + figure width). Shared below the
+  tabs: Parse status, font-height / max-col / grid, **Output** mode, and
+  **Symbol library** / **Symbol cell** (auto-greyed unless an Output symbol
+  mode), with **Parse / Place... / Import SVG...** buttons. The file **Browse**
+  buttons default to `$WORK_ROOT2` (the workarea).
 - **Markdown file import/export (Cadence side):** put a path in **Table file**,
   click **Load file** to pull a `.md`/`.tsv` into the input, or **Save .md** to
   write the current table back out as normalized, aligned Markdown
@@ -105,10 +121,11 @@ load(".../skill_tools/note_helper/note_helper.il")
 ## Use
 
 - MyTool → **Note Helper**, or `nhOpenGUI()` in the CIW.
-- Paste a Markdown or TSV table, click **Parse** to sanity-check, then
-  **Place...** and click once in the schematic.
-- For an SVG figure: type its path in **"SVG file"**, set **"Figure width"**,
-  then **Import SVG...** and click once to place.
+- **Table** tab: paste a Markdown or TSV table, click **Parse** to sanity-check,
+  then **Place...** — a ghost follows the cursor; click once to drop it.
+- **SVG** tab: pick a file with **Browse** (opens in `$WORK_ROOT2`), set
+  **"Figure width"**, then **Import SVG...** and click once to drop.
+- Reopen the form after reloading the plugin (a mapped form can't be replaced).
 - Headless / scripting entry points:
   - `nhParseText(text)` → table model
   - `nh_buildIR(table cfg)` → IR

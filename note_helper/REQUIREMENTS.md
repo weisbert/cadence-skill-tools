@@ -159,6 +159,15 @@ and are verified: `dbCreateLine` (zero-width; skdfref p.514), `dbCreatePath` (wi
 
 ## 6. Placement (one click → whole group)
 
+> **Superseded by M5 (2026-06-21):** placement is now a **live drag-ghost** via
+> `schHiCreateInst` (drags the master with the cursor, one click drops), launched
+> from an `hiRegTimer` tick — an enterfunction started inside a form button
+> callback never arms (that was the "click does nothing" bug). Loose mode drags a
+> throwaway symbol then `dbFlattenInst`s it into loose note shapes (and deletes
+> the temp cell). The original `enterPoint` build-at-click flow below is kept for
+> design history. See `nhPlaceIRGhost` / `nh_launchPlace` / `nh_loosePoll` in
+> nhCore.il and auto-memory `reference_skill_interactive_defer`.
+
 Verified flow (skuiref.pdf):
 
 1. `enterPoint(?prompts list("Click to place note group.") ?doneProc "nh_placeCB")`
@@ -183,6 +192,13 @@ primary dimension.
 
 ## 7. Output modes
 
+> **Updated (M3b + M5):** there are **three** modes — *loose shapes*, *symbol*,
+> and *symbol (resizable)* (a self-contained `scale` pcell). All three now
+> drag-place via the M5 ghost (§6); *symbol* / *resizable* take a **Symbol
+> library** (blank = the schematic's own lib) + **Symbol cell**; *loose* flattens
+> its temp-symbol ghost into loose note shapes. The two-row table below is the
+> original M1/M3 spec.
+
 | Mode | How | Netlist safety |
 |------|-----|----------------|
 | **Loose note shapes** (default) | emit IR straight into the active schematic cv | zero risk — note primitives are non-electrical by construction |
@@ -197,6 +213,18 @@ all netlist formats (Spectre/AMS/UltraSim); whether `lvsIgnore="TRUE"` is also n
 ---
 
 ## 8. GUI — minimal `hi*` form (reuse dgenGui patterns)
+
+> **Reworked (M5, 2026-06-21):** the form is now **tabbed** — a **Table** page +
+> an **SVG** page (`hiCreateTabField`) — with the styling / Output fields and
+> action buttons shared below. The SVG-file and table-file inputs are
+> `hiCreateFileSelectorField`s with a **Browse** button defaulting to
+> `$WORK_ROOT2`. The **Output** cyclic greys **Symbol library / cell** out unless
+> a symbol mode (`hiSetFieldEnabled`). GOTCHA: fields inside a tab page are NOT
+> reachable as `form->name` (returns nil) — their handles are stashed in globals
+> (`nh_fInput`/`nh_fMdPath`/`nh_fSvg`/`nh_fVecW`); see auto-memory
+> `reference_skill_tabfield_access`. `nhOpenGUI` is split into `nh_guiBuild`
+> (build + instantiate, no display — for headless verify) + `nhOpenGUI`
+> (+ `hiDisplayForm`). The flat-form spec below is design history.
 
 Verified form flow (skuiref.pdf): `hiCreateAppForm` (p.502) → `hiInstantiateForm` (p.767) →
 `hiSetFormSize` (p.813) → `hiDisplayForm` (p.688).
