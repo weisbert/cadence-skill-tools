@@ -700,23 +700,26 @@
 ; host, and initializing a Tcl interp (needs init.tcl) catches the lib poisoning
 ; -- both WITHOUT a display or a window flash.
 ;
-; Returns a status symbol: 'ok / 'no-script / 'no-tk / 'launch-failed -- the
-; caller maps it to a GUI message.
+; Returns a status symbol: 'ok / 'noScript / 'noTk / 'launchFailed -- the
+; caller maps it to a GUI message. (NO hyphens in symbols: SKILL reads `-` as
+; the minus operator, so 'no-tk parses as 'no - tk and evaluates an unbound
+; `tk`. IC6.1.8 hid it -- the happy path returned 'ok and never reached those
+; branches -- but IC18.1 hits it the moment a non-ok branch is taken.)
 ; Refs: system sklangref.pdf p.638 (spawns a UNIX process, returns exit code,
 ;   0 = ok); isFile p.428.
 (defun nhLaunchToolbox ()
   (let ((script (nh_toolboxScriptPath))
         (scrub (or (and (boundp 'nh_pyEnvScrub) nh_pyEnvScrub) "")))
     (cond
-      ((not (isFile script)) 'no-script)
+      ((not (isFile script)) 'noScript)
       ((not (equal 0 (system (sprintf nil
               "%s %s -c \"import tkinter; tkinter.Tcl()\" > /dev/null 2>&1"
               scrub nh_pythonCmd))))
-        'no-tk)
+        'noTk)
       ((equal 0 (system (sprintf nil "%s %s \"%s\" > /dev/null 2>&1 &"
                                  scrub nh_pythonCmd script)))
         'ok)
-      (t 'launch-failed))))
+      (t 'launchFailed))))
 
 ; ===========================================================================
 ; Markdown / TSV file import + export (Cadence-side, symmetric with the Python

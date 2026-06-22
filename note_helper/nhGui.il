@@ -215,11 +215,11 @@
   (let ((r (car (errset (nhLaunchToolbox) t))))
     (nh_setStatus form
       (cond
-        ((eq r 'ok)        "toolbox launched -- prep a .svg/.md, then load it here")
-        ((eq r 'no-script) "toolbox.py not found -- check note_helperDir")
-        ((eq r 'no-tk)     "Python tkinter/Tcl unusable -- check python3-tkinter")
-        ((eq r 'launch-failed) "toolbox launch failed -- see CIW")
-        (t                 "toolbox launch error -- see CIW")))
+        ((eq r 'ok)       "toolbox launched -- prep a .svg/.md, then load it here")
+        ((eq r 'noScript) "toolbox.py not found -- check note_helperDir")
+        ((eq r 'noTk)     "Python tkinter/Tcl unusable -- check python3-tkinter")
+        ((eq r 'launchFailed) "toolbox launch failed -- see CIW")
+        (t                "toolbox launch error -- see CIW")))
     t))
 
 ; OK/close: nothing to persist (table text is transient by design).
