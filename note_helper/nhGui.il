@@ -61,8 +61,25 @@
 ; Callbacks
 ; ---------------------------------------------------------------------------
 
-; Parse: report row x col count (or an error) on the status line.
+; Which SOURCE tab is active? Returns 'svg when the SVG page shows, else 'table.
+; The Tab field's value is the 1-based page index (1="Table", 2="SVG"). The tab
+; field itself is a TOP-LEVEL form field, so -- unlike the fields INSIDE a page
+; (form->name => nil, hence the stashed handles) -- it IS reachable as
+; form->nh_src. Defaults to 'table if the read ever errors.
+; Ref: skuiref.pdf hiCreateTabField p.654 ("form->field->value" = page number).
+(defun nh_guiActiveSrc (form)
+  (let ((v (car (errset form->nh_src->value t))))
+    (if (equal v 2) 'svg 'table)))
+
+; Parse: report on the ACTIVE source -- table dims, or SVG-file readiness.
 (defun nh_guiParseCB (form)
+  (if (eq (nh_guiActiveSrc form) 'svg)
+      (nh_guiParseSvgCB form)
+      (nh_guiParseTableCB form))
+  t)
+
+; Parse (table): report row x col count (or an error) on the status line.
+(defun nh_guiParseTableCB (form)
   (let (res table)
     (setq res (errset (nhParseText nh_fInput->value) t))
     (cond
@@ -76,10 +93,23 @@
             (if (get table 'header) " (header)" "")))))
     t))
 
+; Parse (SVG): validate the path is set + exists (the real parse runs on Place).
+(defun nh_guiParseSvgCB (form)
+  (let ((svg nh_fSvg->value))
+    (cond
+      ((or (null svg) (equal svg ""))
+        (nh_setFieldVal "nh_form" 'nh_status "enter an SVG file path to import"))
+      ((not (isFile svg))
+        (nh_setFieldVal "nh_form" 'nh_status "SVG file not found -- check the path"))
+      (t
+        (nh_setFieldVal "nh_form" 'nh_status "SVG ready -- click Place"))))
+  t)
+
 ; Place a built IR via the shared ghost placement (nhPlaceIRGhost): all three
 ; Output modes drag a SYMBOL master with a live cursor preview, one click to
-; drop (loose flattens to note shapes afterward). Shared by the table Place
-; button and the SVG Import button so vector figures get the same three modes.
+; drop (loose flattens to note shapes afterward). Shared by both source paths
+; (table + SVG) -- the Place button dispatches by tab -- so vector figures get
+; the same three Output modes as tables.
 (defun nh_guiDispatchIR (form ir)
   (let (sym)
     (setq sym (nh_modeSym (or form->nh_mode->value "loose shapes")))
@@ -115,8 +145,18 @@
   (nh_guiSyncFields nh_form item)
   t)
 
-; Place (table): parse + build IR, then dispatch by Output mode.
+; Place: dispatch by the ACTIVE source tab. SVG tab -> import the vector file
+; and place it; Table tab -> parse the table text, build the IR, place it.
+; (Previously this was table-only, so it placed the table even while the SVG tab
+; was showing -- the "I clicked Place and still got the table" bug.)
 (defun nh_guiPlaceCB (form)
+  (if (eq (nh_guiActiveSrc form) 'svg)
+      (nh_guiImportCB form)
+      (nh_guiPlaceTableCB form))
+  t)
+
+; Place (table): parse + build IR, then dispatch by Output mode.
+(defun nh_guiPlaceTableCB (form)
   (let (res table cfg ir)
     (setq res (errset (nhParseText nh_fInput->value) t))
     (cond
@@ -135,6 +175,7 @@
 
 ; Import SVG (Feature A): run the external parser, then dispatch by Output mode
 ; (a vector figure can go in as loose shapes, a symbol, or a resizable symbol).
+; Reached via the Place button when the SVG tab is active (nh_guiPlaceCB).
 (defun nh_guiImportCB (form)
   (let (svg width res)
     (setq svg nh_fSvg->value)
@@ -239,7 +280,7 @@
 (defun nh_guiBuild (@optional initialText)
   (let (fInput fMdPath fLoad fSaveMd tablePage
         fSvg fW svgPage tabF
-        fStatus fFont fMax fGrid fMode fSymLib fSym fParse fPlace fImport
+        fStatus fFont fMax fGrid fMode fSymLib fSym fParse fPlace
         form sample rowH mlW mlH tabW tabH)
     (setq rowH 28) (setq mlW 360) (setq mlH 150)
     (setq tabW 410) (setq tabH 250)
@@ -304,8 +345,6 @@
                     ?callback "(nh_guiParseCB nh_form)"))
     (setq fPlace  (hiCreateButton ?name 'nh_btnPlace ?buttonText "Place..."
                     ?callback "(nh_guiPlaceCB nh_form)"))
-    (setq fImport (hiCreateButton ?name 'nh_btnImport ?buttonText "Import SVG..."
-                    ?callback "(nh_guiImportCB nh_form)"))
     ; ===== assemble the 2D form =====
     (setq form (hiCreateAppForm
       ?name 'nh_form
@@ -320,8 +359,7 @@
         (list fSymLib (list 0 432)  (list 340 rowH) 190)
         (list fSym    (list 0 466)  (list 340 rowH) 190)
         (list fParse  (list 0 504)  (list 90 rowH)  0)
-        (list fPlace  (list 100 504) (list 90 rowH) 0)
-        (list fImport (list 200 504) (list 120 rowH) 0))
+        (list fPlace  (list 100 504) (list 110 rowH) 0))
       ?callback (list "(nh_guiCloseCB nh_form)" "(nh_guiCloseCB nh_form)")
       ?buttonLayout 'OKCancelDef))
     (hiInstantiateForm form)
