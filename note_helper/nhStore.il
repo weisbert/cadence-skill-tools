@@ -64,8 +64,11 @@
 ;   nh_pythonCmd   -- shell command that runs Python 3 (default "python3").
 ;   nh_svg2irScript-- absolute path to nh_svg2ir.py; nil => derive from
 ;                     note_helperDir at call time (nh_svg2irScriptPath).
-(unless (boundp 'nh_pythonCmd)    (setq nh_pythonCmd "python3"))
-(unless (boundp 'nh_svg2irScript) (setq nh_svg2irScript nil))
+;   nh_toolboxScript-- absolute path to the Python toolbox GUI (toolbox.py);
+;                     nil => derive from note_helperDir (nh_toolboxScriptPath).
+(unless (boundp 'nh_pythonCmd)     (setq nh_pythonCmd "python3"))
+(unless (boundp 'nh_svg2irScript)  (setq nh_svg2irScript nil))
+(unless (boundp 'nh_toolboxScript) (setq nh_toolboxScript nil))
 
 ; ---------------------------------------------------------------------------
 ; Default styling config.

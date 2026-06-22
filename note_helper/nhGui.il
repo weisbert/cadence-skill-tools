@@ -208,6 +208,20 @@
             (nh_guiDispatchIR form (car res))))))
     t))
 
+; Toolbox...: launch the standalone Python data-prep GUI (Image->SVG, Table->
+; Markdown) in its own non-blocking window. It writes .svg/.md files you then
+; point the SVG-path / Table-file fields at -- no live data bridge needed.
+(defun nh_guiToolboxCB (form)
+  (let ((r (car (errset (nhLaunchToolbox) t))))
+    (nh_setStatus form
+      (cond
+        ((eq r 'ok)        "toolbox launched -- prep a .svg/.md, then load it here")
+        ((eq r 'no-script) "toolbox.py not found -- check note_helperDir")
+        ((eq r 'no-tk)     "Python has no tkinter -- install python3-tkinter")
+        ((eq r 'launch-failed) "toolbox launch failed -- see CIW")
+        (t                 "toolbox launch error -- see CIW")))
+    t))
+
 ; OK/close: nothing to persist (table text is transient by design).
 (defun nh_guiCloseCB (form)
   t)
@@ -290,7 +304,7 @@
 (defun nh_guiBuild (@optional initialText)
   (let (fInput fMdPath fLoad fSaveMd tablePage
         fSvg fW svgPage tabF
-        fStatus fFont fMax fGrid fMode fSymLib fSym fParse fPlace
+        fStatus fFont fMax fGrid fMode fSymLib fSym fParse fPlace fTool
         form sample rowH mlW mlH tabW tabH)
     (setq rowH 28) (setq mlW 360) (setq mlH 150)
     (setq tabW 410) (setq tabH 250)
@@ -358,6 +372,8 @@
                     ?callback "(nh_guiParseCB (nh_curForm))"))
     (setq fPlace  (hiCreateButton ?name 'nh_btnPlace ?buttonText "Place..."
                     ?callback "(nh_guiPlaceCB (nh_curForm))"))
+    (setq fTool   (hiCreateButton ?name 'nh_btnToolbox ?buttonText "Toolbox..."
+                    ?callback "(nh_guiToolboxCB (nh_curForm))"))
     ; ===== assemble the 2D form =====
     (setq form (hiCreateAppForm
       ?name 'nh_form
@@ -372,7 +388,8 @@
         (list fSymLib (list 0 432)  (list 340 rowH) 190)
         (list fSym    (list 0 466)  (list 340 rowH) 190)
         (list fParse  (list 0 504)  (list 90 rowH)  0)
-        (list fPlace  (list 100 504) (list 110 rowH) 0))
+        (list fPlace  (list 100 504) (list 110 rowH) 0)
+        (list fTool   (list 220 504) (list 110 rowH) 0))
       ?callback (list "(nh_guiCloseCB nh_form)" "(nh_guiCloseCB nh_form)")
       ?buttonLayout 'OKCancelDef))
     (hiInstantiateForm form)

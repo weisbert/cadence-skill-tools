@@ -672,6 +672,42 @@
 (defun nhPlaceVector (svgPath @optional width fontHeight cv)
   (nhPlaceIR (nhImportVector svgPath width fontHeight) cv))
 
+; ---------------------------------------------------------------------------
+; Launch the standalone Python data-prep toolbox GUI (Image->SVG + Table->
+; Markdown) as an INDEPENDENT, non-blocking window. It is a file producer: the
+; user prepares a .svg / .md, then points the SVG-path / Table-file fields at it
+; -- no live data bridge needed. Same shell-out plumbing as the SVG parser.
+; ---------------------------------------------------------------------------
+
+; Resolve the toolbox GUI path: explicit override, else relative to note_helperDir.
+(defun nh_toolboxScriptPath ()
+  (cond
+    ((and (boundp 'nh_toolboxScript) nh_toolboxScript) nh_toolboxScript)
+    ((and (boundp 'note_helperDir) note_helperDir)
+      (strcat note_helperDir "toolbox/toolbox.py"))
+    (t "toolbox.py")))
+
+; Start the toolbox. A SYNCHRONOUS system() would freeze ALL of Virtuoso until
+; the Tk window closed, so we (1) verify the script exists, (2) preflight that
+; this Python actually has tkinter (the toolbox is Tk-based; a bare deploy host
+; may lack it -- catch it here with a clear message instead of a silent dead
+; click), then (3) background-launch with a trailing "&" so the SKILL thread
+; returns immediately. Returns a status symbol: 'ok / 'no-script / 'no-tk /
+; 'launch-failed -- the caller maps it to a GUI message.
+; Refs: system sklangref.pdf p.638 (spawns a UNIX process, returns exit code,
+;   0 = ok); isFile p.428.
+(defun nhLaunchToolbox ()
+  (let ((script (nh_toolboxScriptPath)))
+    (cond
+      ((not (isFile script)) 'no-script)
+      ((not (equal 0 (system (sprintf nil "%s -c \"import tkinter\" > /dev/null 2>&1"
+                                      nh_pythonCmd))))
+        'no-tk)
+      ((equal 0 (system (sprintf nil "%s \"%s\" > /dev/null 2>&1 &"
+                                 nh_pythonCmd script)))
+        'ok)
+      (t 'launch-failed))))
+
 ; ===========================================================================
 ; Markdown / TSV file import + export (Cadence-side, symmetric with the Python
 ; tsv2md/toolbox tools). Read a table file into the form, or write the current
