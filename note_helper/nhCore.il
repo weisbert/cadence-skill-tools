@@ -688,23 +688,33 @@
     (t "toolbox.py")))
 
 ; Start the toolbox. A SYNCHRONOUS system() would freeze ALL of Virtuoso until
-; the Tk window closed, so we (1) verify the script exists, (2) preflight that
-; this Python actually has tkinter (the toolbox is Tk-based; a bare deploy host
-; may lack it -- catch it here with a clear message instead of a silent dead
-; click), then (3) background-launch with a trailing "&" so the SKILL thread
-; returns immediately. Returns a status symbol: 'ok / 'no-script / 'no-tk /
-; 'launch-failed -- the caller maps it to a GUI message.
+; the Tk window closed, so we (1) verify the script exists, (2) preflight under a
+; SCRUBBED environment that this Python's tkinter is usable, then (3) background-
+; launch (also scrubbed) with a trailing "&" so the SKILL thread returns at once.
+;
+; The scrub (nh_pyEnvScrub) is essential: Virtuoso prepends Cadence's own Tcl/Tk
+; libs to LD_LIBRARY_PATH (and sets TCL_LIBRARY), so a child python's tkinter
+; otherwise loads Cadence's libtcl/libtk and dies with "Can't find a usable
+; tk.tcl / init.tcl" -- the symptom is "status says launched but no window".
+; The preflight runs `import tkinter; tkinter.Tcl()`: importing catches a Tk-less
+; host, and initializing a Tcl interp (needs init.tcl) catches the lib poisoning
+; -- both WITHOUT a display or a window flash.
+;
+; Returns a status symbol: 'ok / 'no-script / 'no-tk / 'launch-failed -- the
+; caller maps it to a GUI message.
 ; Refs: system sklangref.pdf p.638 (spawns a UNIX process, returns exit code,
 ;   0 = ok); isFile p.428.
 (defun nhLaunchToolbox ()
-  (let ((script (nh_toolboxScriptPath)))
+  (let ((script (nh_toolboxScriptPath))
+        (scrub (or (and (boundp 'nh_pyEnvScrub) nh_pyEnvScrub) "")))
     (cond
       ((not (isFile script)) 'no-script)
-      ((not (equal 0 (system (sprintf nil "%s -c \"import tkinter\" > /dev/null 2>&1"
-                                      nh_pythonCmd))))
+      ((not (equal 0 (system (sprintf nil
+              "%s %s -c \"import tkinter; tkinter.Tcl()\" > /dev/null 2>&1"
+              scrub nh_pythonCmd))))
         'no-tk)
-      ((equal 0 (system (sprintf nil "%s \"%s\" > /dev/null 2>&1 &"
-                                 nh_pythonCmd script)))
+      ((equal 0 (system (sprintf nil "%s %s \"%s\" > /dev/null 2>&1 &"
+                                 scrub nh_pythonCmd script)))
         'ok)
       (t 'launch-failed))))
 

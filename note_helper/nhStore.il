@@ -66,9 +66,17 @@
 ;                     note_helperDir at call time (nh_svg2irScriptPath).
 ;   nh_toolboxScript-- absolute path to the Python toolbox GUI (toolbox.py);
 ;                     nil => derive from note_helperDir (nh_toolboxScriptPath).
+;   nh_pyEnvScrub  -- shell prefix that sanitizes the environment before running
+;                     a system Python GUI. Cadence prepends its own Tcl/Tk libs
+;                     to LD_LIBRARY_PATH (and sets TCL_LIBRARY), so a child
+;                     python's tkinter would load Cadence's libtcl/libtk and
+;                     fail to find init.tcl/tk.tcl. Stripping these lets the
+;                     system python use its OWN Tcl/Tk. setq "" to disable.
 (unless (boundp 'nh_pythonCmd)     (setq nh_pythonCmd "python3"))
 (unless (boundp 'nh_svg2irScript)  (setq nh_svg2irScript nil))
 (unless (boundp 'nh_toolboxScript) (setq nh_toolboxScript nil))
+(unless (boundp 'nh_pyEnvScrub)
+  (setq nh_pyEnvScrub "env -u LD_LIBRARY_PATH -u TCL_LIBRARY -u TK_LIBRARY"))
 
 ; ---------------------------------------------------------------------------
 ; Default styling config.
