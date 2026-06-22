@@ -301,7 +301,13 @@
                     ?value sample
                     ?hasVerticalScrollbar t ?hasHorizontalScrollbar nil
                     ?enableWordWrap nil))
-    (setq fMdPath (hiCreateFileSelectorField ?name 'nh_mdPath ?mode 'anyFile
+    ; 'existingFile -> the Browse (...) dialog is an OPEN/file-PICKER, not a
+    ; Save-As dialog ('anyFile was showing a save dialog). The field just holds
+    ; a path; the Load file / Save .md buttons do the actual read/write. To Save
+    ; to a NOT-yet-existing file, type/edit the name in the field (it's editable)
+    ; -- the picker only lists existing files. skuiref hiCreateFileSelectorField
+    ; p.542 ('existingFile = Open, 'anyFile = Save As).
+    (setq fMdPath (hiCreateFileSelectorField ?name 'nh_mdPath ?mode 'existingFile
                     ?prompt "Table file (.md / .tsv)" ?value ""))
     (nh_cfgFileSel fMdPath "Choose a table file" "Markdown/TSV (*.md *.tsv);;All Files (*)")
     (setq fLoad   (hiCreateButton ?name 'nh_btnLoad ?buttonText "Load file"
