@@ -67,22 +67,25 @@
 ;   nh_toolboxScript-- absolute path to the Python toolbox GUI (toolbox.py);
 ;                     nil => derive from note_helperDir (nh_toolboxScriptPath).
 ;   nh_pyEnvScrub  -- controls the shell-env prefix used to launch a system
-;                     Python GUI. The right answer is SITE-DEPENDENT, and is
-;                     OPPOSITE on our two boxes:
-;                       * a SELF-CONTAINED Python ships its own Tcl/Tk, which
-;                         Cadence's LD_LIBRARY_PATH + TCL_LIBRARY otherwise
-;                         SHADOW -- it needs the env STRIPPED;
-;                       * a GRID-INTEGRATED Python GETS its libtcl/libtk AND
-;                         its init.tcl/tk.tcl THROUGH Cadence's env -- it needs
-;                         the env LEFT ALONE; stripping LD_LIBRARY_PATH breaks
-;                         the loader ("libtk8.6.so: cannot open shared object
-;                         file") and stripping TCL_LIBRARY breaks the script
-;                         lookup ("Can't find a usable init.tcl").
-;                     Values: nil => AUTO (default): preflight both -- inherit
-;                       first, then strip -- and use whichever makes tkinter
-;                       usable (nhLaunchToolbox/nh_pyPickEnv); "" => force
-;                       inherit (no scrub); "env -u LD_LIBRARY_PATH -u
-;                       TCL_LIBRARY -u TK_LIBRARY" => force strip.
+;                     Python GUI. The right answer is SITE-DEPENDENT; our boxes
+;                     need three different ones:
+;                       * SELF-CONTAINED Python: Cadence's LD_LIBRARY_PATH +
+;                         TCL_LIBRARY SHADOW its own Tcl/Tk -- STRIP the env;
+;                       * BUNDLED-tcl-tk Python out-ranked by Cadence: Cadence's
+;                         libtcl loads first and mismatches the Python's newer
+;                         scripts ("version conflict for package Tcl: have
+;                         8.6.7, need exactly 8.6.13") -- PREPEND the Python's
+;                         own lib/tcl-tk/lib to LD_LIBRARY_PATH + point
+;                         TCL_LIBRARY/TK_LIBRARY at its script dirs;
+;                       * GRID-INTEGRATED Python: gets libtcl/libtk AND
+;                         init.tcl/tk.tcl THROUGH Cadence's env -- LEAVE IT
+;                         ALONE.
+;                     Values: nil => AUTO (default): preflight the candidates
+;                       (inherit, bundled-tcl-tk, strip) and use whichever makes
+;                       tkinter usable (nhLaunchToolbox/nh_pyPickEnv); a string
+;                       forces exactly that prefix ("" = inherit, "env -u
+;                       LD_LIBRARY_PATH -u TCL_LIBRARY -u TK_LIBRARY" = strip,
+;                       or a custom "env LD_LIBRARY_PATH=... TCL_LIBRARY=..." ).
 (unless (boundp 'nh_pythonCmd)     (setq nh_pythonCmd "python3"))
 (unless (boundp 'nh_svg2irScript)  (setq nh_svg2irScript nil))
 (unless (boundp 'nh_toolboxScript) (setq nh_toolboxScript nil))

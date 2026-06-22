@@ -692,15 +692,21 @@
 ; a working shell environment, then (3) background-launch (with that env) and a
 ; trailing "&" so the SKILL thread returns at once.
 ;
-; Why preflight-and-pick (nh_pyPickEnv): whether the child Python needs Cadence's
-; env STRIPPED or LEFT ALONE is site-dependent and OPPOSITE on our two boxes:
-;   - a SELF-CONTAINED Python: Cadence's LD_LIBRARY_PATH/TCL_LIBRARY SHADOW its
-;     own Tcl/Tk -> must strip (env -u ...);
-;   - a GRID-INTEGRATED Python: it FINDS libtcl/libtk + init.tcl/tk.tcl THROUGH
-;     Cadence's env -> must NOT strip (stripping LD_LIBRARY_PATH -> "libtk8.6.so:
-;     cannot open shared object file"; stripping TCL_LIBRARY -> "Can't find a
-;     usable init.tcl"). The symptom of guessing wrong is "status says launched
-;     but no window".
+; Why preflight-and-pick (nh_pyPickEnv): the right env for the child Python is
+; site-dependent, and our boxes need THREE different answers (see
+; nh_pyEnvCandidates):
+;   - SELF-CONTAINED Python: Cadence's LD_LIBRARY_PATH/TCL_LIBRARY SHADOW its own
+;     Tcl/Tk -> must STRIP (env -u ...);
+;   - BUNDLED-tcl-tk Python whose libs Cadence OUT-RANKS: Cadence's libtcl loads
+;     first and mismatches the Python's newer scripts ("version conflict for
+;     package Tcl: have 8.6.7, need exactly 8.6.13") -> must PREPEND the Python's
+;     own .../lib/tcl-tk/lib to LD_LIBRARY_PATH and point TCL_LIBRARY/TK_LIBRARY
+;     at its matching script dirs;
+;   - GRID-INTEGRATED Python: it FINDS everything THROUGH Cadence's env -> must
+;     LEAVE IT ALONE (stripping LD_LIBRARY_PATH -> "libtk8.6.so: cannot open
+;     shared object file"; stripping TCL_LIBRARY -> "Can't find a usable
+;     init.tcl"). The symptom of guessing wrong is "status says launched but no
+;     window".
 ; So instead of hardcoding one scrub we try each candidate's preflight and use
 ; the first that works. The preflight builds a REAL but withdrawn (never mapped
 ; -> no flash) Tk root: `import tkinter; r=tkinter.Tk(); r.withdraw();
@@ -728,12 +734,27 @@
     scrub nh_pythonCmd))))
 
 ; Candidate env prefixes to try, in order. A site that set nh_pyEnvScrub to a
-; string forces exactly that one (incl. "" = inherit); nil => auto: try inherit
-; first (grid-integrated Python), then the strip (self-contained Python).
+; string forces exactly that one (incl. "" = inherit); nil => auto, tried in
+; order:
+;   1. "" -- inherit Virtuoso's env (works where it's already consistent);
+;   2. the Python's OWN bundled tcl-tk -- PREPEND <prefix>/lib/tcl-tk/lib to
+;      LD_LIBRARY_PATH (so its libtcl/libtk out-rank Cadence's older ones and
+;      avoid the "version conflict for package Tcl" mismatch) and set
+;      TCL_LIBRARY/TK_LIBRARY to its tcl8.6/tk8.6 script dirs. <prefix> is asked
+;      from the Python live (sys.prefix) so one line fits any install; on a
+;      Python with no bundled tcl-tk those dirs are absent and the candidate just
+;      fails its preflight and we fall through. (tcl8.6/tk8.6 are major.minor dir
+;      names; a future 8.7 simply fails this candidate and falls through.)
+;   3. the strip (env -u ...) -- for a self-contained Python Cadence SHADOWS.
 (defun nh_pyEnvCandidates ()
   (if (and (boundp 'nh_pyEnvScrub) (stringp nh_pyEnvScrub))
     (list nh_pyEnvScrub)
-    (list "" "env -u LD_LIBRARY_PATH -u TCL_LIBRARY -u TK_LIBRARY")))
+    (list
+      ""
+      (sprintf nil
+        "B=$(%s -c 'import sys;print(sys.prefix+\"/lib/tcl-tk/lib\")'); env LD_LIBRARY_PATH=$B:$LD_LIBRARY_PATH TCL_LIBRARY=$B/tcl8.6 TK_LIBRARY=$B/tk8.6"
+        nh_pythonCmd)
+      "env -u LD_LIBRARY_PATH -u TCL_LIBRARY -u TK_LIBRARY")))
 
 ; First candidate env whose preflight passes, or nil if none do.
 (defun nh_pyPickEnv ()
