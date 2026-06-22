@@ -217,7 +217,7 @@
       (cond
         ((eq r 'ok)       "toolbox launched -- prep a .svg/.md, then load it here")
         ((eq r 'noScript) "toolbox.py not found -- check note_helperDir")
-        ((eq r 'noTk)     "Python tkinter/Tcl unusable -- check python3-tkinter")
+        ((eq r 'noTk)     "Python tkinter unusable (tried inherit & scrub) -- check nh_pythonCmd / python3-tkinter")
         ((eq r 'launchFailed) "toolbox launch failed -- see CIW")
         (t                "toolbox launch error -- see CIW")))
     t))

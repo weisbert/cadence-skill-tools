@@ -688,17 +688,28 @@
     (t "toolbox.py")))
 
 ; Start the toolbox. A SYNCHRONOUS system() would freeze ALL of Virtuoso until
-; the Tk window closed, so we (1) verify the script exists, (2) preflight under a
-; SCRUBBED environment that this Python's tkinter is usable, then (3) background-
-; launch (also scrubbed) with a trailing "&" so the SKILL thread returns at once.
+; the Tk window closed, so we (1) verify the script exists, (2) PREFLIGHT to pick
+; a working shell environment, then (3) background-launch (with that env) and a
+; trailing "&" so the SKILL thread returns at once.
 ;
-; The scrub (nh_pyEnvScrub) is essential: Virtuoso prepends Cadence's own Tcl/Tk
-; libs to LD_LIBRARY_PATH (and sets TCL_LIBRARY), so a child python's tkinter
-; otherwise loads Cadence's libtcl/libtk and dies with "Can't find a usable
-; tk.tcl / init.tcl" -- the symptom is "status says launched but no window".
-; The preflight runs `import tkinter; tkinter.Tcl()`: importing catches a Tk-less
-; host, and initializing a Tcl interp (needs init.tcl) catches the lib poisoning
-; -- both WITHOUT a display or a window flash.
+; Why preflight-and-pick (nh_pyPickEnv): whether the child Python needs Cadence's
+; env STRIPPED or LEFT ALONE is site-dependent and OPPOSITE on our two boxes:
+;   - a SELF-CONTAINED Python: Cadence's LD_LIBRARY_PATH/TCL_LIBRARY SHADOW its
+;     own Tcl/Tk -> must strip (env -u ...);
+;   - a GRID-INTEGRATED Python: it FINDS libtcl/libtk + init.tcl/tk.tcl THROUGH
+;     Cadence's env -> must NOT strip (stripping LD_LIBRARY_PATH -> "libtk8.6.so:
+;     cannot open shared object file"; stripping TCL_LIBRARY -> "Can't find a
+;     usable init.tcl"). The symptom of guessing wrong is "status says launched
+;     but no window".
+; So instead of hardcoding one scrub we try each candidate's preflight and use
+; the first that works. The preflight builds a REAL but withdrawn (never mapped
+; -> no flash) Tk root: `import tkinter; r=tkinter.Tk(); r.withdraw();
+; r.destroy()`. It MUST load Tk (tk.tcl), not merely Tcl (init.tcl): on the dev
+; box the INHERITED env passes a Tcl-only check yet still fails to find tk.tcl,
+; so a Tcl-only preflight would mispick "" and reproduce "launched but no
+; window". This one check catches a missing lib (import fails), poisoned library
+; paths (init.tcl/tk.tcl lookup fails), AND a dead/headless display. Refs:
+; nh_pyEnvScrub overrides the candidate list (see nhStore.il).
 ;
 ; Returns a status symbol: 'ok / 'noScript / 'noTk / 'launchFailed -- the
 ; caller maps it to a GUI message. (NO hyphens in symbols: SKILL reads `-` as
@@ -707,15 +718,37 @@
 ; branches -- but IC18.1 hits it the moment a non-ok branch is taken.)
 ; Refs: system sklangref.pdf p.638 (spawns a UNIX process, returns exit code,
 ;   0 = ok); isFile p.428.
+
+; Is this Python's tkinter usable under shell-env prefix `scrub`? Builds a real
+; (but withdrawn -> never shown) Tk root so the check exercises tk.tcl, not just
+; init.tcl; 0 exit => usable.
+(defun nh_pyTkUsable (scrub)
+  (equal 0 (system (sprintf nil
+    "%s %s -c \"import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()\" > /dev/null 2>&1"
+    scrub nh_pythonCmd))))
+
+; Candidate env prefixes to try, in order. A site that set nh_pyEnvScrub to a
+; string forces exactly that one (incl. "" = inherit); nil => auto: try inherit
+; first (grid-integrated Python), then the strip (self-contained Python).
+(defun nh_pyEnvCandidates ()
+  (if (and (boundp 'nh_pyEnvScrub) (stringp nh_pyEnvScrub))
+    (list nh_pyEnvScrub)
+    (list "" "env -u LD_LIBRARY_PATH -u TCL_LIBRARY -u TK_LIBRARY")))
+
+; First candidate env whose preflight passes, or nil if none do.
+(defun nh_pyPickEnv ()
+  (let ((pick nil))
+    (foreach scrub (nh_pyEnvCandidates)
+      (when (and (not pick) (nh_pyTkUsable scrub))
+        (setq pick scrub)))
+    pick))
+
 (defun nhLaunchToolbox ()
   (let ((script (nh_toolboxScriptPath))
-        (scrub (or (and (boundp 'nh_pyEnvScrub) nh_pyEnvScrub) "")))
+        (scrub nil))
     (cond
       ((not (isFile script)) 'noScript)
-      ((not (equal 0 (system (sprintf nil
-              "%s %s -c \"import tkinter; tkinter.Tcl()\" > /dev/null 2>&1"
-              scrub nh_pythonCmd))))
-        'noTk)
+      ((not (setq scrub (nh_pyPickEnv))) 'noTk)
       ((equal 0 (system (sprintf nil "%s %s \"%s\" > /dev/null 2>&1 &"
                                  scrub nh_pythonCmd script)))
         'ok)

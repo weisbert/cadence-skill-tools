@@ -66,17 +66,27 @@
 ;                     note_helperDir at call time (nh_svg2irScriptPath).
 ;   nh_toolboxScript-- absolute path to the Python toolbox GUI (toolbox.py);
 ;                     nil => derive from note_helperDir (nh_toolboxScriptPath).
-;   nh_pyEnvScrub  -- shell prefix that sanitizes the environment before running
-;                     a system Python GUI. Cadence prepends its own Tcl/Tk libs
-;                     to LD_LIBRARY_PATH (and sets TCL_LIBRARY), so a child
-;                     python's tkinter would load Cadence's libtcl/libtk and
-;                     fail to find init.tcl/tk.tcl. Stripping these lets the
-;                     system python use its OWN Tcl/Tk. setq "" to disable.
+;   nh_pyEnvScrub  -- controls the shell-env prefix used to launch a system
+;                     Python GUI. The right answer is SITE-DEPENDENT, and is
+;                     OPPOSITE on our two boxes:
+;                       * a SELF-CONTAINED Python ships its own Tcl/Tk, which
+;                         Cadence's LD_LIBRARY_PATH + TCL_LIBRARY otherwise
+;                         SHADOW -- it needs the env STRIPPED;
+;                       * a GRID-INTEGRATED Python GETS its libtcl/libtk AND
+;                         its init.tcl/tk.tcl THROUGH Cadence's env -- it needs
+;                         the env LEFT ALONE; stripping LD_LIBRARY_PATH breaks
+;                         the loader ("libtk8.6.so: cannot open shared object
+;                         file") and stripping TCL_LIBRARY breaks the script
+;                         lookup ("Can't find a usable init.tcl").
+;                     Values: nil => AUTO (default): preflight both -- inherit
+;                       first, then strip -- and use whichever makes tkinter
+;                       usable (nhLaunchToolbox/nh_pyPickEnv); "" => force
+;                       inherit (no scrub); "env -u LD_LIBRARY_PATH -u
+;                       TCL_LIBRARY -u TK_LIBRARY" => force strip.
 (unless (boundp 'nh_pythonCmd)     (setq nh_pythonCmd "python3"))
 (unless (boundp 'nh_svg2irScript)  (setq nh_svg2irScript nil))
 (unless (boundp 'nh_toolboxScript) (setq nh_toolboxScript nil))
-(unless (boundp 'nh_pyEnvScrub)
-  (setq nh_pyEnvScrub "env -u LD_LIBRARY_PATH -u TCL_LIBRARY -u TK_LIBRARY"))
+(unless (boundp 'nh_pyEnvScrub)    (setq nh_pyEnvScrub nil))
 
 ; ---------------------------------------------------------------------------
 ; Default styling config.
