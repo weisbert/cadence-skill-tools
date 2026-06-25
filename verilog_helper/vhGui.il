@@ -530,7 +530,7 @@
         (list fOut    (list 0 208)  sizePt promptW)
         (list fChecks (list 0 236)  sizePt promptW)
         (list fTb     (list 0 264)  sizePt promptW)
-        (list fBwrite (list 0 292)  (list 300 rowH) promptW)
+        (list fBwrite (list 0 292)  (list 340 rowH) 255)
         (list fExt    (list 0 324)  sizePt promptW)
         (list fAddLib (list 0 356)  (list 110 btnH) 0)
         (list fShow   (list 120 356) (list 110 btnH) 0)
