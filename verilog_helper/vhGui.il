@@ -419,6 +419,28 @@
             (vh_runAsync form "Run" (strcat "bash " (vh_q runsh)) "run")))))
     t))
 
+; [Diagnose]: one-shot vh_diag.py over <out> -- cross-checks every instance vs its
+; master's real ports (the *E,CUVPOM "port invalid" cause), lists unresolved masters
+; (the *E,CUVMUR cause, with an on-disk veriloga/verilogams check via cds.lib so you
+; can tell "should be gathered" from "will be stubbed"), and echoes the manifest +
+; xrun.log digest into <out>/vh_diag.txt. Prints to the CIW and points Status at the
+; file, so you copy ONE thing back instead of running greps by hand.
+(defun vh_diagCB (form "g")
+  (let (out cdslib args)
+    (cond
+      ((null (setq out (vh_needOut form))) nil)
+      (t
+        (setq cdslib (vh_str form->vh_cdslib->value))
+        (when (equal cdslib "")
+          (let ((ac (car (errset (vh_autoCdslib) t))))
+            (when (and ac (stringp ac)) (setq cdslib ac))))
+        (setq args (strcat "--build " (vh_q out)))
+        (unless (equal cdslib "") (setq args (strcat args " --cdslib " (vh_q cdslib))))
+        (errset (vh_runCLI "vh_diag.py" args) t)
+        (vh_setStatus form
+          (strcat "Diagnose done -> " out "/vh_diag.txt  (full report in the CIW; copy it back)"))))
+    t))
+
 ; ---------------------------------------------------------------------------
 ; External libraries manager -- a multi-entry list (like AMS Options -> Include
 ; Option Settings -> Library Files). Several -v files / -y dirs / +incdir dirs,
@@ -800,7 +822,7 @@
 
 (defun vh_guiBuild ()
   (let (fLib fCell fView fSel fBrowse fScan
-        fCfg fCds fNet fOut fChecks fTb fBwrite fExtLibs
+        fCfg fCds fNet fOut fChecks fTb fBwrite fExtLibs fDiag
         fA fB fC fRun fD fStatus
         form fieldW promptW rowH sizePt btnH preDir)
     (setq rowH 28) (setq fieldW 380) (setq promptW 155)
@@ -843,6 +865,8 @@
     (setq fExtLibs (hiCreateButton ?name 'vh_btnExtLibs
                      ?buttonText "External libraries..."
                      ?callback "(vh_extLibsCB (vh_curForm))"))
+    (setq fDiag (hiCreateButton ?name 'vh_btnDiag ?buttonText "Diagnose"
+                  ?callback "(vh_diagCB (vh_curForm))"))
     ; ----- stage actions -----
     (setq fA (hiCreateButton ?name 'vh_btnA ?buttonText "Extract A"
                ?callback "(vh_extractCB (vh_curForm))"))
@@ -876,6 +900,7 @@
         (list fTb     (list 0 264)  sizePt promptW)
         (list fBwrite (list 0 292)  (list 340 rowH) 255)
         (list fExtLibs (list 0 330) (list 180 btnH) 0)
+        (list fDiag   (list 190 330) (list 110 btnH) 0)
         (list fA      (list 0 392)   (list 102 btnH) 0)
         (list fB      (list 105 392) (list 102 btnH) 0)
         (list fC      (list 210 392) (list 102 btnH) 0)

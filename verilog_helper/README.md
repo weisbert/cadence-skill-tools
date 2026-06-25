@@ -26,6 +26,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 |------|------|--------|
 | `vh_parse.py` | VerilogA static parser (ports/dirs/disciplines/instances+connections) + graph (top/leaf/external/dups); also an inventory CLI | ✅ working |
 | `vh_gen.py`   | Stage C: hierarchy → **bus-aware** stub per external + self-checking TB + run.sh + sim.tcl + manifest (logic control buses → `reg/wire[m:l]`; real buses → unpacked `wreal[m:l]`; slices/concats/array-instances in the struct are native Verilog) | ✅ working |
+| `vh_diag.py`  | one-shot **diagnostics**: cross-checks every instance vs its master's real ports (the `*E,CUVPOM` port-mismatch cause), lists unresolved masters (the `*E,CUVMUR` cause, with on-disk veriloga check via cds.lib), echoes manifest + xrun.log digest into one copy-friendly `vh_diag.txt`. GUI **[Diagnose]** button. | ✅ working |
 | `vh_extract.py` | Stage A: config (cds.lib+expand.cfg) → oa2verilog hierarchy → clean structural top + gathered `.va` leaves + external interfaces + manifest | ✅ working |
 | `vh_env.py`     | tool-remembered **external HDL env** (`-v` lib files / `-y` dirs / `+incdir`); resolves externals & bakes into `run.sh` | ✅ working |
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
