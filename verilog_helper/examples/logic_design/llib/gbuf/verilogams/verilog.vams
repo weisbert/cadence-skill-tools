@@ -1,0 +1,8 @@
+`timescale 1ps/1ps
+module gbuf ( a, y, VDD, VSS );
+  input  a;
+  input  VDD;
+  input  VSS;
+  output y;
+  assign y = a;
+endmodule

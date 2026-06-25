@@ -629,7 +629,7 @@ def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
 # main extraction                                                             #
 # --------------------------------------------------------------------------- #
 def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None,
-            env=None, ext_index=None):
+            env=None, ext_index=None, discipline="auto"):
     """Process a raw oa2verilog netlist into clean top + gathered leaves + manifest dict.
 
     env/ext_index (optional): the remembered external HDL environment and its
@@ -792,23 +792,46 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
                       "(used by %s)" % (mas, mi["module"]))
 
     # port index of every now-known module (struct defs + all gathered leaves), used to
-    # reconcile parent instance connections to each child's ACTUAL interface.
+    # reconcile parent instance connections to each child's ACTUAL interface. Also classify
+    # each gathered leaf as WREAL (declares wreal ports) or LOGIC (digital).
     port_index = {}
     for nm, tx in blocks:
         pm = vp.parse_text(tx)
         if pm:
             port_index[nm] = set(pm[0]["ports"])
+    wreal_leaves, logic_leaves = [], []
     for g in gathered:
         try:
             gm = vp.parse_text(open(os.path.join(out_dir, g["gathered"]), errors="replace").read())
         except OSError:
             gm = None
-        if gm:
-            port_index[g["module"]] = set(gm[0]["ports"])
+        if not gm:
+            continue
+        port_index[g["module"]] = set(gm[0]["ports"])
+        # wreal-flow leaf = analog (electrical/`analog`; becomes wreal via Stage B) or wreal;
+        # logic-flow leaf = a genuinely digital model.
+        is_wreal = any(m["kind"] in ("analog", "wreal") for m in gm)
+        (wreal_leaves if is_wreal else logic_leaves).append(g["module"])
+
+    # Design discipline: wreal (analog-modeled leaves) vs logic (digital leaves). ONLY
+    # wreal-ize the struct for a wreal design -- forcing wreal onto a logic design creates
+    # wreal<->logic boundaries with no connect module (xrun *E,CUNDCM). Auto = majority of
+    # gathered leaves; --discipline overrides. No leaves (pure std-cell) -> logic.
+    if discipline in ("wreal", "logic"):
+        wreal_mode = (discipline == "wreal")
+    else:
+        wreal_mode = len(wreal_leaves) > len(logic_leaves)
+    if wreal_leaves and logic_leaves:
+        warnings.append(
+            "design MIXES wreal leaves (%d, e.g. %s) and logic leaves (%d, e.g. %s); using "
+            "%s flow -- the other discipline's cells will need wreal<->logic connect modules "
+            "(xrun *E,CUNDCM). Force with --discipline wreal|logic if needed."
+            % (len(wreal_leaves), wreal_leaves[0], len(logic_leaves), logic_leaves[0],
+               "WREAL" if wreal_mode else "LOGIC"))
 
     # build clean top: keep STRUCTURAL module defs; short passives, RECONCILE instance
     # connections to each child's real ports (drops symbol-only pins like VPP -> avoids
-    # *E,CUVPOM), drop artifact instances, normalize nets to wreal.
+    # *E,CUVPOM), drop artifact instances; wreal-ize nets only in the wreal flow.
     recon_report = []
     kept = []
     for nm, tx in blocks:
@@ -816,7 +839,8 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
             continue
         tx = short_passives(tx, warnings, passive_report)
         tx = reconcile_ports(tx, port_index, warnings, recon_report)
-        kept.append(wrealize(strip_instances(tx, drop_arti), warnings))
+        tx = strip_instances(tx, drop_arti)
+        kept.append(wrealize(tx, warnings) if wreal_mode else tx)
 
     # emit clean structural top
     clean_name = "%s_struct.vams" % cell
@@ -855,6 +879,9 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
                    "cell_bindings": {"%s.%s" % k: v
                                      for k, v in cfg.get("cell_bindings", {}).items()}},
         "clean_top": os.path.relpath(clean_path, out_dir),
+        "discipline": "wreal" if wreal_mode else "logic",
+        "wreal_leaves": wreal_leaves,
+        "logic_leaves": logic_leaves,
         "veriloga_leaves": gathered,
         "gathered_subcells": sub_records,
         "reconciled_ports": recon_report,
@@ -956,6 +983,9 @@ def main():
     ap.add_argument("--view", default="schematic", help="top view (default schematic)")
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--netlist", help="reuse a pre-made oa2verilog .v (skip OA)")
+    ap.add_argument("--discipline", choices=("auto", "wreal", "logic"), default="auto",
+                    help="net discipline: wreal-ize the struct (wreal), keep logic (logic), "
+                         "or auto by leaf majority (default)")
     ap.add_argument("--env-sh", default=DEFAULT_ENV_SH, help="Cadence env.sh to source for oa2verilog")
     ap.add_argument("--ext-lib", action="append", default=[],
                     help="external HDL library file (xrun -v); repeatable, remembered")
@@ -1026,7 +1056,8 @@ def main():
                                stoplist=cfg.get("stoplist"))
 
     manifest, clean = extract(lib, cell, view, libs, raw, args.out, cfg=cfg,
-                              warnings=warnings, env=env, ext_index=ext_index)
+                              warnings=warnings, env=env, ext_index=ext_index,
+                              discipline=args.discipline)
     json.dump(manifest, open(os.path.join(args.out, "manifest_A.json"), "w"), indent=2)
     text = render_summary(manifest)
     open(os.path.join(args.out, "manifest_A.txt"), "w").write(text + "\n")

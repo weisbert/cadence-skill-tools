@@ -228,7 +228,9 @@ def port_repr(mi, p):
     d, w = mi['dirs'].get(p, ('inout', ''))
     nt = mi['ntype'].get(p)
     if not w:
-        return d, '', 'scalar'
+        # scalar: wreal (real signal) if declared wreal, else a logic scalar (reg/wire).
+        # A logic scalar is modeled as a width-'' logic bus so the logic_bus paths handle it.
+        return d, '', ('scalar' if nt == 'wreal' else 'logic_bus')
     return d, w, ('wreal_bus' if nt == 'wreal' else 'logic_bus')
 
 
@@ -264,8 +266,8 @@ def gen_tb(top, index, checks):
             L.append('  real  %s_drv;' % p)
         elif k == 'logic_bus':
             L.append('  reg %s %s;' % (w, p))
-            warns.append("input '%s' is a logic control bus -> reg %s, integer-vector "
-                         "stimulus (%s)" % (p, w, w))
+            warns.append("input '%s' is a logic %s -> reg%s, integer-vector stimulus"
+                         % (p, ("control bus" if w else "scalar"), (" " + w) if w else ""))
         else:  # wreal_bus
             L.append('  real  %s_drv%s;' % (p, w))          # unpacked real driver array
             warns.append("input '%s' is a real bus -> unpacked wreal array %s%s, "
@@ -318,7 +320,7 @@ def gen_tb(top, index, checks):
         for p in ins:
             d, w, k = rep[p]
             if k == 'logic_bus':
-                L.append('    %s = %d;' % (p, _logic_vec(v, len(vp.range_bits(w)))))
+                L.append('    %s = %d;' % (p, _logic_vec(v, len(vp.range_bits(w)) or 1)))
             elif k == 'wreal_bus':
                 for bi, b in enumerate(vp.range_bits(w)):
                     L.append('    %s_drv[%d] = %s;' % (p, b, palette[(v + bi) % len(palette)]))
