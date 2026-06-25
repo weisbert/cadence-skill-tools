@@ -72,11 +72,26 @@ literal pixel *display* (`hiDisplayForm`) is left for the user to eyeball from t
   fixture + a stubbed-external (logic) + a wide-bus external (passthrough). All prior
   examples still PASS (3/3 duts, nested_chain, schem_nested, analog_leaf). ✅
 
-**NEXT:** real red-zone run of `LPBT_NDIV_TOP` — Stage A→C→`run.sh` with the actual `-v`
-libs (`Common_verilog/L16,L20_{S,L}VT_ana.v`). Stage C should now produce a runnable TB;
-remaining risk is anything the synthetic fixture didn't mirror (e.g. a real-valued bus
-that's sliced — would need struct-level expansion, currently only logic buses are sliced).
-Live status + all decisions in the project memory
+- **Structural-verilogams sub-cell gather** (Stage A, DONE 2026-06-25, from the FIRST real
+  red-zone Stage-C run) — a gathered verilogams leaf can itself be **structural** (it
+  instantiates further cells). The real `pll_ndiv_delay_reload`'s verilogams instantiates
+  `WL_PLL_Ndiv_inv_lvt_x8`/`nor2_lvt_x4`, which the oa2verilog *schematic* descent never
+  sees (they live in the `.vams` text, not a schematic) → xrun `*E,CUVMUR` unresolved.
+  FIX: after gathering leaves, `extract()` parses each gathered `.vams`, and for every
+  sub-master not already defined/gathered/`-v`/pin/device/passive it gathers that cell's
+  own veriloga/verilogams (recursively, to a fixpoint); anything still undefined is left
+  for Stage C to `-v`-resolve or stub. New manifest field `gathered_subcells`. Verified on
+  `examples/struct_va` (delaycell → subgain+subadd gathered → xrun TB PASS, FUNCTIONAL).
+  Note: oa2verilog emits ports as the direction decl only (no separate `wire`) — the
+  fixture mirrors that (a double `input a; wire a;` would trip wrealize into `*E,DUPIDN`).
+
+**NEXT (real red-zone, in progress):** the FIRST real Stage-C run of `LPBT_NDIV_TOP` hit
+two issues — ① `*E,CUVMUR` (the structural-verilogams gather above, now FIXED — re-run
+Stage A→C) and ② `*E,CUVPOM` "Port name 'en' invalid or multiple connections" in
+`LPBT_NDIV_TOP_struct.vams` (an instance connects `.en(ndiv_en)` to a master whose
+gathered interface lacks/duplicates `en` — a symbol-pin vs verilogams-port mismatch;
+awaiting the struct snippet + that master's port decl to fix). No bus/array errors — the
+bus-aware TB compiled clean. Live status + all decisions in the project memory
 (`…/Verilog-check/memory/verilog-check-project.md`).
 
 ---

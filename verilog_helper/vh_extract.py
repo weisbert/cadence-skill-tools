@@ -638,6 +638,50 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
                          "src": lf["src"], "gathered": os.path.relpath(dst, out_dir),
                          "forced_binding": lf["forced_binding"]})
 
+    # A gathered verilogams can itself be STRUCTURAL -- instantiating further cells
+    # (e.g. a delay cell built from inverter/nor cells). The oa2verilog schematic
+    # descent never sees those (they live in the .vams text, not a schematic), so
+    # descend the gathered files here: parse each, and for every sub-master it uses
+    # that is not already defined/gathered/-v/pin/device/passive, gather its own
+    # veriloga/verilogams (recursively, to a fixpoint). Anything still undefined is
+    # left for Stage C to -v-resolve or stub.
+    gathered_names = {g["module"] for g in gathered}
+    defined_names = set(classes)                       # modules defined in the struct
+    skip_sub = drop_arti | PASSIVE_CELLS
+    sub_records = []                                   # (parent, sub) for the manifest
+    queue, guard = list(gathered), 0
+    while queue and guard < 4096:
+        guard += 1
+        lf = queue.pop(0)
+        try:
+            text = open(os.path.join(out_dir, lf["gathered"]), errors="replace").read()
+        except OSError:
+            continue
+        sub_mods = vp.parse_text(text)
+        for mi in sub_mods:                            # helper modules in the same file
+            defined_names.add(mi["module"])
+        for mi in sub_mods:
+            for it in mi["instances"]:
+                mas = it["master"]
+                if (mas in gathered_names or mas in defined_names
+                        or mas in skip_sub or mas in ext_index):
+                    continue
+                vlib, vpath = find_veriloga(mas, libs, prefer_lib=lf.get("lib") or lib)
+                if not vpath:
+                    continue                           # undefined -> Stage C stubs/-v's it
+                ext2 = ".vams" if vpath.endswith(".vams") else ".va"
+                dst = os.path.join(export, mas + ext2)
+                shutil.copyfile(vpath, dst)
+                newlf = {"module": mas, "lib": vlib, "src": vpath,
+                         "gathered": os.path.relpath(dst, out_dir),
+                         "forced_binding": False}
+                gathered.append(newlf)
+                gathered_names.add(mas)
+                queue.append(newlf)
+                sub_records.append({"sub": mas, "parent": mi["module"], "lib": vlib})
+                print("[vh_extract] gathered structural-verilogams sub-cell %s "
+                      "(used by %s)" % (mas, mi["module"]))
+
     # emit clean structural top
     clean_name = "%s_struct.vams" % cell
     clean_path = os.path.join(export, clean_name)
@@ -676,6 +720,7 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
                                      for k, v in cfg.get("cell_bindings", {}).items()}},
         "clean_top": os.path.relpath(clean_path, out_dir),
         "veriloga_leaves": gathered,
+        "gathered_subcells": sub_records,
         "external_modules": ext_records,
         "ext_env": {k: env.get(k, []) for k in ("lib_files", "lib_dirs", "inc_dirs")},
         "stripped": {"pins": pin_seen, "stimulus": stim_seen, "devices": dropped_seen},
