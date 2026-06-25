@@ -91,8 +91,17 @@ session, so you usually only set **the DUT (Select from Schematic) + Output fold
 - **[External libraries...]** opens a multi-entry manager (like AMS Options →
   Include Option Settings → Library Files): a scrollable, editable list of **several**
   `-v` files / `-y` dirs / `+incdir` dirs (one per line, `ext_libs.list` format),
-  with file/dir pickers to append and **Save/Reload/Clear** persisting to the
-  remembered env (`vh_env`). Stage A/C then use the whole list automatically.
+  with pickers to append and **Save/Reload/Clear** persisting to the remembered env
+  (`vh_env`). Stage A/C then use the whole list automatically.
+  - **`-v <file>`** vs **`-y <dir>`** vs **`+incdir+<dir>`** (xrun semantics):
+    `-v` reads a **file** and uses any/all modules it defines; `-y` searches a **dir**
+    for a file *named after* an undefined module (one module per file, filename =
+    module name); `+incdir` is only the search path for `` `include `` headers.
+    **A folder of library files that each define MULTIPLE modules (e.g.
+    `L16_LVT_ana.v`) needs `-v` per file — `-y` cannot find them.** Use
+    **[Add all in dir (-v)]** to add every `.v/.va/.vams` in a folder as `-v`.
+    Use **[Add -y dir]** only for a one-module-per-file cell library; **[Add +incdir]**
+    only for a folder of `` `include `` headers.
 - **[Extract A] [Convert B] [Generate C] [Run xrun] [Package D]** run the
   pipeline against the Output folder (`<out>/manifest_A.json` → `<out>/export`
   → `<out>/sim` → run → package). **[Run xrun]** executes `<out>/sim/run.sh`

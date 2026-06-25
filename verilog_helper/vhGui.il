@@ -419,6 +419,34 @@
                   (strcat "added (not saved yet): " entry)) t)))
     t))
 
+; Add EVERY .v/.va/.vams file in a directory as a -v entry. This is the right
+; choice for a folder of library files that each define MULTIPLE modules (e.g.
+; L16_LVT_ana.v) -- those need -v per file; -y can't find them (it wants
+; filename == module name). Non-recursive (files directly in the dir).
+(defun vh_elAddDirFilesCB ()
+  (let (d files cur)
+    (setq d (vh_str vh_extLibsForm->vh_elDir->value))
+    (cond
+      ((equal d "")
+        (errset (vh_extLibsForm->vh_elStatus->value = "type/paste a dir path first") t))
+      ((not (isDir d))
+        (errset (vh_extLibsForm->vh_elStatus->value = "not a directory") t))
+      (t
+        (setq files (setof f (getDirFiles d) (pcreMatchp "\\.(v|va|vams)$" f)))
+        (cond
+          ((null files)
+            (errset (vh_extLibsForm->vh_elStatus->value =
+              "no .v/.va/.vams files directly in that dir") t))
+          (t
+            (setq cur (vh_str vh_extLibsForm->vh_elList->value))
+            (foreach f files
+              (setq cur (if (equal cur "") (strcat d "/" f)
+                          (strcat cur "\n" d "/" f))))
+            (errset (vh_extLibsForm->vh_elList->value = cur) t)
+            (errset (vh_extLibsForm->vh_elStatus->value =
+              (sprintf nil "added %d file(s) as -v (not saved yet)" (length files))) t)))))
+    t))
+
 ; Save the list to the remembered env (REPLACE), via vh_env import.
 (defun vh_elSaveCB ()
   (let (txt tmp)
@@ -445,7 +473,7 @@
 
 ; Build + show the manager popup.
 (defun vh_showExtLibsForm (txt "t")
-  (let (fList fFile fAddF fDir fAddY fAddI fSave fReload fClear fStatus form)
+  (let (fList fFile fAddF fDir fAddDir fAddY fAddI fSave fReload fClear fStatus form)
     (errset (hiFormCancel vh_extLibsForm) t)
     (setq fList (hiCreateMLTextField ?name 'vh_elList ?prompt "" ?value txt
                   ?hasVerticalScrollbar t ?hasHorizontalScrollbar t ?enableWordWrap nil))
@@ -455,6 +483,9 @@
     (setq fAddF (hiCreateButton ?name 'vh_elBtnAddF ?buttonText "Add -v file"
                   ?callback "(vh_elAddCB \"v\")"))
     (setq fDir  (hiCreateStringField ?name 'vh_elDir ?prompt "a dir" ?value ""))
+    ; the recommended button for a folder of multi-module library files
+    (setq fAddDir (hiCreateButton ?name 'vh_elBtnAddDir ?buttonText "Add all in dir (-v)"
+                    ?callback "(vh_elAddDirFilesCB)"))
     (setq fAddY (hiCreateButton ?name 'vh_elBtnAddY ?buttonText "Add -y dir"
                   ?callback "(vh_elAddCB \"y\")"))
     (setq fAddI (hiCreateButton ?name 'vh_elBtnAddI ?buttonText "Add +incdir"
@@ -474,16 +505,17 @@
         (list fList   (list 0 0)    (list 450 170) 0)
         (list fFile   (list 0 178)  (list 380 28)  70)
         (list fAddF   (list 0 210)  (list 110 28)  0)
-        (list fDir    (list 0 244)  (list 320 28)  60)
-        (list fAddY   (list 0 276)  (list 110 28)  0)
-        (list fAddI   (list 120 276) (list 120 28) 0)
-        (list fSave   (list 0 312)  (list 90 28)   0)
-        (list fReload (list 100 312) (list 90 28)  0)
-        (list fClear  (list 200 312) (list 90 28)  0)
-        (list fStatus (list 0 348)  (list 450 28)  0))
+        (list fDir    (list 0 244)  (list 380 28)  60)
+        (list fAddDir (list 0 276)  (list 150 28)  0)
+        (list fAddY   (list 155 276) (list 100 28) 0)
+        (list fAddI   (list 260 276) (list 110 28) 0)
+        (list fSave   (list 0 314)  (list 90 28)   0)
+        (list fReload (list 100 314) (list 90 28)  0)
+        (list fClear  (list 200 314) (list 90 28)  0)
+        (list fStatus (list 0 350)  (list 460 28)  0))
       ?buttonLayout 'Close))
     (hiInstantiateForm form)
-    (errset (hiSetFormSize form (list 490 450)) t)
+    (errset (hiSetFormSize form (list 500 460)) t)
     (hiDisplayForm 'vh_extLibsForm)
     'vh_extLibsForm))
 
