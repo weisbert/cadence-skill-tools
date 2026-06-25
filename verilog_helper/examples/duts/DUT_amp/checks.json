@@ -1,0 +1,4 @@
+{
+  "_comment": "Golden for the schematic-nested top amp_top. gain2: n1=2*in1; offset1 is EXTERNAL -> Stage C stubs it as an ideal unity buffer so n2=in2; adder: out=n1+n2. Hence out = 2*in1 + in2.",
+  "out": "2.0*in1 + in2"
+}

@@ -153,7 +153,8 @@ def main():
     # setup_env.sh, run.sh (relative refs, EXT empty -> driven by ext_libs.list), preflight
     open(os.path.join(pkg, "setup_env.sh"), "w").write(vg.SETUP_ENV)
     runsh = os.path.join(pkg, "run.sh")
-    open(runsh, "w").write(vg.gen_runsh(top, src_base, stub_base, tb_base, ext_flags=[]))
+    open(runsh, "w").write(vg.gen_runsh(top, src_base, stub_base, tb_base, ext_flags=[],
+                                        sim_top=man.get("sim_top", "tb")))
     os.chmod(runsh, 0o755)
     open(os.path.join(pkg, "vh_preflight.vams"), "w").write(PREFLIGHT_SMOKE)
     vsh = os.path.join(pkg, "verify.sh")

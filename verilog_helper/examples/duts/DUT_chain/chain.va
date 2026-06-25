@@ -1,0 +1,16 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// TOP DUT:  y = ext_sensor( preproc(x, bias) )
+//
+// ext_sensor is intentionally NOT provided among the source files. The tool must:
+//   - classify it as an EXTERNAL master (instantiated but undefined),
+//   - infer its port directions from connectivity (.in <- driven net, .out -> sink net),
+//   - generate a wreal stub for it so the design can run pure-digital.
+module chain(y, x, bias);
+  output y;
+  input  x, bias;
+  wreal  y, x, bias;
+  wreal  mid;
+  preproc    p1 (.out(mid), .x(x), .bias(bias));
+  ext_sensor e1 (.out(y),   .in(mid));
+endmodule

@@ -57,6 +57,11 @@ D  package via airgap_deploy_template → red-zone verify.sh runs pure-digital x
   runs end-to-end to `=== TB PASS ===` (exit 0): top `chain`→`preproc`→{scaler,summer};
   `ext_sensor` correctly classified EXTERNAL, its port dirs inferred from connectivity
   (out:output, in:input), auto-stubbed as an ideal buffer; 5 vectors checked vs golden.
+- **Multi-DUT:** **built & verified** — `vh_dut.py`. One folder per DUT; auto-detects
+  config-vs-hand-dropped sources and user-test-vs-checks; runs the whole pipeline per DUT
+  into `<dut>/_vh/`; `run-all` gives a PASS/FAIL summary. `vh_gen --tb <file> [--tb-top]`
+  added so a DUT can carry its OWN testbench (else a TB is generated from checks.json).
+  Example `examples/duts/` (config / hand-dropped+checks / hand-dropped+user-test) = 3/3 PASS.
 - **D:** **built & verified** — `vh_convert` aside, `vh_package.py` + an env-agnostic
   `run.sh`/`setup_env.sh` from `vh_gen`. Packs a Stage-C build into a relocatable,
   self-contained bundle (flattened sources + `setup_env.sh` + `ext_libs.list` + `verify.sh`

@@ -30,6 +30,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_env.py`     | tool-remembered **external HDL env** (`-v` lib files / `-y` dirs / `+incdir`); resolves externals & bakes into `run.sh` | ✅ working |
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
 | `vh_package.py` | Stage D: pack a build into a relocatable, env-agnostic air-gap bundle (sources + `setup_env.sh` + `ext_libs.list` + `verify.sh` preflight) + tar.gz/sha256 | ✅ working |
+| `vh_dut.py`     | multi-DUT driver: one folder per DUT, auto-detect config/sources/test, run the whole pipeline per DUT, `run-all` with a PASS/FAIL summary | ✅ working |
 | `vhGui.il`      | thin SKILL GUI (select-from-schematic → config → folder → Extract) | ⏳ TODO |
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
 | `examples/schem_nested/` | **schematic-nested** example: captured oa2verilog netlist + on-disk veriloga leaves, Stage A→C→xrun **verified PASS** | ✅ |
@@ -126,6 +127,29 @@ Xcelium or a `VH_SITE_ENV` you point at. External `-v` libraries are listed in
 `ext_libs.list` (edit to the red-zone paths; or `export VH_EXT_LIBS=…`). `verify.sh` runs
 a **pure-digital wreal preflight** first (proves xrun works here, no spectre) and only then
 the design TB. The package is per-DUT user data — it goes to a work dir, not the repo.
+
+## Many DUTs (vh_dut) — one folder per DUT
+
+For lots of DUTs, give each its own folder and let the driver run the whole pipeline
+per DUT, isolated:
+
+```
+duts/
+  DUT1/  expand.cfg cds.lib [oa_netlist/*_raw.v] [checks.json|*_tb.v]   # OA-config driven
+  DUT2/  foo.v bar.va  mydut_tb.v                                       # hand-dropped + own test
+  DUT3/  *.va  checks.json                                             # hand-dropped + golden
+```
+```bash
+python3 vh_dut.py list    duts/         # show what was detected per DUT
+python3 vh_dut.py run     duts/DUT1     # one DUT (full A->C, +Stage D with --package)
+python3 vh_dut.py run-all duts/         # every DUT -> per-DUT _vh/ + a PASS/FAIL summary
+```
+Per DUT it auto-detects: `expand.cfg`→Stage A (uses a captured `*_raw.v` netlist if present,
+else `oa2verilog`)→B; else the folder's `.v/.va/.vams`→straight to C. A test file
+(`tb*.v`/`*_tb.v`/`test*.v`) is used as your testbench (`--tb`); else `checks.json` drives a
+generated TB. Everything for a DUT lands in `<dut>/_vh/` (gitignored). A per-DUT `dut.json`
+can override any field (`top`, `cell`, `tb_top`, `ext_lib`, `no_convert`, …). In config mode
+Stage B runs `--no-cell-write` (updates the verified copy to digital, never touches your lib).
 
 xrun env on the dev box: `source <workarea>/Verilog_check/setup_xcelium.sh` (or let
 `run.sh` set it). See **HANDOFF.md** for the full context, env recipes, and decisions.

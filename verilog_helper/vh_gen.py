@@ -14,7 +14,7 @@ Usage:
   python3 vh_gen.py --src <dir|file> [--src ...] --out <build_dir>
                     [--top <module>] [--checks <checks.json>]
 """
-import sys, os, re, json, argparse
+import sys, os, re, json, argparse, shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vh_parse as vp
@@ -226,7 +226,7 @@ def _bake_ext(ext_flags):
     return ' '.join(q)
 
 
-def gen_runsh(top, src_files, stub_files, tb_file, ext_flags=None):
+def gen_runsh(top, src_files, stub_files, tb_file, ext_flags=None, sim_top='tb'):
     files = src_files + stub_files + [tb_file]
     flines = ' \\\n  '.join('"%s"' % f for f in files)
     return """#!/usr/bin/env bash
@@ -251,7 +251,7 @@ xrun -64bit -ams -timescale 1s/1fs \\
   -amsvlog_ext .vams,.va \\
   ${EXT[@]+"${EXT[@]}"} \\
   %s \\
-  -top tb -access +rwc +libext+.v+.va+.vams \\
+  -top %s -access +rwc +libext+.v+.va+.vams \\
   -l xrun.log
 rc=$?
 
@@ -259,7 +259,7 @@ echo "================= RESULT ================="
 grep -E "=== TB (PASS|FAIL)|^FAIL " xrun.log || echo "(no PASS/FAIL line -- check xrun.log)"
 echo "xrun exit code: $rc"
 exit $rc
-""" % (_bake_ext(ext_flags), flines)
+""" % (_bake_ext(ext_flags), flines, sim_top)
 
 
 SIM_TCL = """# Optional waveform dump (batch or GUI). Use:  ./run.sh  then  simvision waves.shm
@@ -295,6 +295,8 @@ def main():
     ap.add_argument('--out', required=True, help='output/build directory')
     ap.add_argument('--top', help='top DUT module (default: unique top in the graph)')
     ap.add_argument('--checks', help='JSON {output: expected-expr-in-terms-of-inputs}')
+    ap.add_argument('--tb', help='use this user-supplied testbench file instead of generating one')
+    ap.add_argument('--tb-top', default='tb', help='top module of --tb (default: tb)')
     ap.add_argument('--manifest', help='Stage-A manifest_A.json (default: auto-find near --src)')
     ap.add_argument('--ext-lib', action='append', default=[], help='external -v file (per-run)')
     ap.add_argument('--ext-dir', action='append', default=[], help='external -y dir (per-run)')
@@ -348,9 +350,11 @@ def main():
                  for e in resolved if resolved[e]['kind'] == 'analog']
 
     checks = {}
-    if args.checks:
+    if args.checks and not args.tb:
         raw = json.load(open(args.checks))
         checks = {k: v for k, v in raw.items() if not k.startswith('_')}
+    if args.checks and args.tb:
+        print("note: --tb given -> ignoring --checks (your test does its own checking)")
 
     os.makedirs(args.out, exist_ok=True)
     src_files = [os.path.abspath(f) for f in files]
@@ -363,17 +367,30 @@ def main():
         open(path, 'w').write(stub)
         stub_files.append(os.path.abspath(path))
 
-    # testbench
-    tb_src, tb_warns = gen_tb(top, index, checks)
-    tb_path = os.path.join(args.out, 'tb_%s.vams' % top)
-    open(tb_path, 'w').write(tb_src)
+    # testbench: user-supplied (--tb) or generated. sim_top = the module xrun runs.
+    if args.tb:
+        if not os.path.isfile(args.tb):
+            sys.exit("ERROR: --tb file not found: %s" % args.tb)
+        tb_path = os.path.join(args.out, os.path.basename(args.tb))   # copy in -> self-contained build
+        if os.path.abspath(args.tb) != os.path.abspath(tb_path):
+            shutil.copyfile(args.tb, tb_path)
+        tb_path = os.path.abspath(tb_path)
+        sim_top = args.tb_top
+        tb_warns = []
+        user_tb = True
+    else:
+        tb_src, tb_warns = gen_tb(top, index, checks)
+        tb_path = os.path.abspath(os.path.join(args.out, 'tb_%s.vams' % top))
+        open(tb_path, 'w').write(tb_src)
+        sim_top = 'tb'
+        user_tb = False
 
     # setup_env.sh (sourced) + run.sh + sim.tcl
     ext_flags = ve.xrun_flags(env)
     open(os.path.join(args.out, 'setup_env.sh'), 'w').write(SETUP_ENV)
     runsh = os.path.join(args.out, 'run.sh')
-    open(runsh, 'w').write(gen_runsh(top, src_files, stub_files, os.path.abspath(tb_path),
-                                     ext_flags=ext_flags))
+    open(runsh, 'w').write(gen_runsh(top, src_files, stub_files, tb_path,
+                                     ext_flags=ext_flags, sim_top=sim_top))
     os.chmod(runsh, 0o755)
     open(os.path.join(args.out, 'sim.tcl'), 'w').write(SIM_TCL)
 
@@ -391,7 +408,7 @@ def main():
                               'stub': 'stub_%s.vams' % e} for e in to_stub],
         'ext_flags': ext_flags,
         'duplicates': [{'module': n, 'ignored_file': f2, 'kept_file': f1} for n, f2, f1 in dups],
-        'tb': os.path.basename(tb_path), 'run': 'run.sh',
+        'tb': os.path.basename(tb_path), 'sim_top': sim_top, 'user_tb': user_tb, 'run': 'run.sh',
         'checks': checks, 'tb_warnings': tb_warns + ext_warns,
         'instance_tree': tree,
     }
@@ -403,6 +420,9 @@ def main():
     out.append("BINDING MANIFEST")
     out.append("=" * 72)
     out.append("TOP DUT          : %s  [%s]" % (top, index[top]['kind']))
+    out.append("TESTBENCH        : %s  (sim top=%s)"
+               % (os.path.basename(tb_path) + (" [user-supplied]" if user_tb else " [generated]"),
+                  sim_top))
     out.append("")
     out.append("INSTANCE TREE:")
     out += ["  " + t for t in tree]
@@ -443,7 +463,7 @@ def main():
             out.append("  ! " + w)
     out.append("")
     out.append("GENERATED in %s :" % args.out)
-    for f in ['tb_%s.vams' % top] + ['stub_%s.vams' % e for e in to_stub] + ['run.sh', 'sim.tcl', 'manifest.json']:
+    for f in [os.path.basename(tb_path)] + ['stub_%s.vams' % e for e in to_stub] + ['run.sh', 'setup_env.sh', 'sim.tcl', 'manifest.json']:
         out.append("  - %s" % f)
     out.append("")
     out.append("RUN:  bash %s" % runsh)

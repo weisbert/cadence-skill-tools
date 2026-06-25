@@ -1,0 +1,9 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// Leaf veriloga bound under demolib.gain2:veriloga.   o = 2*i   (pure-digital wreal)
+module gain2(i, o);
+  input  i;
+  output o;
+  wreal  i, o;
+  assign o = 2.0 * i;
+endmodule

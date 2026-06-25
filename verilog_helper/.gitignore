@@ -3,6 +3,8 @@ examples/*/build/
 examples/*/build*/
 # Stage-B generated digital candidates (review then copy onto veriloga.va; never source)
 veriloga_wreal.va
+# per-DUT generated outputs (vh_dut)
+_vh/
 __pycache__/
 *.pyc
 xcelium.d/
