@@ -197,29 +197,60 @@ def gen_tb(top, index, checks):
     return '\n'.join(L) + '\n', warns
 
 
+# setup_env.sh -- env-agnostic xrun resolution, sourced by run.sh / verify.sh.
+# Red zone: xrun is already on PATH -> use it as-is. Dev: fall back to the local
+# Xcelium. Either: set VH_SITE_ENV=/path/site_env.sh to source your own.
+SETUP_ENV = """# AUTO-GENERATED. Source this to make `xrun` available, env-agnostically.
+if ! command -v xrun >/dev/null 2>&1; then
+  if [ -n "${VH_SITE_ENV:-}" ] && [ -f "${VH_SITE_ENV}" ]; then
+    . "${VH_SITE_ENV}"
+  elif [ -d "%s" ]; then                 # dev-box fallback
+    export XCELIUM_HOME="%s"
+    export CDS_LIC_FILE="%s"
+    export PATH="$XCELIUM_HOME/tools/bin:$PATH"
+  fi
+fi
+if ! command -v xrun >/dev/null 2>&1; then
+  echo "ERROR: xrun not on PATH. On the red zone it should be ambient; otherwise set" >&2
+  echo "       VH_SITE_ENV=/path/to/your_cadence_env.sh and re-run." >&2
+  return 127 2>/dev/null || exit 127
+fi
+""" % (XCELIUM_HOME, XCELIUM_HOME, CDS_LIC_FILE)
+
+
+def _bake_ext(ext_flags):
+    """Render ext_flags as a bash array body, quoting bare path args."""
+    q = []
+    for tok in (ext_flags or []):
+        q.append(tok if tok.startswith(('-', '+')) else '"%s"' % tok)
+    return ' '.join(q)
+
+
 def gen_runsh(top, src_files, stub_files, tb_file, ext_flags=None):
     files = src_files + stub_files + [tb_file]
     flines = ' \\\n  '.join('"%s"' % f for f in files)
-    extl = ''
-    if ext_flags:
-        # quote bare path args (-v <file> / -y <dir>); leave +incdir+/+... tokens as-is
-        q = []
-        for tok in ext_flags:
-            q.append(tok if tok.startswith(('-', '+')) else '"%s"' % tok)
-        extl = '  ' + ' '.join(q) + ' \\\n'
     return """#!/usr/bin/env bash
-# AUTO-GENERATED. Pure-digital VerilogAMS run via xrun (no spectre).
-# External library files/dirs come from the tool-remembered env (vh_env).
+# AUTO-GENERATED. Pure-digital VerilogAMS run via xrun (no spectre). Env-agnostic:
+# uses xrun if already on PATH (red zone), else falls back to a site/dev env.
 set -uo pipefail
-export XCELIUM_HOME=%s
-export CDS_LIC_FILE=%s
-export PATH="$XCELIUM_HOME/tools/bin:$PATH"
 cd "$(dirname "$0")"
-rm -rf xcelium.d INCA_libs .simvision waves.shm xrun.log xrun.key
+. ./setup_env.sh || exit 127
 
+# external -v/-y/+incdir libs: VH_EXT_LIBS (space-sep files) or an ext_libs.list
+# file (one path per line) OVERRIDE the baked-in set below -- use these on the red
+# zone where the library paths differ.
+EXT=(%s)
+if [ -n "${VH_EXT_LIBS:-}" ]; then
+  EXT=(); for f in ${VH_EXT_LIBS}; do EXT+=(-v "$f"); done
+elif [ -f ext_libs.list ]; then
+  EXT=(); while read -r f; do case "$f" in ''|\\#*) ;; -*) EXT+=($f) ;; +*) EXT+=("$f") ;; *) EXT+=(-v "$f") ;; esac; done < ext_libs.list
+fi
+
+rm -rf xcelium.d INCA_libs .simvision waves.shm xrun.log xrun.key
 xrun -64bit -ams -timescale 1s/1fs \\
   -amsvlog_ext .vams,.va \\
-%s  %s \\
+  ${EXT[@]+"${EXT[@]}"} \\
+  %s \\
   -top tb -access +rwc +libext+.v+.va+.vams \\
   -l xrun.log
 rc=$?
@@ -228,7 +259,7 @@ echo "================= RESULT ================="
 grep -E "=== TB (PASS|FAIL)|^FAIL " xrun.log || echo "(no PASS/FAIL line -- check xrun.log)"
 echo "xrun exit code: $rc"
 exit $rc
-""" % (XCELIUM_HOME, CDS_LIC_FILE, extl, flines)
+""" % (_bake_ext(ext_flags), flines)
 
 
 SIM_TCL = """# Optional waveform dump (batch or GUI). Use:  ./run.sh  then  simvision waves.shm
@@ -337,8 +368,9 @@ def main():
     tb_path = os.path.join(args.out, 'tb_%s.vams' % top)
     open(tb_path, 'w').write(tb_src)
 
-    # run.sh + sim.tcl
+    # setup_env.sh (sourced) + run.sh + sim.tcl
     ext_flags = ve.xrun_flags(env)
+    open(os.path.join(args.out, 'setup_env.sh'), 'w').write(SETUP_ENV)
     runsh = os.path.join(args.out, 'run.sh')
     open(runsh, 'w').write(gen_runsh(top, src_files, stub_files, os.path.abspath(tb_path),
                                      ext_flags=ext_flags))

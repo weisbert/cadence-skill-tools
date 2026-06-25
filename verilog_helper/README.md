@@ -29,6 +29,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_extract.py` | Stage A: config (cds.lib+expand.cfg) → oa2verilog hierarchy → clean structural top + gathered `.va` leaves + external interfaces + manifest | ✅ working |
 | `vh_env.py`     | tool-remembered **external HDL env** (`-v` lib files / `-y` dirs / `+incdir`); resolves externals & bakes into `run.sh` | ✅ working |
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
+| `vh_package.py` | Stage D: pack a build into a relocatable, env-agnostic air-gap bundle (sources + `setup_env.sh` + `ext_libs.list` + `verify.sh` preflight) + tar.gz/sha256 | ✅ working |
 | `vhGui.il`      | thin SKILL GUI (select-from-schematic → config → folder → Extract) | ⏳ TODO |
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
 | `examples/schem_nested/` | **schematic-nested** example: captured oa2verilog netlist + on-disk veriloga leaves, Stage A→C→xrun **verified PASS** | ✅ |
@@ -110,6 +111,21 @@ overwrites `veriloga.va` — you review, then copy it over). Voltage-transfer an
 to `assign`s; anything with `I(…)<+` / `ddt` / noise / temp-vars gets a **TODO skeleton**
 to fill in. In `--manifest` mode the gathered `export/` copy is updated to the digital
 version so the pure-digital run uses it. `--no-cell-write` keeps everything out of the lib.
+
+## Stage D (vh_package) — relocatable air-gap bundle for the red zone
+
+```bash
+python3 vh_package.py --build <stageC_out>/sim          # -> package/ + tar.gz + sha256
+# transfer to the red zone, then there:
+tar xzf <top>_pkg.tar.gz && bash <top>_pkg/verify.sh     # preflight smoke, then the TB
+```
+The bundle is **self-contained and relocatable**: all sources are flattened in and
+`run.sh` refers to them by relative name. It is **env-agnostic** — `setup_env.sh` uses
+`xrun` if it's already on PATH (the red zone, verified `19.04`), else falls back to a dev
+Xcelium or a `VH_SITE_ENV` you point at. External `-v` libraries are listed in
+`ext_libs.list` (edit to the red-zone paths; or `export VH_EXT_LIBS=…`). `verify.sh` runs
+a **pure-digital wreal preflight** first (proves xrun works here, no spectre) and only then
+the design TB. The package is per-DUT user data — it goes to a work dir, not the repo.
 
 xrun env on the dev box: `source <workarea>/Verilog_check/setup_xcelium.sh` (or let
 `run.sh` set it). See **HANDOFF.md** for the full context, env recipes, and decisions.

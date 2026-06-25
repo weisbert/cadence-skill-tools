@@ -57,7 +57,12 @@ D  package via airgap_deploy_template → red-zone verify.sh runs pure-digital x
   runs end-to-end to `=== TB PASS ===` (exit 0): top `chain`→`preproc`→{scaler,summer};
   `ext_sensor` correctly classified EXTERNAL, its port dirs inferred from connectivity
   (out:output, in:input), auto-stubbed as an ideal buffer; 5 vectors checked vs golden.
-- **D:** not built. `airgap_deploy_template/` in the workarea is the reusable pipeline.
+- **D:** **built & verified** — `vh_convert` aside, `vh_package.py` + an env-agnostic
+  `run.sh`/`setup_env.sh` from `vh_gen`. Packs a Stage-C build into a relocatable,
+  self-contained bundle (flattened sources + `setup_env.sh` + `ext_libs.list` + `verify.sh`
+  preflight) + tar.gz/sha256. Verified by extracting the tarball to a fresh dir and running
+  `verify.sh` in a CLEAN env (xrun resolved via fallback, preflight PASS, design TB PASS),
+  incl. a `-v` external lib carried through `ext_libs.list`. Red-zone facts in §5/§7.
 
 ---
 
@@ -192,11 +197,13 @@ dev(linux8, this box) ──git push──▶ GitHub ──git pull──▶ yel
 - **Red zone xrun = 19.04** (ICADVM18.1; from the original reference prompt). Dev = 18.03.
   `-ams` / `-amsvlog_ext` / wreal exist in both; dev smoke is a valid proxy. **Add a
   preflight smoke on red** before trusting a run.
-- skill_tools' own deploy (`skill_tools/deploy/{pack.ps1,deploy.sh}`) ships the repo to red.
-- `airgap_deploy_template/` is the reusable pipeline for Stage-D per-DUT verification packages.
-- The generated per-DUT package (`.v`+stubs+TB+verify.sh) is **user data → goes to a work
-  dir, NOT committed into the repo.** Stage-D `run.sh`/`verify.sh` must be **env-agnostic**
-  (red paths differ) — current `vh_gen.py` hardcodes dev paths; make it source a site env. (TODO)
+- skill_tools' own deploy (`skill_tools/deploy/{pack.ps1,deploy.sh}`) ships the TOOL to red.
+- The per-DUT verification package is built by **`vh_package.py`** (DONE): a relocatable,
+  env-agnostic, self-contained bundle (`<top>_pkg/` + `.tar.gz` + `.sha256`). It is **user
+  data → goes to a work dir, NOT committed.** `setup_env.sh` resolves xrun env-agnostically
+  (ambient on red / `VH_SITE_ENV` / dev fallback); `ext_libs.list` (or `VH_EXT_LIBS`) carries
+  the red-zone `-v` paths; `verify.sh` runs a pure-digital preflight smoke then `run.sh`.
+  Red `xrun` is ambient and the preflight PASSes there with zero spectre license use (§7).
 
 ---
 
@@ -229,16 +236,15 @@ dev(linux8, this box) ──git push──▶ GitHub ──git pull──▶ yel
 - [x] **Stage B `vh_convert.py`** — built & verified (see §3b). Remaining: richer pattern
       coverage if real cells need it (sample/hold, dff with explicit clocks → currently
       skeleton); verify bus packed-wire↔unpacked-wreal-array connection in a real hierarchy.
-- [ ] **Stage D**: make `run.sh` env-agnostic. **Red-zone facts (preflight done 2026-06-25,
-      see [[xcelium-working-and-gotchas]] / project memory):** red `xrun = 19.04-a001`, the
-      pure-digital wreal smoke PASSed with **zero** spectre license errors (cleaner than dev)
-      and no `*F,INTERR`; **xrun is ambient** in the user's interactive shell. So Stage-D
-      run.sh must NOT hardcode dev's `XCELIUM_HOME/CDS_LIC_FILE/PATH` (that breaks red) —
-      source an optional site env else use ambient xrun. Still need: whether xrun resolves in
-      a non-interactive `bash -c` on red (decides if run.sh must source a site setup).
+- [x] **Stage D** — built & verified (`vh_package.py` + env-agnostic `run.sh`/`setup_env.sh`).
+      **Red-zone facts (preflight 2026-06-25):** red `xrun = 19.04-a001`, pure-digital wreal
+      smoke PASSed with **zero** spectre license errors (cleaner than dev) and no `*F,INTERR`;
+      **xrun is ambient even in non-interactive `bash -c`** (`/software/cadence/xcelium/
+      19.04.001/tools/bin/xrun`) — so the package needs NO env setup on red. Done: `setup_env.sh`
+      uses ambient xrun else falls back; `ext_libs.list`/`VH_EXT_LIBS` carries red `-v` paths.
 - [ ] **GUI `vhGui.il`**: note_helper-style launcher (select-from-schematic + config picker).
 - [ ] Get from user: the red-zone `-v` external-lib paths + whether they're wreal/electrical;
-      a real DUT cell that actually instantiates leaves; non-interactive xrun-env answer.
+      a real DUT cell that actually instantiates leaves (the dev design is a shell).
 
 ## 8. Memory pointers (Claude Code persistent memory)
 `xcelium-working-and-gotchas`, `oa2verilog-rhel8-recipe`, `verilog-check-project`,
