@@ -196,6 +196,41 @@ def main():
                 if port not in tports:
                     mismatches.setdefault(mas, {}).setdefault(port, []).append(inst)
 
+    # ---- DISCIPLINE BOUNDARIES: where a wreal port meets a logic net/port -----------
+    # This is exactly what xrun's elaborator flags as *E,CUNDCM. A net is a boundary when
+    # the disciplines on it (the net's own declaration + every connected instance port)
+    # include BOTH wreal and logic, with no connect module. Seeing these tells us whether
+    # the design is all-wreal, all-logic, or MIXED (and exactly where), instead of guessing.
+    def _disc(m, port):                       # discipline a module declares for a port/net
+        return 'wreal' if (m and m['ntype'].get(port) == 'wreal') else 'logic'
+
+    def _nb(net):
+        mm = re.match(r'\s*(\\?\w+)', net or '')
+        return mm.group(1) if mm else (net or '').strip()
+
+    boundaries = []        # (host, net, declared_disc, [wreal ports], [logic ports])
+    for host, mi in sorted(index.items()):
+        netdisc = {p: _disc(mi, p) for p in mi['ports']}
+        for n, t in mi['ntype'].items():
+            netdisc[n] = 'wreal' if t == 'wreal' else 'logic'
+        pernet = {}
+        for it in mi['instances']:
+            tgt = index.get(it['master'])
+            for port, net in ((it.get('conns') or {}).get('named') or {}).items():
+                nb = _nb(net)
+                d = _disc(tgt, port) if tgt else 'logic'   # unknown master (-v/stub) -> logic
+                pernet.setdefault(nb, {'wreal': [], 'logic': []})[d].append(
+                    '%s/%s.%s' % (it['inst'], it['master'], port))
+        for nb, sides in pernet.items():
+            discs = {netdisc.get(nb, 'logic')}
+            if sides['wreal']:
+                discs.add('wreal')
+            if sides['logic']:
+                discs.add('logic')
+            if 'wreal' in discs and 'logic' in discs:
+                boundaries.append((host, nb, netdisc.get(nb, 'logic'),
+                                   sides['wreal'], sides['logic']))
+
     # ---- PARSE COVERAGE: instances our parser misses but xrun sees -------------------
     parse_gaps = []        # (file, module, [missed masters], has_analog)
     for f in files:
@@ -217,6 +252,10 @@ def main():
         p("  Stage A design : %s.%s:%s" % (d.get("lib"), d.get("cell"), d.get("view")))
         p("  gathered leaves: %d   (incl. %d structural-verilogams sub-cells)"
           % (len(manA.get("veriloga_leaves", [])), len(manA.get("gathered_subcells", []))))
+        if "discipline" in manA:
+            p("  discipline     : %s   (wreal leaves: %d, logic leaves: %d)"
+              % (manA["discipline"], len(manA.get("wreal_leaves", [])),
+                 len(manA.get("logic_leaves", []))))
     if manC:
         res = [e["module"] for e in manC.get("external_resolved", [])]
         stub = [e["module"] for e in manC.get("external_stubbed", [])]
@@ -224,8 +263,31 @@ def main():
         p("  externals -v   : %d  %s" % (len(res), res or ""))
         p("  externals stub : %d  %s" % (len(stub), stub or ""))
     p("  parsed modules : %d  (from %d files)" % (len(index), len(files)))
-    p("  >>> %d UNRESOLVED, %d PORT-MISMATCH master(s), %d PARSE-GAP module(s) <<<"
-      % (len(unresolved), len(mismatches), len(parse_gaps)))
+    p("  >>> %d UNRESOLVED, %d PORT-MISMATCH, %d PARSE-GAP, %d DISCIPLINE-BOUNDARY net(s) <<<"
+      % (len(unresolved), len(mismatches), len(parse_gaps), len(boundaries)))
+
+    # ---- DISCIPLINE BOUNDARIES ------------------------------------------------------
+    p("\n## DISCIPLINE BOUNDARIES  (a net mixing wreal + logic ports -> *E,CUNDCM)")
+    if not boundaries:
+        p("  (none -- every net is discipline-consistent)")
+    else:
+        # which masters sit on the WREAL side vs the LOGIC side of boundaries -> shows the mix
+        wr_masters, lg_masters = Counter(), Counter()
+        for host, nb, decl, wr, lg in boundaries:
+            for s in wr:
+                wr_masters[s.split('/')[1].split('.')[0]] += 1
+            for s in lg:
+                lg_masters[s.split('/')[1].split('.')[0]] += 1
+        p("  %d boundary net(s). Masters on the WREAL side: %s"
+          % (len(boundaries), dict(wr_masters.most_common(8)) or "(none)"))
+        p("  Masters on the LOGIC side: %s" % (dict(lg_masters.most_common(8)) or "(none)"))
+        p("  examples:")
+        for host, nb, decl, wr, lg in boundaries[:12]:
+            p("    %s.%s  (net declared %s)" % (host, nb, decl))
+            if wr:
+                p("        wreal: %s" % ", ".join(wr[:4]))
+            if lg:
+                p("        logic: %s" % ", ".join(lg[:4]))
 
     # ---- PARSE COVERAGE -------------------------------------------------------------
     p("\n## PARSE GAPS  (instances vh_extract/vh_gen's parser MISSES but xrun sees -> *E,CUVMUR)")
