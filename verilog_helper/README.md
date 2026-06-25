@@ -31,7 +31,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
 | `vh_package.py` | Stage D: pack a build into a relocatable, env-agnostic air-gap bundle (sources + `setup_env.sh` + `ext_libs.list` + `verify.sh` preflight) + tar.gz/sha256 | ✅ working |
 | `vh_dut.py`     | multi-DUT driver: one folder per DUT, auto-detect config/sources/test, run the whole pipeline per DUT, `run-all` with a PASS/FAIL summary | ✅ working |
-| `vhGui.il`      | thin SKILL GUI: select-from-schematic + Lib/Cell/View picker → `system()`-shells out to the CLIs ([Extract A][Convert B][Generate C][Package D]) + external-`-v`-env buttons. Registers under **MyTool → Verilog Helper** | ✅ working |
+| `vhGui.il`      | thin SKILL GUI: select-from-schematic + Lib/Cell/View picker → `system()`-shells out to the CLIs ([Extract A][Convert B][Generate C][Run xrun][Package D]) + external-`-v`-env buttons. Registers under **MyTool → Verilog Helper** | ✅ working |
 | `verilog_helper.il` | single-file loader (resolves `verilog_helperDir`, sources `vhGui.il`); also loaded by the `skill_tools.il` umbrella | ✅ working |
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
 | `examples/schem_nested/` | **schematic-nested** example: captured oa2verilog netlist + on-disk veriloga leaves, Stage A→C→xrun **verified PASS** | ✅ |
@@ -78,10 +78,12 @@ Then **MyTool → Verilog Helper** opens the form:
   folder** / **checks.json** / **user testbench** file pickers.
 - **external -v library** + **[Add -v lib]** (remembers it via `vh_env.py`) /
   **[Show env]**.
-- **[Extract A] [Convert B] [Generate C] [Package D]** run the four stages
-  against the Output folder (`<out>/manifest_A.json` → `<out>/export` →
-  `<out>/sim` → package); each prints its full log to the CIW and a one-line
-  result to the **Status** field.
+- **[Extract A] [Convert B] [Generate C] [Run xrun] [Package D]** run the
+  pipeline against the Output folder (`<out>/manifest_A.json` → `<out>/export`
+  → `<out>/sim` → run → package). **[Run xrun]** executes `<out>/sim/run.sh`
+  (the pure-digital xrun) and shows the verdict (`=== TB PASS ===` /
+  `=== TB FAIL ===`) on the Status line. Each button prints its full log to the
+  CIW and a one-line result to the **Status** field.
 
 The CLIs do the real work, so the GUI runs identically on the dev box and the
 red zone. Overridable globals (set before/after load): `vh_pythonCmd`

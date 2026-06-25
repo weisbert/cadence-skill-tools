@@ -13,16 +13,20 @@
 - `vh_dut.py` — **multi-DUT driver** (one folder per DUT, `run-all` summary). ✅
 - **GUI** `vhGui.il` (+ `verilog_helper.il` loader) — thin SKILL launcher under
   **MyTool → Verilog Helper**: select-from-schematic + Lib/Cell/View picker +
-  `[Extract A][Convert B][Generate C][Package D]` + external-`-v`-env buttons; each
-  button `system()`-shells out to a `vh_*.py` CLI. ✅
+  `[Extract A][Convert B][Generate C][Run xrun][Package D]` + external-`-v`-env
+  buttons; each button `system()`-shells out to a `vh_*.py` CLI (or `bash run.sh`
+  for Run). ✅
 
 Verified: `examples/{nested_chain,schem_nested,analog_leaf}` + `examples/duts/` (3/3).
 **Red zone preflight PASSED** (xrun 19.04, pure-digital wreal, zero spectre license, xrun
 ambient even in `bash -c`). Dev box OA design is a SHELL (PMU_top is a pin-only stub).
-**GUI verified live** via skillbridge (load + helpers + every field builder + the real
-A→C→D `system()` shell-out from Virtuoso's env; `vh_env show` confirmed read-only;
-registers once under MyTool). Form *display* itself is opened by the user from the menu
-(can't be bridge-probed — `hiCreateAppForm`/`hiDisplayForm` block the bridge).
+**GUI verified live** via skillbridge — a FULL user-flow simulation drove the real form
+object (built but not displayed, the README-sanctioned scripted-form pattern): set fields,
+"clicked" Extract A → Convert B → Generate C → **Run xrun → `=== TB PASS ===`** (real
+xrun, ~4s) → Package D, then `hiFormCancel`. All 6 out-of-order/empty-field guards fire
+clean hints; `vh_env show` confirmed read-only; registers once under MyTool. Only the
+literal pixel *display* (`hiDisplayForm`) is left for the user to eyeball from the menu
+(it blocks the bridge, so it can't be scripted).
 
 **Remaining (user-owned, not code):** real red-zone `-v` lib paths (+ wreal/electrical?)
 and a REAL DUT cell that actually instantiates leaves (the dev design is a shell). Full

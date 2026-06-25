@@ -121,26 +121,31 @@
         (setq last (vh_str line))))
     (if (greaterp (length last) 90) (substring last 1 90) last)))
 
-; Run one CLI: <prefix> python3 <dir>/<script> <argStr>  (stdout+stderr -> log).
+; Run an arbitrary shell command, capturing stdout+stderr to a temp log.
 ; Returns (list rc logText). (NOT cons -- SKILL's cons REQUIRES its 2nd arg to
 ; be a list, so (cons rc txt) on a string txt errors "argument #2 should be a
 ; list"; a flat (list ...) is the right pair container. Caught live via
 ; skillbridge.) Prints the launch line + full log to the CIW so the user sees
 ; progress even while Virtuoso is blocked on the synchronous system().
-(defun vh_runCLI (script argStr "tt")
-  (let (scriptPath logFile cmd rc txt)
-    (setq scriptPath (strcat (vh_dir) script))
-    (unless (isFile scriptPath)
-      (error (strcat "verilog-helper: CLI not found: " scriptPath)))
+(defun vh_runShell (cmd "t")
+  (let (logFile full rc txt)
     (setq logFile (makeTempFileName "/tmp/vh_run"))
-    (setq cmd (sprintf nil "%s %s %s %s > %s 2>&1"
-                vh_shellPrefix vh_pythonCmd (vh_q scriptPath) argStr (vh_q logFile)))
+    (setq full (sprintf nil "%s > %s 2>&1" cmd (vh_q logFile)))
     (printf "[verilog-helper] %s\n" cmd)
-    (setq rc (system cmd))
+    (setq rc (system full))
     (setq txt (if (isFile logFile) (vh_readFile logFile) ""))
     (errset (deleteFile logFile) t)
     (printf "[verilog-helper] exit=%d\n%s\n" rc txt)
     (list rc txt)))
+
+; Run one CLI: <prefix> python3 <dir>/<script> <argStr>  (via vh_runShell).
+(defun vh_runCLI (script argStr "tt")
+  (let (scriptPath)
+    (setq scriptPath (strcat (vh_dir) script))
+    (unless (isFile scriptPath)
+      (error (strcat "verilog-helper: CLI not found: " scriptPath)))
+    (vh_runShell (sprintf nil "%s %s %s %s"
+                   vh_shellPrefix vh_pythonCmd (vh_q scriptPath) argStr))))
 
 ; Run a CLI and report on the Status line: exit 0 -> last log line; else "FAILED".
 (defun vh_runReport (form stageLabel script argStr "gttt")
@@ -180,7 +185,7 @@
 ; structural top + gathered .va + manifest_A.json in <out>. A captured netlist
 ; skips oa2verilog. --cell retargets the DUT when a config points at a TB.
 (defun vh_extractCB (form "g")
-  (let (out cfg cdslib netlist lib cell view args)
+  (let (out cfg cdslib netlist lib cell view args ready)
     (cond
       ((null (setq out (vh_needOut form))) nil)
       (t
@@ -191,6 +196,7 @@
         (setq cell    (vh_str form->vh_srcCell->value))
         (setq view    (vh_str form->vh_srcView->value))
         (setq args (strcat "--out " (vh_q out)))
+        (setq ready t)
         (cond
           ((not (equal cfg ""))
             ; config-driven: --config (+ --cell to retarget the DUT, + --cdslib)
@@ -203,10 +209,14 @@
                           " --view " (if (equal view "") "schematic" view)))
             (unless (equal cdslib "") (setq args (strcat args " --cdslib " (vh_q cdslib)))))
           (t
+            ; no usable source -- hint on Status and skip the run (return cleanly,
+            ; do NOT (error ...): a raised error from a button callback dumps a
+            ; stack to the CIW; the Status hint is the right UX).
             (vh_setStatus form "Stage A needs a config (expand.cfg) OR a Source Lib+Cell")
-            (error "vh_extractCB: no config and no lib/cell")))
-        (unless (equal netlist "") (setq args (strcat args " --netlist " (vh_q netlist))))
-        (vh_runReport form "Stage A" "vh_extract.py" args)))
+            (setq ready nil)))
+        (when ready
+          (unless (equal netlist "") (setq args (strcat args " --netlist " (vh_q netlist))))
+          (vh_runReport form "Stage A" "vh_extract.py" args))))
     t))
 
 ; Stage B (vh_convert.py): convert the manifest's analog leaves to wreal,
@@ -265,6 +275,37 @@
           (t
             (setq args (strcat "--build " (vh_q sim)))
             (vh_runReport form "Stage D" "vh_package.py" args)))))
+    t))
+
+; [Run xrun]: execute <out>/sim/run.sh -- the pure-digital xrun the whole tool
+; exists to drive -- and surface its verdict on the Status line. (run.sh cd's to
+; its own dir + sources setup_env.sh, so a bare `bash <path>` is self-contained:
+; ambient xrun on the red zone, dev Xcelium fallback otherwise.) Pure-digital
+; wreal exits 0 even with benign spectre-license warnings, so the "=== TB PASS"
+; marker in the log -- not the exit code -- is the real verdict.
+(defun vh_runCB (form "g")
+  (let (out runsh res rc txt verdict)
+    (cond
+      ((null (setq out (vh_needOut form))) nil)
+      (t
+        (setq runsh (strcat out "/sim/run.sh"))
+        (cond
+          ((not (isFile runsh))
+            (vh_setStatus form "no sim/run.sh -- run Generate (C) first"))
+          (t
+            (vh_setStatus form "Run: xrun running... (see CIW)")
+            (setq res (errset (vh_runShell (strcat "bash " (vh_q runsh))) t))
+            (cond
+              ((null res) (vh_setStatus form "Run: launch error -- see CIW"))
+              (t
+                (setq rc  (car  (car res)))
+                (setq txt (cadr (car res)))
+                (setq verdict
+                  (cond
+                    ((pcreMatchp "=== TB PASS" txt) "=== TB PASS ===")
+                    ((pcreMatchp "=== TB FAIL" txt) "=== TB FAIL ===  -- see CIW")
+                    (t (sprintf nil "xrun exit %d (no PASS/FAIL line -- see CIW)" rc))))
+                (vh_setStatus form (strcat "Run: " verdict))))))))
     t))
 
 ; External env: remember a -v library file (vh_env.py add-lib <path>). The
@@ -415,7 +456,7 @@
 (defun vh_guiBuild ()
   (let (fLib fCell fView fSel fBrowse
         fCfg fCds fNet fOut fChecks fTb fBwrite fExt fAddLib fShow
-        fA fB fC fD fStatus
+        fA fB fC fRun fD fStatus
         form fieldW promptW rowH sizePt btnH preDir)
     (setq rowH 28) (setq fieldW 380) (setq promptW 155)
     (setq sizePt (list fieldW rowH)) (setq btnH rowH)
@@ -466,6 +507,8 @@
                ?callback "(vh_convertCB (vh_curForm))"))
     (setq fC (hiCreateButton ?name 'vh_btnC ?buttonText "Generate C"
                ?callback "(vh_genCB (vh_curForm))"))
+    (setq fRun (hiCreateButton ?name 'vh_btnRun ?buttonText "Run xrun"
+                 ?callback "(vh_runCB (vh_curForm))"))
     (setq fD (hiCreateButton ?name 'vh_btnD ?buttonText "Package D"
                ?callback "(vh_packageCB (vh_curForm))"))
     (setq fStatus (hiCreateStringField ?name 'vh_status ?prompt "Status"
@@ -491,11 +534,12 @@
         (list fExt    (list 0 324)  sizePt promptW)
         (list fAddLib (list 0 356)  (list 110 btnH) 0)
         (list fShow   (list 120 356) (list 110 btnH) 0)
-        (list fA      (list 0 392)  (list 115 btnH) 0)
-        (list fB      (list 120 392) (list 115 btnH) 0)
-        (list fC      (list 240 392) (list 115 btnH) 0)
-        (list fD      (list 360 392) (list 115 btnH) 0)
-        (list fStatus (list 0 428)  (list 520 rowH) 60))
+        (list fA      (list 0 392)   (list 102 btnH) 0)
+        (list fB      (list 105 392) (list 102 btnH) 0)
+        (list fC      (list 210 392) (list 102 btnH) 0)
+        (list fRun    (list 315 392) (list 102 btnH) 0)
+        (list fD      (list 420 392) (list 102 btnH) 0)
+        (list fStatus (list 0 428)  (list 525 rowH) 60))
       ?callback (list "(progn (vh_closeCleanupCB vh_form) t)"
                       "(progn (vh_closeCleanupCB vh_form) t)")
       ?buttonLayout 'Close))
