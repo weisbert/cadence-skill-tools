@@ -2,7 +2,7 @@
 
 ## 0. STATUS (2026-06-25)
 
-**The whole command-line pipeline is built, verified end-to-end, and pushed.** Stages:
+**The whole pipeline AND the GUI are built, verified, and pushed.** Stages:
 - **A** `vh_extract.py` — OA config (cds.lib+expand.cfg) → oa2verilog hierarchy → clean
   wreal structural top + gathered `.va` leaves + `manifest_A.json`. ✅
 - **B** `vh_convert.py` — analog cell → wreal (detection list + non-destructive
@@ -11,16 +11,23 @@
 - **D** `vh_package.py` — relocatable, env-agnostic air-gap bundle + preflight + tar/sha256. ✅
 - `vh_env.py` — remembered external `-v` library env. ✅
 - `vh_dut.py` — **multi-DUT driver** (one folder per DUT, `run-all` summary). ✅
+- **GUI** `vhGui.il` (+ `verilog_helper.il` loader) — thin SKILL launcher under
+  **MyTool → Verilog Helper**: select-from-schematic + Lib/Cell/View picker +
+  `[Extract A][Convert B][Generate C][Package D]` + external-`-v`-env buttons; each
+  button `system()`-shells out to a `vh_*.py` CLI. ✅
 
 Verified: `examples/{nested_chain,schem_nested,analog_leaf}` + `examples/duts/` (3/3).
 **Red zone preflight PASSED** (xrun 19.04, pure-digital wreal, zero spectre license, xrun
 ambient even in `bash -c`). Dev box OA design is a SHELL (PMU_top is a pin-only stub).
+**GUI verified live** via skillbridge (load + helpers + every field builder + the real
+A→C→D `system()` shell-out from Virtuoso's env; `vh_env show` confirmed read-only;
+registers once under MyTool). Form *display* itself is opened by the user from the menu
+(can't be bridge-probed — `hiCreateAppForm`/`hiDisplayForm` block the bridge).
 
-**Remaining:** (1) **GUI `vhGui.il`** (note_helper-style launcher → shells out to these
-CLIs; copy Lib/Cell/View picker from `dreg_gen/dgenGui.il`, pin scan from `dgenPinScan.il`).
-(2) From the user: real red-zone `-v` lib paths (+ wreal/electrical?) and a REAL DUT cell
-that actually instantiates leaves. Full detail below; live status also in the project
-memory (`…/Verilog-check/memory/verilog-check-project.md`).
+**Remaining (user-owned, not code):** real red-zone `-v` lib paths (+ wreal/electrical?)
+and a REAL DUT cell that actually instantiates leaves (the dev design is a shell). Full
+detail below; live status also in the project memory
+(`…/Verilog-check/memory/verilog-check-project.md`).
 
 ---
 
@@ -271,7 +278,18 @@ dev(linux8, this box) ──git push──▶ GitHub ──git pull──▶ yel
       **xrun is ambient even in non-interactive `bash -c`** (`/software/cadence/xcelium/
       19.04.001/tools/bin/xrun`) — so the package needs NO env setup on red. Done: `setup_env.sh`
       uses ambient xrun else falls back; `ext_libs.list`/`VH_EXT_LIBS` carries red `-v` paths.
-- [ ] **GUI `vhGui.il`**: note_helper-style launcher (select-from-schematic + config picker).
+- [x] **GUI `vhGui.il`** — built & verified live (2026-06-25). note_helper-style thin
+      launcher (`verilog_helper.il` loader + umbrella `skill_tools.il` wired). Registers
+      under **MyTool → Verilog Helper**. Select-from-schematic (enterPoint + dbGetOverlaps
+      hit-test, copied from `dgenGui.il`), Lib/Cell/View combos (`ddHiCreate*ComboField` +
+      `ddHiLinkFields`), file pickers (config/cds.lib/netlist/checks/tb/-v lib), Output
+      folder, and `[Extract A][Convert B][Generate C][Package D]` + `[Add -v lib][Show env]`.
+      Each button → `vh_runCLI` builds `<prefix> python3 <dir>/vh_*.py <args> > log 2>&1`,
+      `system()`s it, prints the log to CIW, surfaces a one-line result on Status.
+      **Bug found & fixed live:** SKILL `cons` REQUIRES a list 2nd arg, so `(cons rc txt)`
+      errored — return `(list rc txt)` instead (read with `car`/`cadr`). Verified via
+      skillbridge: load, all helpers, every field builder, the real A→C→D shell-out from
+      Virtuoso's env, `vh_env show` read-only, single MyTool registration.
 - [ ] Get from user: the red-zone `-v` external-lib paths + whether they're wreal/electrical;
       a real DUT cell that actually instantiates leaves (the dev design is a shell).
 

@@ -62,6 +62,7 @@
 ;   1. mytool framework (provides MyTool banner pulldown + plugin registry)
 ;   2. dreg_gen plugin (auto-registers under MyTool -> Dreg Generator)
 ;   3. note_helper plugin (auto-registers under MyTool -> Note Helper)
+;   4. verilog_helper plugin (auto-registers under MyTool -> Verilog Helper)
 ;
 ; skillbridge/ is NOT loaded here. It's a dev-only Python<->SKILL channel;
 ; opt in separately if you want it:
@@ -201,12 +202,14 @@
 (setq mt_dir        (strcat skillTools_root "mytool/"))
 (setq dreg_genDir   (strcat skillTools_root "dreg_gen/"))
 (setq note_helperDir (strcat skillTools_root "note_helper/"))
+(setq verilog_helperDir (strcat skillTools_root "verilog_helper/"))
 
 ; ---------------------------------------------------------------------------
 ; Load framework + plugins in dependency order.
 ; ---------------------------------------------------------------------------
 
 (let ((r skillTools_root))
-  (load (strcat r "mytool/mytool.il"))             ; framework first (defines mtRegister)
-  (load (strcat r "dreg_gen/dreg_gen.il"))         ; plugin (calls mtRegister at end)
-  (load (strcat r "note_helper/note_helper.il")))  ; plugin (calls mtRegister at end)
+  (load (strcat r "mytool/mytool.il"))                  ; framework first (defines mtRegister)
+  (load (strcat r "dreg_gen/dreg_gen.il"))              ; plugin (calls mtRegister at end)
+  (load (strcat r "note_helper/note_helper.il"))        ; plugin (calls mtRegister at end)
+  (load (strcat r "verilog_helper/verilog_helper.il"))) ; plugin (calls mtRegister at end)

@@ -31,7 +31,8 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
 | `vh_package.py` | Stage D: pack a build into a relocatable, env-agnostic air-gap bundle (sources + `setup_env.sh` + `ext_libs.list` + `verify.sh` preflight) + tar.gz/sha256 | ✅ working |
 | `vh_dut.py`     | multi-DUT driver: one folder per DUT, auto-detect config/sources/test, run the whole pipeline per DUT, `run-all` with a PASS/FAIL summary | ✅ working |
-| `vhGui.il`      | thin SKILL GUI (select-from-schematic → config → folder → Extract) | ⏳ TODO |
+| `vhGui.il`      | thin SKILL GUI: select-from-schematic + Lib/Cell/View picker → `system()`-shells out to the CLIs ([Extract A][Convert B][Generate C][Package D]) + external-`-v`-env buttons. Registers under **MyTool → Verilog Helper** | ✅ working |
+| `verilog_helper.il` | single-file loader (resolves `verilog_helperDir`, sources `vhGui.il`); also loaded by the `skill_tools.il` umbrella | ✅ working |
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
 | `examples/schem_nested/` | **schematic-nested** example: captured oa2verilog netlist + on-disk veriloga leaves, Stage A→C→xrun **verified PASS** | ✅ |
 | `examples/analog_leaf/` | **Stage-B** example: an analog gain leaf, Stage A→B(convert)→C→xrun **verified PASS** (`out=3*in`) | ✅ |
@@ -58,6 +59,35 @@ python3 ../../vh_gen.py --src build/export --out build/sim \
         --checks checks.json                                 # Stage C: TB + stubs
 bash build/sim/run.sh                                        # xrun -> === TB PASS ===
 ```
+
+## GUI (vhGui.il) — one-click launcher inside Virtuoso
+
+A thin SKILL launcher (note_helper-style): it owns no logic, it just gathers
+paths and `system()`-shells out to the `vh_*.py` CLIs. Load it via the umbrella
+(`skill_tools.il` already sources it) or standalone:
+
+```
+load("/abs/path/to/skill_tools/verilog_helper/verilog_helper.il")
+```
+
+Then **MyTool → Verilog Helper** opens the form:
+
+- **Source Lib/Cell/View** combos + **[Select from Schematic]** (click an
+  instance — its master lib/cell fill the combos) / **[Browse Library...]**.
+- **config (expand.cfg)** / **cds.lib** / **captured netlist** / **Output
+  folder** / **checks.json** / **user testbench** file pickers.
+- **external -v library** + **[Add -v lib]** (remembers it via `vh_env.py`) /
+  **[Show env]**.
+- **[Extract A] [Convert B] [Generate C] [Package D]** run the four stages
+  against the Output folder (`<out>/manifest_A.json` → `<out>/export` →
+  `<out>/sim` → package); each prints its full log to the CIW and a one-line
+  result to the **Status** field.
+
+The CLIs do the real work, so the GUI runs identically on the dev box and the
+red zone. Overridable globals (set before/after load): `vh_pythonCmd`
+(default `python3`), `vh_shellPrefix` (default `""`; e.g.
+`"env -u LD_LIBRARY_PATH"` if Virtuoso's env ever poisons the child python),
+`vh_scriptDir`, `vh_browseDir`.
 
 ## Stage A (vh_extract) usage
 
