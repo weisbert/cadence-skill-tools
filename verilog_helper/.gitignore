@@ -1,0 +1,10 @@
+# generated per-run artifacts and python caches
+examples/*/build/
+__pycache__/
+*.pyc
+xcelium.d/
+INCA_libs/
+.simvision/
+*.shm
+xrun.log
+xrun.key

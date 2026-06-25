@@ -1,0 +1,9 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// Leaf veriloga bound under demolib.adder:veriloga.   y = a + b   (pure-digital wreal)
+module adder(a, b, y);
+  input  a, b;
+  output y;
+  wreal  a, b, y;
+  assign y = a + b;
+endmodule
