@@ -22,6 +22,10 @@ forever return null automatic and or not nand nor xor xnor buf""".split())
 def strip_comments(s):
     s = re.sub(r'/\*.*?\*/', ' ', s, flags=re.S)
     s = re.sub(r'//[^\n]*', ' ', s)
+    # Verilog (* attribute *) instances (the AMS netlister tags every instance with
+    # `(* integer library_binding = "LIB"; *)` BETWEEN the master and instance names --
+    # the embedded ';' and the '(' also break statement splitting / instance parsing).
+    s = re.sub(r'\(\*.*?\*\)', ' ', s, flags=re.S)
     return s
 
 

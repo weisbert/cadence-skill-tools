@@ -1,12 +1,20 @@
 `include "disciplines.vams"
 `timescale 1s/1fs
-// STRUCTURAL verilogams leaf: it is gathered as a "leaf" but itself instantiates
-// further cells (subgain, subadd) -- mirrors the real pll_ndiv_delay_reload.
+// STRUCTURAL verilogams leaf, written the way the AMS netlister emits it: each instance
+// carries a (* integer library_binding = "LIB"; *) ATTRIBUTE between the master and the
+// instance name (the embedded ';' and '(' defeat a naive parser). Gathered as a "leaf"
+// but itself instantiates further cells (subgain, subadd) -- mirrors pll_ndiv_delay_reload.
+(* cds_ams_schematic *)
 module delaycell (din, dout);
   input  din;
   output dout;
   wreal  din, dout;
   wreal  n1;
-  subgain I0 ( .x(din), .y(n1) );
-  subadd  I1 ( .a(n1), .b(din), .o(dout) );
+  subgain (*
+  integer library_binding
+   = "valib";
+   *)
+  I0 ( .x(din), .y(n1) );
+  subadd  (* integer library_binding = "valib"; *)
+  I1 ( .a(n1), .b(din), .o(dout) );
 endmodule

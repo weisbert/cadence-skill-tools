@@ -63,6 +63,19 @@ def raw_masters(file_text):
     return out
 
 
+_LIBBIND = re.compile(r'(\\?\w+)\s*\(\*[^)]*?library_binding[^"]*?"([^"]+)"', re.S)
+
+
+def library_bindings(file_texts):
+    """{master: lib} from the AMS netlister's `(* ... library_binding = "LIB"; *)` tags --
+    tells you which library a cell belongs to (attach it for a FUNCTIONAL run)."""
+    out = {}
+    for txt in file_texts:
+        for m in _LIBBIND.finditer(txt):
+            out.setdefault(m.group(1), m.group(2))
+    return out
+
+
 def cell_views(master, libs):
     """[(lib, [view-dirs])] for a cell on disk -- so a multi-view cell (e.g. both
     schematic and cmos_sch with different interfaces) is visible."""
@@ -114,16 +127,19 @@ def main():
         return
 
     # ---- parse every source into a module index -------------------------------------
-    index, dup = {}, []
+    index, dup, all_text = {}, [], []
     by_file = {}
     for f in files:
-        mods = vp.parse_text(open(f, errors="replace").read(), f)
+        txt = open(f, errors="replace").read()
+        all_text.append(txt)
+        mods = vp.parse_text(txt, f)
         by_file[f] = [m["module"] for m in mods]
         for mi in mods:
             if mi["module"] in index:
                 dup.append((mi["module"], f, index[mi["module"]]["file"]))
             else:
                 index[mi["module"]] = mi
+    lib_binds = library_bindings(all_text)     # master -> owning library (AMS attribute)
 
     # ---- manifests ------------------------------------------------------------------
     manA = {}
@@ -240,6 +256,9 @@ def main():
                 note = ("  -> no veriloga/verilogams; schematic '%s' in '%s' (descend or stub)"
                         % (sv, sl)) if sv else "  -> not found on disk (give it a -v lib, or it gets stubbed)"
         p("  %-34s x%d   e.g. %s%s" % (mas, len(hits), hits[0], note))
+        if mas in lib_binds:
+            p("        library_binding = \"%s\"  (attach this library in cds.lib for a "
+              "FUNCTIONAL run; else it is stubbed)" % lib_binds[mas])
 
     # ---- PORT MISMATCHES ------------------------------------------------------------
     p("\n## PORT MISMATCHES  (instance connects .X but master has no port X -> *E,CUVPOM)")
