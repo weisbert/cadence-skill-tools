@@ -28,6 +28,15 @@
   non-2-terminal/bus skipped+warned; listed in `manifest_A` `PASSIVES`. So `net → ind
   → next cell` is handled (signal passes through), and the old multi-passive shared-stub
   collapse is gone. ✅
+- **Real config-based hierarchy** (Stage A) — validated on a REAL design
+  (`Hi1108_BT_LP_PLL_ANA/LPBT_NDIV_TOP`, a PLL N-divider): gathers behavioral leaves from
+  `veriloga`/**`verilogams`**/`ahdl` view dirs (file may be `verilog.vams`), **recursively
+  descends** sub-blocks whose schematic is a `cmos_sch`/nested-config view that
+  `oa2verilog -view schematic` won't follow (`expand_hierarchy`, ordered by config
+  viewlist), resolves std cells via the remembered `-v` libs, drops `noConn` + parasitic
+  diodes (`DEVICE_DROP`), dedups, handles array instances `I[1:0]`, and gathers leaves
+  **across multiple libraries**. Real result: **33 verilogams leaves gathered, externals =
+  only the 5 real std cells (all -v-resolved), 0 bogus externals.** ✅
 
 Verified: `examples/{nested_chain,schem_nested,analog_leaf}` + `examples/duts/` (3/3).
 **Red zone preflight PASSED** (xrun 19.04, pure-digital wreal, zero spectre license, xrun
@@ -40,9 +49,18 @@ clean hints; `vh_env show` confirmed read-only; registers once under MyTool. Onl
 literal pixel *display* (`hiDisplayForm`) is left for the user to eyeball from the menu
 (it blocks the bridge, so it can't be scripted).
 
-**Remaining (user-owned, not code):** real red-zone `-v` lib paths (+ wreal/electrical?)
-and a REAL DUT cell that actually instantiates leaves (the dev design is a shell). Full
-detail below; live status also in the project memory
+**NEXT MAJOR WORK — BUS / ARRAY SUPPORT (Stage C blocker):** Stage A now extracts the
+real design cleanly, but the design is heavily **bus-based** and the pure-digital flow is
+**scalar-wreal only**. Outstanding for Stage C (`vh_gen`) to produce a runnable TB:
+- top/sub bus PORTS (`ndiv[13:0]`, `pwsel[5:0]`, `d_n`, `N_div`, `N_div_sel`, …) —
+  `wreal` can't be **packed** (`*E,WRERNG`); must become **unpacked wreal arrays**
+  `wreal x[msb:lsb]` (Stage B already does this for buses it converts — reuse that).
+- bus **slices** `ndiv[7:0]` / `ndiv[13:8]` and **concatenations** `{a,b}` in instance
+  connections — need expansion/bit-mapping.
+- **array instances** `I119[1:0]` — Stage A parses+keeps them; Stage C must replicate.
+- the generated TB + checks must drive/observe bus bits.
+This is the piece that lets the real DUT actually run. (Then: real red-zone run with the
+`-v` libs.) Live status + all decisions in the project memory
 (`…/Verilog-check/memory/verilog-check-project.md`).
 
 ---
