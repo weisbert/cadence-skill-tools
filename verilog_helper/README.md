@@ -37,6 +37,9 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
 | `examples/schem_nested/` | **schematic-nested** example: captured oa2verilog netlist + on-disk veriloga leaves, Stage A→C→xrun **verified PASS** | ✅ |
 | `examples/analog_leaf/` | **Stage-B** example: an analog gain leaf, Stage A→B(convert)→C→xrun **verified PASS** (`out=3*in`) | ✅ |
+| `examples/cfg_binding/` | **config-binding priority**: a cell with a structural verilogams + a schematic, config-bound `:verilogams` → gathered as leaf (not descended); **with** config → FUNCTIONAL, **without** → stubbed | ✅ |
+| `examples/leaf_ext_ref/` | **leaf referencing an external `-v` cell**: a behavioral leaf that instantiates a std cell + has a cmos_sch trap → stays a leaf, std cell `-v`-resolved (FUNCTIONAL) | ✅ |
+| `examples/nested_cfg/` | **nested config_ams**: parent binds a sub-cell `:config`; `resolve_nested_configs` recurses into the child `expand.cfg` and folds bindings in (parse-only) | ✅ |
 
 ## Run the examples (CLI, no GUI)
 

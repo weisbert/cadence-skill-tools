@@ -114,6 +114,27 @@ literal pixel *display* (`hiDisplayForm`) is left for the user to eyeball from t
   red zone = final check only. CUNDCM is about disciplines+wiring, NOT bodies, so interfaces
   suffice to clone.
 
+- **Config-binding priority + leaf-decision blind spots (DONE 2026-06-25, from a user design
+  review of how Stage A decides leaf-vs-descend).** Three fixes, each cloned + verified on a
+  new local fixture (no red zone), regression 9 examples + 3 duts green:
+  1. **config binding WINS over the heuristic.** Old `forced_va` honored only `binding
+     :veriloga`; the behavioral heuristic could override an explicit config binding. NEW
+     `config_bindings(cfg)` → forced_leaf (bound to veriloga/verilogams/ahdl → gather even a
+     STRUCTURAL verilogams) + forced_descend (bound to a schematic view → never gather its
+     verilogams). Honors the user's rule "config 定 verilogams = 终点." Fixture
+     `examples/cfg_binding`.
+  2. **a real leaf may reference an EXTERNAL .v.** `verilogams_is_behavioral` now takes
+     `ext_index` and excludes `-v`-resolvable / same-file refs from the structural test, so a
+     leaf that instantiates a std cell isn't wrongly descended into its cmos_sch. Fixture
+     `examples/leaf_ext_ref`.
+  3. **NESTED config_ams.** Verified live (hdbOpen/hdbSaveAs round-trip): a `:config` binding
+     is a NAMED REFERENCE, child bindings live in the child's own expand.cfg (NOT flattened).
+     `resolve_nested_configs()` recurses into `<cell>/config/expand.cfg` + folds bindings in
+     by name (+ warns); missing child → warn + heuristic. Fixture `examples/nested_cfg`. Also
+     confirmed the real AMS viewlist ranks `cmos_sch` above `schematic` (the #28 root).
+  Manifest gained `config.{nested_configs,forced_leaf,forced_descend}`. Reusable regression
+  sweep: scratchpad `regress.sh`.
+
 **NEXT (the immediate thing):** user must **redeploy 8728c8e to the red zone, re-run
 Extract A → Generate C → Run xrun → Diagnose.** EXPECTED: `0` CUNDCM → the design
 **elaborates + runs for the first time** (RUN-KIND **SMOKE**, since `CLK_PLL_NDIV_counter_

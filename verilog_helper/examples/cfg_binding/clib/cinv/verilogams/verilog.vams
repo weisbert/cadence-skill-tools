@@ -1,0 +1,6 @@
+// behavioral logic leaf (inverter)
+module cinv ( i, zn );
+  input i;
+  output zn;
+  assign zn = ~i;
+endmodule

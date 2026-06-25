@@ -159,6 +159,80 @@ def parse_expandcfg(path):
     return cfg
 
 
+def _binding_kind(view):
+    """Classify a config 'binding :<view>' target: 'leaf' (behavioral model -> stop here),
+    'descend' (a schematic-like view -> dig into it), 'nested' (the cell's own config view,
+    a NESTED config -- verified stored as a named reference, NOT flattened), else 'other'.
+    VA_VIEW_DIRS / SCHEM_VIEW_DIRS are defined later in the file -> resolved at call time."""
+    if view in VA_VIEW_DIRS:
+        return "leaf"
+    if view in SCHEM_VIEW_DIRS:
+        return "descend"
+    if view and view.startswith("config"):
+        return "nested"
+    return "other"
+
+
+def config_bindings(cfg):
+    """Derive the per-cell descend/leaf decision from the config's cell bindings (matched by
+    cell NAME; the binding's lib may differ from where we find the cell). config wins over
+    the behavioral heuristic. Returns (forced_va, forced_sch, nested):
+      forced_va  = cells the config binds to a behavioral view  -> force LEAF (gather)
+      forced_sch = cells bound to a schematic-like OR nested config view -> force DESCEND
+      nested     = {cell: configview} for the manifest/warnings."""
+    by_name = {}
+    for (_lb, c), v in cfg.get("cell_bindings", {}).items():
+        by_name[c] = v
+    forced_va, forced_sch, nested = set(), set(), {}
+    for c, v in by_name.items():
+        k = _binding_kind(v)
+        if k == "leaf":
+            forced_va.add(c)
+        elif k == "descend":
+            forced_sch.add(c)
+        elif k == "nested":
+            nested[c] = v
+            forced_sch.add(c)        # a nested-config sub-block must be DUG, not used as a leaf
+    return forced_va, forced_sch, nested
+
+
+def resolve_nested_configs(cfg, libs, warnings, _depth=0):
+    """A cell bound to a ':config' view is a NESTED config. Verified live (hdbSaveAs
+    round-trip): Cadence stores it as a named reference -- the child's per-cell bindings
+    live in <cell>/<configview>/expand.cfg, they are NOT inlined into the parent. So recurse
+    into each child config and FOLD its cell bindings into this cfg (matched by cell name, so
+    a leaf bound to verilogams deep inside a nested config is still honored), without
+    overriding an explicit parent binding. Warn either way. Mutates cfg in place."""
+    if _depth > 16:
+        return
+    nested = [(lb, c, v) for (lb, c), v in list(cfg.get("cell_bindings", {}).items())
+              if _binding_kind(v) == "nested"]
+    for lb, c, v in nested:
+        order = ([lb] if lb in libs else []) + [L for L in libs if L != lb]
+        child_path = None
+        for L in order:
+            p = os.path.join(libs[L], c, v, "expand.cfg")
+            if os.path.isfile(p):
+                child_path = p
+                break
+        if not child_path:
+            warnings.append(
+                "cell '%s' is bound to a NESTED config ':%s' but %s/expand.cfg was not found "
+                "-> falling back to the behavioral-leaf heuristic for that subtree." % (c, v, v))
+            continue
+        child = parse_expandcfg(child_path)
+        resolve_nested_configs(child, libs, warnings, _depth + 1)   # depth-first
+        merged = 0
+        for k, cv in child.get("cell_bindings", {}).items():
+            if k not in cfg.get("cell_bindings", {}):
+                cfg.setdefault("cell_bindings", {})[k] = cv
+                merged += 1
+        cfg.setdefault("nested_configs", []).append(
+            {"cell": c, "view": v, "from": child_path, "merged_bindings": merged})
+        warnings.append("cell '%s' uses a NESTED config ':%s' -> merged %d child binding(s) "
+                        "from %s" % (c, v, merged, child_path))
+
+
 # --------------------------------------------------------------------------- #
 # oa2verilog driver                                                           #
 # --------------------------------------------------------------------------- #
@@ -564,10 +638,10 @@ def find_schematic_view(cell, libs, prefer_lib=None, order=None):
 _behav_cache = {}
 
 
-def verilogams_is_behavioral(cell, libs):
+def verilogams_is_behavioral(cell, libs, ext_index=None):
     """Is the cell's veriloga/verilogams a BEHAVIORAL leaf model (use it for the
-    pure-digital flow), or a STRUCTURAL netlist that instantiates further cells (so we
-    should descend the SCHEMATIC -- which references the current in-design cells -- rather
+    pure-digital flow), or a STRUCTURAL netlist that instantiates further IN-DESIGN cells (so
+    we should descend the SCHEMATIC -- which references the current in-design cells -- rather
     than use the verilogams)? Returns True (behavioral leaf), False (structural), or None
     (no veriloga/verilogams on disk).
 
@@ -575,7 +649,13 @@ def verilogams_is_behavioral(cell, libs):
     descend a leaf cell into its transistor-level cmos_sch (that pulls MOSFETs + needs
     spectre). A cell whose verilogams is itself structural (e.g. a delay line of inverter
     cells, sometimes a stale AMS netlist bound to another library) is NOT a real leaf ->
-    descend its schematic instead."""
+    descend its schematic instead.
+
+    A genuine leaf may still INSTANTIATE external cells -- a std cell / primitive whose
+    definition lives in a `-v` library (ext_index), an `include`d .v -- those are EXTERNAL
+    LEAF REFERENCES (xrun resolves them via -v, or Stage C stubs them), NOT a reason to go
+    descend this cell's transistor schematic. So instances resolvable via ext_index are
+    excluded from the structural-descent test."""
     key = cell
     if key in _behav_cache:
         return _behav_cache[key]
@@ -590,8 +670,11 @@ def verilogams_is_behavioral(cell, libs):
         return True
     mi = next((m for m in mods if m["module"] == cell), mods[0] if mods else None)
     skip = PIN_CELLS | STIMULUS_CELLS | NOCONN_CELLS | DEVICE_DROP | PASSIVE_CELLS
+    ext = ext_index or {}
+    local = {m["module"] for m in mods}              # helper modules defined in the same file
     real = [it for it in (mi["instances"] if mi else [])
-            if it["master"] not in skip and it["master"] not in vp.KW]
+            if it["master"] not in skip and it["master"] not in vp.KW
+            and it["master"] not in ext and it["master"] not in local]
     res = (len(real) == 0)
     _behav_cache[key] = res
     return res
@@ -613,7 +696,8 @@ def dedup_netlist(raw):
 
 
 def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
-                     warnings, viewlist=None, stoplist=None):
+                     warnings, viewlist=None, stoplist=None,
+                     forced_va=None, forced_sch=None):
     """Recursively descend hierarchy sub-blocks that the top oa2verilog run did NOT
     follow (their schematic is a cmos_sch view, or they sit under a nested config).
 
@@ -625,6 +709,8 @@ def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
     schematic view; merged + dedup'd (full body beats empty interface). Fixpoint loop."""
     schem_order = _schem_view_order(viewlist)
     skip = PIN_CELLS | STIMULUS_CELLS | NOCONN_CELLS | DEVICE_DROP | PASSIVE_CELLS
+    forced_va = forced_va or set()
+    forced_sch = forced_sch or set()
     combined = raw
     descended = {top_cell}
     for _ in range(64):                        # depth guard
@@ -640,7 +726,11 @@ def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
         for mas in sorted(cand):
             if mas in descended or mas in skip or mas in ext_index:
                 continue
-            if verilogams_is_behavioral(mas, libs):   # behavioral leaf -> keep, don't descend
+            if mas in forced_va:                      # config binds it to a behavioral view
+                continue                              # -> leaf, never descend
+            # config wins: forced_sch descends even a behavioral cell; else the heuristic
+            # keeps a behavioral leaf as-is (don't descend into its transistor cmos_sch).
+            if mas not in forced_sch and verilogams_is_behavioral(mas, libs, ext_index):
                 continue
             # structural verilogams or no verilogams -> descend the schematic (it references
             # the current in-design cells, not the verilogams' possibly-stale netlist)
@@ -679,9 +769,10 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     preamble, blocks = split_modules(raw_netlist)
     by_name = {nm: tx for nm, tx in blocks}
 
-    # config-driven veriloga bindings: cell explicitly bound to veriloga -> force leaf
-    forced_va = {c for (lb, c), v in cfg.get("cell_bindings", {}).items()
-                 if v == "veriloga"}
+    # config-driven bindings WIN over the behavioral heuristic (the user's rule: config
+    # defines verilogams/veriloga = terminal). forced_va = forced LEAF; forced_sch = forced
+    # DESCEND (incl. nested-config sub-blocks, merged earlier by resolve_nested_configs).
+    forced_va, forced_sch, nested_cfg = config_bindings(cfg)
 
     passive_report = []   # (module, inst, master, action) from short_passives
 
@@ -719,36 +810,40 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
             # def is simply dropped (never stubbed, never gathered).
             classes[nm] = "passive"
             continue
-        forced = nm in forced_va
+        forced = nm in forced_va            # config: this cell is a behavioral LEAF
+        forced_descend = nm in forced_sch   # config: descend this cell's schematic
         if structural[nm] and not forced:
             classes[nm] = "structural"
             continue
-        # empty interface (or forced-to-veriloga): leaf or external. Use the BEHAVIORAL
-        # verilogams as the leaf; a STRUCTURAL verilogams is gathered only if there is no
-        # schematic to descend instead (else its schematic -- the current cells -- wins and
-        # the structural/maybe-stale verilogams is NOT used).
+        # empty interface (or forced-to-veriloga): leaf or external. config binding WINS:
+        # a forced-leaf cell is gathered even if its verilogams is structural; a
+        # forced-descend cell never gathers its verilogams. With no binding, the BEHAVIORAL
+        # heuristic decides (behavioral verilogams = leaf; structural verilogams + schematic
+        # = descend; no schematic = leaf).
         vlib, vpath = find_veriloga(nm, libs, prefer_lib=lib)
-        beh = verilogams_is_behavioral(nm, libs) if vpath else None
+        beh = verilogams_is_behavioral(nm, libs, ext_index) if vpath else None
         has_sch = bool(find_schematic_view(nm, libs)[1])
-        if vpath and (beh or forced or not has_sch):
+        make_leaf = vpath and not forced_descend and (forced or beh or not has_sch)
+        if make_leaf:
             classes[nm] = "veriloga"
             if nm not in seen_leaf:
                 seen_leaf.add(nm)
                 leaves.append({"module": nm, "lib": vlib, "src": vpath,
                                "forced_binding": forced})
-        elif vpath and not beh and has_sch:
-            # structural verilogams with a schematic -> it should have been DESCENDED; only
-            # an empty interface survives here, so the descent didn't run/succeed. Do NOT
-            # fall back to the (structural, maybe stale) verilogams.
+        elif vpath and (forced_descend or (not beh and has_sch)):
+            # config forced a descend, OR a structural verilogams with a schematic -> it
+            # should have been DESCENDED; only an empty interface survives here, so the
+            # descent didn't run/succeed. Do NOT fall back to the (structural/stale) verilogams.
             classes[nm] = "external"
             if nm not in seen_ext:
                 seen_ext.add(nm)
                 externals.append({"module": nm, "interface": tx.strip()})
             warnings.append(
-                "cell '%s' has a STRUCTURAL verilogams + a schematic -> its schematic should "
-                "be descended (it references the current cells), but no descended body was "
-                "produced; the verilogams is NOT used. Ensure OA is available for descent."
-                % nm)
+                "cell '%s' should be DESCENDED (%s) -> its schematic references the current "
+                "cells, but no descended body was produced; the verilogams is NOT used. "
+                "Ensure OA is available for descent."
+                % (nm, "config binds it to a schematic view" if forced_descend
+                   else "structural verilogams + a schematic"))
         elif nm == cell:
             # the targeted top itself is empty -> a pin-only stub, flagged below;
             # it is the DUT, not a neighbor to stub, so keep it out of externals.
@@ -924,7 +1019,10 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         "config": {"name": cfg.get("name"), "viewlist": cfg.get("viewlist"),
                    "stoplist": cfg.get("stoplist"),
                    "cell_bindings": {"%s.%s" % k: v
-                                     for k, v in cfg.get("cell_bindings", {}).items()}},
+                                     for k, v in cfg.get("cell_bindings", {}).items()},
+                   "nested_configs": cfg.get("nested_configs", []),
+                   "forced_leaf": sorted(forced_va),
+                   "forced_descend": sorted(forced_sch)},
         "clean_top": os.path.relpath(clean_path, out_dir),
         "discipline": "wreal" if wreal_mode else "logic",
         "wreal_leaves": wreal_leaves,
@@ -1077,6 +1175,12 @@ def main():
         warnings.append("design lib '%s' not in cds.lib (%s); leaf lookup may miss it"
                         % (lib, cdslib))
 
+    # nested config_ams: a cell bound to a :config view -> recurse into the child config and
+    # fold its bindings in (verified: nested configs are stored as named refs, not flattened).
+    if cfg:
+        resolve_nested_configs(cfg, libs, warnings)
+    cfg_forced_va, cfg_forced_sch, _cfg_nested = config_bindings(cfg)
+
     # remembered external HDL env (+ per-run --ext-* overrides)
     env = {k: [] for k in ("lib_files", "lib_dirs", "inc_dirs")} if args.ext_clear \
         else ve.load_env()
@@ -1101,7 +1205,8 @@ def main():
         # or a nested config -> recursively descend those so the whole tree is dug.
         raw = expand_hierarchy(raw, cell, libs, ext_index, cdslib, args.env_sh,
                                args.out, warnings, viewlist=cfg.get("viewlist"),
-                               stoplist=cfg.get("stoplist"))
+                               stoplist=cfg.get("stoplist"),
+                               forced_va=cfg_forced_va, forced_sch=cfg_forced_sch)
 
     manifest, clean = extract(lib, cell, view, libs, raw, args.out, cfg=cfg,
                               warnings=warnings, env=env, ext_index=ext_index,
