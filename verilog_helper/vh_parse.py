@@ -145,6 +145,63 @@ def parse_file(path):
     return parse_text(open(path, errors='replace').read(), path)
 
 
+_BE = re.compile(r'\b(begin|end)\b')
+
+
+def strip_analog(body):
+    """Remove `analog begin..end` (balance-matched) and `analog <stmt>;` regions, so that
+    STRUCTURAL instances elsewhere in a mixed module survive. A naive `analog.*?end` regex
+    is wrong: for `analog V(x)<+...;` (no begin) it runs to a *later* begin/end and eats
+    the instances in between -- the exact cause of a structural-verilogams leaf (e.g. a
+    delay cell) coming out with zero instances and its sub-cells unresolved at xrun."""
+    out, i, n = [], 0, len(body)
+    pat = re.compile(r'\banalog\b')
+    while True:
+        m = pat.search(body, i)
+        if not m:
+            out.append(body[i:]); break
+        out.append(body[i:m.start()])
+        j = m.end()
+        while j < n and body[j].isspace():
+            j += 1
+        if j < n and body[j] == '@':                       # optional @(event) control
+            j += 1
+            while j < n and body[j].isspace():
+                j += 1
+            if j < n and body[j] == '(':
+                depth = 0
+                while j < n:
+                    c = body[j]; j += 1
+                    if c == '(':
+                        depth += 1
+                    elif c == ')':
+                        depth -= 1
+                        if depth == 0:
+                            break
+                while j < n and body[j].isspace():
+                    j += 1
+        if body.startswith('begin', j) and (j + 5 >= n or not (body[j + 5].isalnum() or body[j + 5] == '_')):
+            depth = 0                                       # balance-match begin..end
+            i = n
+            for t in _BE.finditer(body, j):
+                depth += 1 if t.group(1) == 'begin' else -1
+                if depth == 0:
+                    i = t.end(); break
+        else:                                              # single statement -> next ;
+            depth, k = 0, j
+            while k < n:
+                c = body[k]
+                if c in '([{':
+                    depth += 1
+                elif c in ')]}':
+                    depth -= 1
+                elif c == ';' and depth == 0:
+                    k += 1; break
+                k += 1
+            i = k
+    return ''.join(out)
+
+
 def parse_text(raw, path='<text>'):
     """Parse module definitions out of a Verilog/VerilogA source string."""
     src = strip_comments(raw)
@@ -190,7 +247,7 @@ def parse_text(raw, path='<text>'):
                     or bool(re.search(r'\belectrical\b', body)))
         has_wreal = ('wreal' in info['ntype'].values() or bool(re.search(r'\bwreal\b', body)))
         info['kind'] = 'analog' if (has_elec or has_analog) else ('wreal' if has_wreal else 'digital')
-        b2 = re.sub(r'\banalog\b.*?\bend\b', ' ', body, flags=re.S)
+        b2 = strip_analog(body)
         b2 = re.sub(r'\bfunction\b.*?\bendfunction\b', ' ', b2, flags=re.S)
         for stmt in split_statements(b2):
             inst = parse_instance(stmt)

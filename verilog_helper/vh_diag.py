@@ -23,6 +23,7 @@ Pure stdlib; runs on dev or the red zone. CLI:
            --out <report.txt>  (default <build>/vh_diag.txt)
 """
 import sys, os, re, json, glob, argparse
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vh_parse as vp
@@ -40,6 +41,38 @@ def collect_sources(out_dir):
             for pat in ("*.vams", "*.va"):
                 files += glob.glob(os.path.join(d, pat))
     return export, sim, sorted(set(files))
+
+
+_MOD = re.compile(r'\bmodule\s+(\w+)\s*(?:#\s*\([^;]*?\))?\s*\((.*?)\)\s*;(.*?)\bendmodule\b', re.S)
+
+
+def raw_masters(file_text):
+    """{module: [instantiated masters]} found by a RAW scan -- split on ';' WITHOUT the
+    analog/function-block stripping vp.parse_text does. If this finds masters that
+    vp.parse_text misses, those instances are invisible to vh_extract/vh_gen (a parser
+    gap) yet xrun still sees them -> *E,CUVMUR. This is how we catch the blind spot."""
+    out = {}
+    src = vp.strip_comments(file_text)
+    for m in _MOD.finditer(src):
+        masters, has_analog = [], bool(re.search(r'\banalog\b', m.group(3)))
+        for stmt in vp.split_statements(m.group(3)):
+            it = vp.parse_instance(stmt)
+            if it:
+                masters.append(it["master"])
+        out[m.group(1)] = (masters, has_analog)
+    return out
+
+
+def cell_views(master, libs):
+    """[(lib, [view-dirs])] for a cell on disk -- so a multi-view cell (e.g. both
+    schematic and cmos_sch with different interfaces) is visible."""
+    res = []
+    for L in libs or {}:
+        cdir = os.path.join(libs[L], master)
+        if os.path.isdir(cdir):
+            res.append((L, sorted(d for d in os.listdir(cdir)
+                                  if os.path.isdir(os.path.join(cdir, d)))))
+    return res
 
 
 def module_names_in(path):
@@ -129,6 +162,7 @@ def main():
     # ---- walk every instance --------------------------------------------------------
     unresolved = {}        # master -> [host.inst, ...]
     mismatches = {}        # master -> {port: [host.inst, ...]}
+    connected = {}         # master -> set(all ports any instance connects)  (overlap calc)
     for host, mi in sorted(index.items()):
         for it in mi["instances"]:
             mas = it["master"]
@@ -141,9 +175,24 @@ def main():
                 continue                       # defined in a -v lib: ports not checked here
             tports = set(tgt["ports"])
             named = (it.get("conns") or {}).get("named") or {}
+            connected.setdefault(mas, set()).update(named)
             for port in named:                 # named connection .port(net)
                 if port not in tports:
                     mismatches.setdefault(mas, {}).setdefault(port, []).append(inst)
+
+    # ---- PARSE COVERAGE: instances our parser misses but xrun sees -------------------
+    parse_gaps = []        # (file, module, [missed masters], has_analog)
+    for f in files:
+        txt = open(f, errors="replace").read()
+        raw = raw_masters(txt)
+        for mname, (rmasters, has_analog) in raw.items():
+            mi = index.get(mname)
+            parsed = [it["master"] for it in mi["instances"]] if mi else []
+            # masters present in the raw scan but absent from what the parser captured
+            missed = list((Counter(rmasters) - Counter(parsed)).elements())
+            if missed:
+                parse_gaps.append((os.path.relpath(f, out_dir), mname,
+                                   sorted(set(missed)), has_analog))
 
     # ---- SUMMARY --------------------------------------------------------------------
     p("\n## SUMMARY")
@@ -159,8 +208,20 @@ def main():
         p("  externals -v   : %d  %s" % (len(res), res or ""))
         p("  externals stub : %d  %s" % (len(stub), stub or ""))
     p("  parsed modules : %d  (from %d files)" % (len(index), len(files)))
-    p("  >>> %d UNRESOLVED master(s), %d master(s) with PORT MISMATCHES <<<"
-      % (len(unresolved), len(mismatches)))
+    p("  >>> %d UNRESOLVED, %d PORT-MISMATCH master(s), %d PARSE-GAP module(s) <<<"
+      % (len(unresolved), len(mismatches), len(parse_gaps)))
+
+    # ---- PARSE COVERAGE -------------------------------------------------------------
+    p("\n## PARSE GAPS  (instances vh_extract/vh_gen's parser MISSES but xrun sees -> *E,CUVMUR)")
+    if not parse_gaps:
+        p("  (none -- the parser saw every instance)")
+    for relf, mname, missed, has_analog in parse_gaps:
+        p("  module '%s'  (%s)%s" % (mname, relf, "  [has an `analog` block]" if has_analog else ""))
+        p("    parser MISSED these instantiated masters: %s" % ", ".join(missed))
+        for mm in missed:
+            vw = cell_views(mm, libs) if libs else []
+            vstr = ("  views: " + "; ".join("%s:%s" % (L, "/".join(v)) for L, v in vw)) if vw else ""
+            p("      - %s%s" % (mm, vstr))
 
     # ---- UNRESOLVED -----------------------------------------------------------------
     p("\n## UNRESOLVED MASTERS  (instantiated but defined nowhere -> *E,CUVMUR)")
@@ -187,11 +248,21 @@ def main():
     for mas in sorted(mismatches):
         tgt = index[mas]
         bad = mismatches[mas]
-        p("  master '%s'  (defined in %s)" % (mas, os.path.relpath(tgt["file"], out_dir)))
+        conn = connected.get(mas, set())
+        overlap = conn & set(tgt["ports"])
+        verdict = ("RECONCILE (drop the extra connections)" if overlap
+                   else "WRONG VIEW/CELL: zero port overlap -- the extracted interface does "
+                        "not match how it's instantiated; fix the view binding")
+        p("  master '%s'  (defined in %s)  -> %s"
+          % (mas, os.path.relpath(tgt["file"], out_dir), verdict))
         p("    actual ports (%d): %s" % (len(tgt["ports"]), ", ".join(tgt["ports"]) or "(none)"))
+        p("    matched ports (%d): %s" % (len(overlap), ", ".join(sorted(overlap)) or "(NONE)"))
         p("    connected-but-absent ports: %s" % ", ".join(sorted(bad)))
         for port in sorted(bad):
             p("      .%-16s  <- e.g. %s  (x%d)" % (port, bad[port][0], len(bad[port])))
+        if libs:
+            for L, vw in cell_views(mas, libs):
+                p("    on-disk views in '%s': %s" % (L, ", ".join(vw)))
 
     # ---- duplicate defs -------------------------------------------------------------
     if dup:

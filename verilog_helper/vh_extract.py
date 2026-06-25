@@ -364,6 +364,69 @@ def short_passives(text, warns=None, report=None):
     return header + new_body + tail
 
 
+def drop_instance_ports(text, drops):
+    """drops: {(master, inst): set(ports)}. Remove the named connections `.port(...)` for
+    those ports from each matching instance's connection list, in place (balanced)."""
+    if not drops:
+        return text
+    masters = sorted({m for (m, _) in drops})
+    hdr = re.compile(r'(\b(?:%s)\b)\s*(\\?\w+)(\s*\[[^\]]*\])?\s*\(' %
+                     "|".join(re.escape(m) for m in masters))
+    out, i, n = [], 0, len(text)
+    while i < n:
+        m = hdr.match(text, i)
+        if m:
+            master, inst = m.group(1), m.group(2)
+            close = vp.find_matching(text, m.end() - 1)
+            if close >= 0 and (master, inst) in drops:
+                conn = text[m.end():close]
+                for p in drops[(master, inst)]:
+                    conn = re.sub(r'\.%s\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*,?' % re.escape(p),
+                                  '', conn)
+                conn = re.sub(r',\s*$', ' ', conn)        # tidy a dangling comma
+                out.append(text[i:m.end()]); out.append(conn); out.append(text[close])
+                i = close + 1
+                continue
+        out.append(text[i]); i += 1
+    return "".join(out)
+
+
+def reconcile_ports(text, port_index, warns=None, report=None):
+    """Drop instance connections to ports their (known) master does NOT have -- the cause
+    of `*E,CUVPOM "Port name 'X' is invalid"` (e.g. power pins VPP/VDD on the symbol but
+    not in the cell's verilogams, or an enable the model omits). Only reconciled when the
+    instance still shares >=1 port with the master (it IS the right cell, just extra pins);
+    if there is ZERO overlap the wrong view was descended -> leave it + warn loudly (don't
+    silently gut the instance)."""
+    warns = warns if warns is not None else []
+    report = report if report is not None else []
+    mods = vp.parse_text(text)
+    if not mods:
+        return text
+    host = mods[0]["module"]
+    drops = {}
+    for it in mods[0]["instances"]:
+        mas, named = it["master"], it["conns"]["named"]
+        if mas not in port_index or not named:
+            continue
+        connected, mports = set(named), port_index[mas]
+        absent = connected - mports
+        if not absent:
+            continue
+        if not (connected & mports):
+            warns.append("module '%s': instance '%s' of '%s' connects %s but its extracted "
+                         "interface is %s -- ZERO overlap (the wrong view was likely descended "
+                         "for '%s'); NOT reconciled, will not elaborate -- fix that cell's view."
+                         % (host, it["inst"], mas, sorted(connected)[:10], sorted(mports), mas))
+            continue
+        drops[(mas, it["inst"])] = absent
+        for p in sorted(absent):
+            report.append({"module": host, "inst": it["inst"], "master": mas, "dropped_port": p})
+        warns.append("module '%s': dropped %s on '%s' (%s has no such port) -> reconciled "
+                     "to the cell's actual interface" % (host, sorted(absent), it["inst"], mas))
+    return drop_instance_ports(text, drops)
+
+
 def strip_instances(text, drop_masters):
     """Remove every instance statement whose master is in drop_masters (balanced)."""
     if not drop_masters:
@@ -609,17 +672,6 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         for mas, _ in instances_of(tx):
             used.add(mas)
 
-    # build clean top: keep STRUCTURAL module defs, drop artifact instances inside
-    # them, and normalize nets to wreal for the pure-digital AMS flow.
-    kept = []
-    for nm, tx in blocks:
-        if classes.get(nm) != "structural":
-            continue
-        # short series passives / open shunt-to-gnd FIRST (merges nets), then drop
-        # pin/stimulus artifacts, then normalize to wreal.
-        tx = short_passives(tx, warnings, passive_report)
-        kept.append(wrealize(strip_instances(tx, drop_arti), warnings))
-
     # is the targeted top a pin-only stub?  (its def survives but has no real instances)
     top_is_stub = (cell in by_name and not structural.get(cell))
     top_empty_interface = (cell in by_name and not instances_of(by_name[cell]))
@@ -682,6 +734,33 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
                 print("[vh_extract] gathered structural-verilogams sub-cell %s "
                       "(used by %s)" % (mas, mi["module"]))
 
+    # port index of every now-known module (struct defs + all gathered leaves), used to
+    # reconcile parent instance connections to each child's ACTUAL interface.
+    port_index = {}
+    for nm, tx in blocks:
+        pm = vp.parse_text(tx)
+        if pm:
+            port_index[nm] = set(pm[0]["ports"])
+    for g in gathered:
+        try:
+            gm = vp.parse_text(open(os.path.join(out_dir, g["gathered"]), errors="replace").read())
+        except OSError:
+            gm = None
+        if gm:
+            port_index[g["module"]] = set(gm[0]["ports"])
+
+    # build clean top: keep STRUCTURAL module defs; short passives, RECONCILE instance
+    # connections to each child's real ports (drops symbol-only pins like VPP -> avoids
+    # *E,CUVPOM), drop artifact instances, normalize nets to wreal.
+    recon_report = []
+    kept = []
+    for nm, tx in blocks:
+        if classes.get(nm) != "structural":
+            continue
+        tx = short_passives(tx, warnings, passive_report)
+        tx = reconcile_ports(tx, port_index, warnings, recon_report)
+        kept.append(wrealize(strip_instances(tx, drop_arti), warnings))
+
     # emit clean structural top
     clean_name = "%s_struct.vams" % cell
     clean_path = os.path.join(export, clean_name)
@@ -721,6 +800,7 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         "clean_top": os.path.relpath(clean_path, out_dir),
         "veriloga_leaves": gathered,
         "gathered_subcells": sub_records,
+        "reconciled_ports": recon_report,
         "external_modules": ext_records,
         "ext_env": {k: env.get(k, []) for k in ("lib_files", "lib_dirs", "inc_dirs")},
         "stripped": {"pins": pin_seen, "stimulus": stim_seen, "devices": dropped_seen},
