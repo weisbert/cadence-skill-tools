@@ -284,7 +284,7 @@
 ; wreal exits 0 even with benign spectre-license warnings, so the "=== TB PASS"
 ; marker in the log -- not the exit code -- is the real verdict.
 (defun vh_runCB (form "g")
-  (let (out runsh res rc txt verdict)
+  (let (out runsh res rc txt verdict kind)
     (cond
       ((null (setq out (vh_needOut form))) nil)
       (t
@@ -305,7 +305,15 @@
                     ((pcreMatchp "=== TB PASS" txt) "=== TB PASS ===")
                     ((pcreMatchp "=== TB FAIL" txt) "=== TB FAIL ===  -- see CIW")
                     (t (sprintf nil "xrun exit %d (no PASS/FAIL line -- see CIW)" rc))))
-                (vh_setStatus form (strcat "Run: " verdict))))))))
+                ; run.sh echoes RUN-KIND: SMOKE (externals stubbed) vs FUNCTIONAL
+                ; (all resolved). Tag it so a dev/stubbed smoke pass is NEVER
+                ; mistaken for a real verification.
+                (setq kind
+                  (cond
+                    ((pcreMatchp "RUN-KIND: SMOKE" txt)      "  [SMOKE: externals stubbed]")
+                    ((pcreMatchp "RUN-KIND: FUNCTIONAL" txt) "  [functional: all ext resolved]")
+                    (t "")))
+                (vh_setStatus form (strcat "Run: " verdict kind))))))))
     t))
 
 ; External env: remember a -v library file (vh_env.py add-lib <path>). The

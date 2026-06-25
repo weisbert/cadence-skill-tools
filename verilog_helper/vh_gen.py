@@ -229,6 +229,18 @@ def _bake_ext(ext_flags):
 def gen_runsh(top, src_files, stub_files, tb_file, ext_flags=None, sim_top='tb'):
     files = src_files + stub_files + [tb_file]
     flines = ' \\\n  '.join('"%s"' % f for f in files)
+    # SMOKE vs FUNCTIONAL: a run with any STUBBED external verifies wiring/logic
+    # against ideal buffers, NOT the real models -- that is a smoke proxy (the
+    # authoritative run resolves every external via -v). Echo the kind so both
+    # CLI and GUI users can tell a smoke pass from a real one, on dev or red.
+    if stub_files:
+        snames = ', '.join(os.path.basename(s)[5:].rsplit('.', 1)[0]
+                           if os.path.basename(s).startswith('stub_')
+                           else os.path.basename(s) for s in stub_files)
+        runkind = ("SMOKE -- %d external(s) STUBBED (ideal buffers, NOT real "
+                   "models): %s" % (len(stub_files), snames))
+    else:
+        runkind = "FUNCTIONAL -- all externals resolved (no stubs)"
     return """#!/usr/bin/env bash
 # AUTO-GENERATED. Pure-digital VerilogAMS run via xrun (no spectre). Env-agnostic:
 # uses xrun if already on PATH (red zone), else falls back to a site/dev env.
@@ -258,8 +270,10 @@ rc=$?
 echo "================= RESULT ================="
 grep -E "=== TB (PASS|FAIL)|^FAIL " xrun.log || echo "(no PASS/FAIL line -- check xrun.log)"
 echo "xrun exit code: $rc"
+echo "RUN-KIND: %s"
+echo "xrun-bin: $(command -v xrun)"
 exit $rc
-""" % (_bake_ext(ext_flags), flines, sim_top)
+""" % (_bake_ext(ext_flags), flines, sim_top, runkind)
 
 
 SIM_TCL = """# Optional waveform dump (batch or GUI). Use:  ./run.sh  then  simvision waves.shm

@@ -81,9 +81,17 @@ Then **MyTool → Verilog Helper** opens the form:
 - **[Extract A] [Convert B] [Generate C] [Run xrun] [Package D]** run the
   pipeline against the Output folder (`<out>/manifest_A.json` → `<out>/export`
   → `<out>/sim` → run → package). **[Run xrun]** executes `<out>/sim/run.sh`
-  (the pure-digital xrun) and shows the verdict (`=== TB PASS ===` /
-  `=== TB FAIL ===`) on the Status line. Each button prints its full log to the
-  CIW and a one-line result to the **Status** field.
+  (the pure-digital xrun) and shows the verdict on the Status line:
+  `=== TB PASS ===` / `=== TB FAIL ===` **plus** `[SMOKE: externals stubbed]`
+  vs `[functional: all ext resolved]` — so a dev smoke pass (externals stubbed
+  with ideal buffers) is never mistaken for a real verification. Each button
+  prints its full log to the CIW and a one-line result to the **Status** field.
+
+> **Smoke vs real / red zone.** The dev box is a *smoke proxy* (stubbed
+> externals, shell design); the authoritative run is the **red zone** against
+> real `-v` models. See **[RED_ZONE.md](RED_ZONE.md)** for the dev → red handoff
+> (build → package → transfer → edit `ext_libs.list` → `verify.sh`), and the
+> `RUN-KIND: SMOKE/FUNCTIONAL` line every run emits.
 
 The CLIs do the real work, so the GUI runs identically on the dev box and the
 red zone. Overridable globals (set before/after load): `vh_pythonCmd`
