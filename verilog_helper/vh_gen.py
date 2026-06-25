@@ -149,12 +149,13 @@ def infer_external_dirs(index, externals):
     return ext_ports, ext_widths, ext_logic
 
 
-def gen_stub(master, ports, widths=None, logic=None):
+def gen_stub(master, ports, widths=None, logic=None, default_logic=False):
     """ports:{port:dir}; widths:{port:int} (bit-width, 1/absent=>scalar); logic:{port:bool}
     (True=packed logic net, False=wreal real net). Pure-digital stub, ideal placeholder.
     Each port's net type matches what it's wired to in the Stage-A struct: logic control
     buses -> packed `[w-1:0]` logic; real signals -> wreal (scalar or unpacked array) --
-    so no connect module is needed at the stub boundary."""
+    so no connect module is needed at the stub boundary. default_logic=True (a logic-
+    discipline design) makes un-inferred ports default to logic instead of wreal."""
     widths = widths or {}
     logic = logic or {}
     plist = list(ports.keys())
@@ -163,7 +164,9 @@ def gen_stub(master, ports, widths=None, logic=None):
         return widths.get(p, 1) or 1
 
     def is_logic(p):
-        return logic[p] if p in logic else (w_of(p) > 1)    # unknown bus -> logic control
+        # explicit per-port inference wins; else logic if the design is logic-discipline or
+        # the port is a (presumed-control) bus.
+        return logic[p] if p in logic else (default_logic or w_of(p) > 1)
 
     def decl(kw, p):
         if is_logic(p) and w_of(p) > 1:                     # packed logic bus
@@ -488,6 +491,12 @@ def main():
             if os.path.isfile(cand):
                 mpath = cand
                 break
+    design_logic = False        # logic-discipline design -> default stub ports to logic
+    if mpath and os.path.isfile(mpath):
+        try:
+            design_logic = (json.load(open(mpath)).get('discipline') == 'logic')
+        except (ValueError, OSError):
+            pass
     if args.ext_lib or args.ext_dir or args.ext_inc:
         ve.merge(env, lib_files=args.ext_lib, lib_dirs=args.ext_dir, inc_dirs=args.ext_inc)
     elif mpath and os.path.isfile(mpath):
@@ -534,7 +543,8 @@ def main():
     # stubs (only for externals NOT provided by the env)
     stub_files = []
     for e in to_stub:
-        stub = gen_stub(e, ext_ports[e], ext_widths[e], ext_logic[e])
+        stub = gen_stub(e, ext_ports[e], ext_widths[e], ext_logic[e],
+                        default_logic=design_logic)
         path = os.path.join(args.out, 'stub_%s.vams' % e)
         open(path, 'w').write(stub)
         stub_files.append(os.path.abspath(path))

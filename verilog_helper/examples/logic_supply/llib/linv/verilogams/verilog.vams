@@ -1,0 +1,2 @@
+`timescale 1ps/1ps
+module linv ( ZN, VDD, VPP, VSS, I ); output ZN; input VDD,VPP,VSS,I; assign ZN = ~I; endmodule

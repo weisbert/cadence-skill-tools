@@ -391,6 +391,43 @@ def drop_instance_ports(text, drops):
     return "".join(out)
 
 
+# supply/power pin names (non-functional in a pure-digital check). Matched on the PORT
+# name, so we can drop just the wreal supply pins that don't match the logic supply nets.
+SUPPLY_RE = re.compile(
+    r'(?i)^(vdd|vss|vpp|vbb|vnw|vpw|vcc|vee|vgnd|gnd|agnd|dgnd|avdd|avss|dvdd|dvss|'
+    r'vdda|vssa|vddd|vssd|psub|nwell|pwell|sub)(_.*|[0-9].*)?$')
+
+
+def drop_wreal_supply(text, port_disc, warns=None, report=None):
+    """Drop instance connections to SUPPLY pins (VDD/VPP/VSS/...) that the master declares
+    `wreal`, when the rest of the design is logic. Supply carries no functional information
+    in a pure-digital check, but one cell modeling its supply as wreal while the others use
+    logic puts a wreal pin and logic pins on the same VDD/VSS net -> `*E,CUNDCM`. Dropping
+    only the wreal supply pins makes the supply nets all-logic again; logic cells keep their
+    supply, and the wreal cell's FUNCTIONAL pins (its real I/O) are untouched."""
+    warns = warns if warns is not None else []
+    report = report if report is not None else []
+    mods = vp.parse_text(text)
+    if not mods:
+        return text
+    host = mods[0]["module"]
+    drops = {}
+    for it in mods[0]["instances"]:
+        mas = it["master"]
+        for port in (it["conns"]["named"] or {}):
+            if SUPPLY_RE.match(port) and port_disc.get(mas, {}).get(port) == "wreal":
+                drops.setdefault((mas, it["inst"]), set()).add(port)
+    for (mas, inst), ports in drops.items():
+        report.extend({"module": host, "inst": inst, "master": mas, "supply_pin": p}
+                      for p in sorted(ports))
+    if drops:
+        npins = sum(len(s) for s in drops.values())
+        warns.append("module '%s': dropped %d wreal SUPPLY-pin connection(s) (e.g. %s) so "
+                     "the logic supply nets stay discipline-consistent (power is don't-care "
+                     "in the pure-digital check)" % (host, npins, sorted(next(iter(drops.values())))))
+    return drop_instance_ports(text, drops)
+
+
 def reconcile_ports(text, port_index, warns=None, report=None):
     """Drop instance connections to ports their (known) master does NOT have -- the cause
     of `*E,CUVPOM "Port name 'X' is invalid"` (e.g. power pins VPP/VDD on the symbol but
@@ -794,11 +831,14 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     # port index of every now-known module (struct defs + all gathered leaves), used to
     # reconcile parent instance connections to each child's ACTUAL interface. Also classify
     # each gathered leaf as WREAL (declares wreal ports) or LOGIC (digital).
-    port_index = {}
+    port_index, port_disc = {}, {}
+    def _disc(m):
+        return {p: ("wreal" if m["ntype"].get(p) == "wreal" else "logic") for p in m["ports"]}
     for nm, tx in blocks:
         pm = vp.parse_text(tx)
         if pm:
             port_index[nm] = set(pm[0]["ports"])
+            port_disc[nm] = _disc(pm[0])
     wreal_leaves, logic_leaves = [], []
     for g in gathered:
         try:
@@ -808,9 +848,14 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         if not gm:
             continue
         port_index[g["module"]] = set(gm[0]["ports"])
-        # wreal-flow leaf = analog (electrical/`analog`; becomes wreal via Stage B) or wreal;
-        # logic-flow leaf = a genuinely digital model.
-        is_wreal = any(m["kind"] in ("analog", "wreal") for m in gm)
+        port_disc[g["module"]] = _disc(gm[0])
+        # wreal-flow leaf = analog (electrical/`analog`; becomes wreal via Stage B) or has a
+        # wreal FUNCTIONAL port. A cell whose only wreal ports are SUPPLY (VDD/VPP/VSS) is
+        # functionally a logic cell (its supply is dropped as don't-care) -> logic leaf.
+        is_wreal = any(m["kind"] == "analog" or
+                       any(m["ntype"].get(p) == "wreal" and not SUPPLY_RE.match(p)
+                           for p in m["ports"])
+                       for m in gm)
         (wreal_leaves if is_wreal else logic_leaves).append(g["module"])
 
     # Design discipline: wreal (analog-modeled leaves) vs logic (digital leaves). ONLY
@@ -832,13 +877,15 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     # build clean top: keep STRUCTURAL module defs; short passives, RECONCILE instance
     # connections to each child's real ports (drops symbol-only pins like VPP -> avoids
     # *E,CUVPOM), drop artifact instances; wreal-ize nets only in the wreal flow.
-    recon_report = []
+    recon_report, supply_report = [], []
     kept = []
     for nm, tx in blocks:
         if classes.get(nm) != "structural":
             continue
         tx = short_passives(tx, warnings, passive_report)
         tx = reconcile_ports(tx, port_index, warnings, recon_report)
+        if not wreal_mode:        # logic design: drop the wreal supply-pin outliers
+            tx = drop_wreal_supply(tx, port_disc, warnings, supply_report)
         tx = strip_instances(tx, drop_arti)
         kept.append(wrealize(tx, warnings) if wreal_mode else tx)
 
@@ -885,6 +932,7 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         "veriloga_leaves": gathered,
         "gathered_subcells": sub_records,
         "reconciled_ports": recon_report,
+        "dropped_wreal_supply": supply_report,
         "external_modules": ext_records,
         "ext_env": {k: env.get(k, []) for k in ("lib_files", "lib_dirs", "inc_dirs")},
         "stripped": {"pins": pin_seen, "stimulus": stim_seen, "devices": dropped_seen},
