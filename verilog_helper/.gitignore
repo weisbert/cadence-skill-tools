@@ -12,4 +12,6 @@ INCA_libs/
 .simvision/
 *.shm
 xrun.log
+xr.log
+*.history
 xrun.key

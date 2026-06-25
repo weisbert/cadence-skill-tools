@@ -1,0 +1,86 @@
+`timescale 1ps/1ps
+// -----------------------------------------------------------------------------
+// LPBT_NDIV_TOP_model.vams  --  BEHAVIORAL GOOD-MODEL of the real DUT interface.
+//
+// This is NOT the real design. It exists ONLY to verify that the testbench
+// (tb_LPBT_NDIV_TOP.vams) mechanics -- clock drive, edge counting, period
+// measurement, mode sequencing, period-ratio asserts -- are correct, BEFORE the
+// real LPBT_NDIV_TOP is fed in via `vh_gen --tb` on the red zone.
+//
+// Architecture (per user, 2026-06-25): a /4 high-speed prescaler feeds the MMD.
+//   - prescaler clock        = VCO/4
+//   - MMD divides prescaler by M = ndiv[7:0]-1
+//   => OUT_NDIV = CLK2DSM = VCO / 4 / (ndiv[7:0]-1)        ; D = 4*(ndiv-1)
+//
+// Confirmed facts encoded:
+//   CAL  (cal_en=1)                     : CLK2CNT = VCO/4 ; OUT_NDIV disabled
+//   TEST (ndiv_en=1,cal_en=0,en_test=1) : TESTCLK_300M = VCO/16
+//   NORM (ndiv_en=1,cal_en=0,en_test=0) : OUT_NDIV = CLK2DSM = CLK2CNT = VCO/D
+//                                         CLK2DSM vs CLK2CNT offset a few clk
+//
+// +define+BREAK_TESTCLK -> TESTCLK becomes VCO/8  (to prove the TB check FAILs)
+// +define+BREAK_NDIV    -> OUT_NDIV divide is M+5 (to prove the N  check FAILs)
+// -----------------------------------------------------------------------------
+module LPBT_NDIV_TOP (
+  fromVCO, ndiv, pwsel, ndiv_en, cal_en, en_test, lpbt_en,
+  OUT_NDIV, CLK2DSM, CLK2CNT, TESTCLK_300M,
+  VDD, VPP, VSS, VDD_VCO, VPP_VCO, VSS_VCO, psub
+);
+  input        fromVCO;
+  input [13:0] ndiv;
+  input [5:0]  pwsel;
+  input        ndiv_en, cal_en, en_test, lpbt_en;
+  output       OUT_NDIV, CLK2DSM, CLK2CNT, TESTCLK_300M;
+  input        VDD, VPP, VSS, VDD_VCO, VPP_VCO, VSS_VCO, psub;  // don't-care here
+
+  // -------- /4 high-speed prescaler (TSPC) : pre = VCO/4 --------
+  reg [1:0] cpre = 0;
+  reg       pre  = 0;                         // VCO/4, period 4 in VCO cycles
+  always @(posedge fromVCO) begin
+    if (cpre >= 2'd1) begin cpre <= 0; pre <= ~pre; end
+    else cpre <= cpre + 1'b1;
+  end
+
+  // -------- TESTCLK_300M = prescaler/4 = VCO/16 --------
+`ifdef BREAK_TESTCLK
+  localparam integer THALF = 1;               // pre/2 = VCO/8  (deliberately wrong)
+`else
+  localparam integer THALF = 2;               // pre/4 = VCO/16
+`endif
+  reg [3:0] ctest = 0;
+  reg       testclk_r = 0;
+  always @(posedge pre) begin
+    if (ctest >= THALF-1) begin ctest <= 0; testclk_r <= ~testclk_r; end
+    else ctest <= ctest + 1'b1;
+  end
+  wire test_on = en_test & ndiv_en & ~cal_en;
+  assign TESTCLK_300M = test_on ? testclk_r : 1'b0;
+
+  // -------- MMD : divides the prescaler clock by M = ndiv[7:0]-1 --------
+  wire [7:0] nw = ndiv[7:0];
+`ifdef BREAK_NDIV
+  wire [8:0] M = (nw >= 8'd2) ? (nw - 8'd1 + 9'd5) : 9'd6;   // wrong: M+5
+`else
+  wire [8:0] M = (nw >= 8'd2) ? (nw - 8'd1)        : 9'd1;   // M = ndiv[7:0]-1
+`endif
+  reg [8:0] cM = 0;
+  always @(posedge pre) begin
+    if (cM >= M-9'd1) cM <= 0;
+    else cM <= cM + 9'd1;
+  end
+`ifdef HOLLOW
+  wire outn_r = 1'b0;                         // mimic today's hollow mmd_core(#28): MMD dead
+`else
+  wire outn_r = (cM < (M >> 1));              // period M in pre cycles = 4*M in VCO
+`endif
+
+  // CLK2DSM = same divided clock, delayed a few prescaler cycles (same freq, offset)
+  reg [2:0] dsm_dly = 0;
+  always @(posedge pre) dsm_dly <= {dsm_dly[1:0], outn_r};
+  wire outn_off = dsm_dly[2];                 // outn_r delayed 3 prescaler cycles
+
+  wire norm = ndiv_en & ~cal_en;
+  assign OUT_NDIV = norm   ? outn_r   : 1'b0;          // disabled when cal_en=1
+  assign CLK2DSM  = norm   ? outn_off : 1'b0;          // same freq as CLK2CNT, offset
+  assign CLK2CNT  = cal_en ? pre      : (norm ? outn_r : 1'b0);  // VCO/4 in cal, else VCO/D
+endmodule

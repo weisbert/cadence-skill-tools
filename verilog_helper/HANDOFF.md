@@ -148,8 +148,18 @@ Remaining, in priority order:
     "elaborates but mmd_core does nothing".
   - **FUNCTIONAL run** (vs SMOKE): resolve `CLK_PLL_NDIV_counter_div2_lvt` (it's stubbed;
     its `library_binding` / a `-v` or verilogams is needed).
-  - **Real testbench**: the auto-TB is smoke/generic. Pinout recorded in project memory —
-    drive `fromVCO`+`ndiv[13:0]`+`pwsel[5:0]`+enables, check `OUT_NDIV` = fromVCO/N.
+  - **Real testbench** (DONE 2026-06-25 — `examples/lpbt_ndiv/`): period-ratio TB
+    `tb_LPBT_NDIV_TOP.vams` drives `fromVCO`+`ndiv`+`pwsel`+enables per MODE. Confirmed mode
+    facts from the user: CAL `cal_en=1`→`CLK2CNT=VCO/4` + `OUT_NDIV` disabled; TEST `en_test=1`
+    →`TESTCLK_300M=VCO/16`; NORMAL→`OUT_NDIV=CLK2DSM=VCO/4/(ndiv[7:0]−1)` (N=ndiv−1, /4
+    prescaler; TENTATIVE, user reconfirms @office). `pwsel`=duty-cycle only (pwsel[0] NC),
+    `lpbt_en` NC. The two CAL/TEST divides are FRONT-END TAPS independent of mmd_core → **real
+    hard checks that pass TODAY** (verified via `+define+HOLLOW` model); the N check is gated
+    behind `+define+CHECK_NDIV` (smoke→WARN until #28+counter). TB MECHANICS verified on a local
+    behavioral good-model (xrun 18.03): good→PASS, `+CHECK_NDIV`→full PASS, `BREAK_TESTCLK`/
+    `BREAK_NDIV`→FAIL (teeth), `HOLLOW`→PASS via CAL+TEST. Spec+office checklist in
+    `examples/lpbt_ndiv/SPEC_CHECKLIST.md`. Red zone: `vh_gen --tb tb_LPBT_NDIV_TOP.vams
+    --tb-top tb_LPBT_NDIV_TOP` (the model file is local-only, never shipped).
   - **Generality gap**: a genuine **functional** wreal↔logic boundary (not supply) is
     diagnosed by vh_diag but NOT auto-fixed (would need generated connect modules — not
     built). All decisions/details in the project memory

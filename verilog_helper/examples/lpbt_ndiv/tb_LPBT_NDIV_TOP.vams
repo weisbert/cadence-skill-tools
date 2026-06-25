@@ -1,0 +1,176 @@
+`timescale 1ps/1ps
+// -----------------------------------------------------------------------------
+// tb_LPBT_NDIV_TOP.vams -- real testbench for the LPBT_NDIV_TOP feedback divider.
+//
+// Strategy = "period-ratio" check: drive fromVCO as a square clock, set the
+// divide word + the 3 live enables (lpbt_en is NC), and for each MODE measure
+// period(out)/period(fromVCO) and compare to the expected divide.
+//
+// CONFIRMED divides (do NOT pass through the hollow mmd_core #28 -> real checks
+// that can pass on the red zone NOW):
+//     CAL  cal_en=1                   : CLK2CNT = VCO/4   ; OUT_NDIV disabled
+//     TEST ndiv_en=1,cal_en=0,en_test : TESTCLK_300M = VCO/16
+// TENTATIVE divide (needs #28 mmd_core view fixed + counter resolved; formula
+// flagged "if I remember right" -> kept as localparams, easy to retune):
+//     NORM ndiv_en=1,cal_en=0         : OUT_NDIV = CLK2DSM = VCO / 4 / (ndiv-1)
+//
+// Gate the mmd-core-dependent check with +define+CHECK_NDIV. Without it the NORM
+// mode only checks liveness (SMOKE) -- which is all the real design can do until
+// #28 + the counter are resolved.
+//
+// TODO(office, 2026-06-25): CLK2DSM<->CLK2CNT exact edge offset; CLK2DSM in CAL;
+// TESTCLK/CLK2CNT in the other modes; pwsel duty-cycle effect. Marked below.
+// -----------------------------------------------------------------------------
+
+// measurement slots: rising-edge count + running-average period (via $realtime)
+//   0 = OUT_NDIV   1 = CLK2DSM   2 = CLK2CNT   3 = TESTCLK_300M
+`define RST(i) lr[i] = -1.0; ps[i] = 0.0; pn[i] = 0; ed[i] = 0;
+
+`define CKR(label, i, gold) \
+  avgp  = (pn[i] > 0) ? (ps[i] / pn[i]) : 0.0; \
+  ratio = (avgp > 0.0) ? (avgp / TVCO) : 0.0; \
+  if (pn[i] == 0) begin $display("  FAIL %0s: no edges (expected VCO/%0d)", label, gold); fails = fails + 1; end \
+  else if ((ratio > ((gold) + TOL)) || (ratio < ((gold) - TOL))) begin \
+    $display("  FAIL %0s: measured VCO/%0.2f, expected VCO/%0d", label, ratio, gold); fails = fails + 1; end \
+  else $display("  PASS %0s: VCO/%0d (measured VCO/%0.2f)", label, gold, ratio);
+
+`define CKQ(label, i) \
+  if (ed[i] > 0) begin $display("  FAIL %0s: expected quiet, saw %0d edges", label, ed[i]); fails = fails + 1; end \
+  else $display("  PASS %0s: quiet (disabled)", label);
+
+// soft report (does NOT fail the TB): OUT_NDIV/CLK2DSM depend on the hollow
+// mmd_core(#28)+stubbed counter, so they may not toggle yet -- expected.
+`define CKWARN(label, i) \
+  if (ed[i] > 0) $display("  WARN %0s: live (%0d edges) -- functional N-check deferred to #28", label, ed[i]); \
+  else $display("  WARN %0s: NOT toggling (expected until #28 mmd_core view + counter resolved)", label);
+
+module tb_LPBT_NDIV_TOP;
+  // ---- slot indices ---------------------------------------------------------
+  localparam integer I_OUT = 0, I_DSM = 1, I_CNT = 2, I_TST = 3;
+
+  // ---- knobs ----------------------------------------------------------------
+  localparam integer TVCO      = 200;                 // VCO period [ps] (=5GHz; 4.8G also OK)
+  localparam integer NDIV_TEST = 10;                  // divide word ndiv[7:0]
+  localparam integer M_GOLD    = NDIV_TEST - 1;       // MMD divisor    = ndiv-1
+  localparam integer D_GOLD    = 4 * (NDIV_TEST - 1); // total = VCO / 4 / (ndiv-1)
+  localparam real    TOL       = 0.05;                // ratio tolerance
+  localparam integer SETTLE    = 60   * TVCO;         // let a mode settle before measuring
+  localparam integer WIN       = 4000 * TVCO;         // measurement window
+
+  // ---- DUT I/O --------------------------------------------------------------
+  reg         fromVCO;
+  reg  [13:0] ndiv;
+  reg  [5:0]  pwsel;
+  reg         ndiv_en, cal_en, en_test, lpbt_en;
+  wire        OUT_NDIV, CLK2DSM, CLK2CNT, TESTCLK_300M;
+  reg         VDD, VPP, VSS, VDD_VCO, VPP_VCO, VSS_VCO, psub;
+
+  integer fails;
+  real    avgp, ratio, pdsm, pcnt;
+
+  // ---- measurement state ----------------------------------------------------
+  real    lr [0:3];      // last rising-edge time
+  real    ps [0:3];      // accumulated period
+  integer pn [0:3];      // period samples
+  integer ed [0:3];      // rising-edge count
+
+  LPBT_NDIV_TOP dut (
+    .fromVCO(fromVCO), .ndiv(ndiv), .pwsel(pwsel),
+    .ndiv_en(ndiv_en), .cal_en(cal_en), .en_test(en_test), .lpbt_en(lpbt_en),
+    .OUT_NDIV(OUT_NDIV), .CLK2DSM(CLK2DSM), .CLK2CNT(CLK2CNT), .TESTCLK_300M(TESTCLK_300M),
+    .VDD(VDD), .VPP(VPP), .VSS(VSS),
+    .VDD_VCO(VDD_VCO), .VPP_VCO(VPP_VCO), .VSS_VCO(VSS_VCO), .psub(psub)
+  );
+
+  // ---- VCO clock ------------------------------------------------------------
+  initial fromVCO = 1'b0;
+  always #(TVCO/2) fromVCO = ~fromVCO;
+
+  // ---- edge measurement (one always per observed output) --------------------
+  always @(posedge OUT_NDIV) begin
+    ed[I_OUT] = ed[I_OUT] + 1;
+    if (lr[I_OUT] >= 0.0) begin ps[I_OUT] = ps[I_OUT] + ($realtime - lr[I_OUT]); pn[I_OUT] = pn[I_OUT] + 1; end
+    lr[I_OUT] = $realtime;
+  end
+  always @(posedge CLK2DSM) begin
+    ed[I_DSM] = ed[I_DSM] + 1;
+    if (lr[I_DSM] >= 0.0) begin ps[I_DSM] = ps[I_DSM] + ($realtime - lr[I_DSM]); pn[I_DSM] = pn[I_DSM] + 1; end
+    lr[I_DSM] = $realtime;
+  end
+  always @(posedge CLK2CNT) begin
+    ed[I_CNT] = ed[I_CNT] + 1;
+    if (lr[I_CNT] >= 0.0) begin ps[I_CNT] = ps[I_CNT] + ($realtime - lr[I_CNT]); pn[I_CNT] = pn[I_CNT] + 1; end
+    lr[I_CNT] = $realtime;
+  end
+  always @(posedge TESTCLK_300M) begin
+    ed[I_TST] = ed[I_TST] + 1;
+    if (lr[I_TST] >= 0.0) begin ps[I_TST] = ps[I_TST] + ($realtime - lr[I_TST]); pn[I_TST] = pn[I_TST] + 1; end
+    lr[I_TST] = $realtime;
+  end
+
+  // ---- stimulus / checks ----------------------------------------------------
+  initial begin
+    fails   = 0;
+    ndiv    = NDIV_TEST;          // ndiv[13:8] are NC -> upper bits don't matter
+    pwsel   = 6'b000010;          // pwsel[1]=1 (duty step); pwsel[0] NC -> don't-care
+    ndiv_en = 1'b0; cal_en = 1'b0; en_test = 1'b0; lpbt_en = 1'b0;   // lpbt_en NC
+    {VDD,VPP,VDD_VCO,VPP_VCO} = 4'b1111;
+    {VSS,VSS_VCO,psub}        = 3'b000;
+    #(20*TVCO);
+
+    // ===================== MODE: CAL (cal_en=1) =====================
+    cal_en = 1'b1; ndiv_en = 1'b1; en_test = 1'b0;
+    #(SETTLE);
+    `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
+    #(WIN);
+    $display("== CAL  (cal_en=1) ==");
+    `CKR("CLK2CNT = VCO/4", I_CNT, 4)            // CONFIRMED, no mmd_core dependence
+    `CKQ("OUT_NDIV disabled", I_OUT)             // CONFIRMED
+
+    // ===================== MODE: TEST (en_test=1) =====================
+    cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b1;
+    #(SETTLE);
+    `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
+    #(WIN);
+    $display("== TEST (ndiv_en=1,cal_en=0,en_test=1) ==");
+    `CKR("TESTCLK_300M = VCO/16", I_TST, 16)     // CONFIRMED, no mmd_core dependence
+
+    // ===================== MODE: NORMAL divide =====================
+    cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b0;
+    #(SETTLE);
+    `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
+    #(WIN);
+    $display("== NORM (ndiv_en=1,cal_en=0) : ndiv=%0d -> D=4*(ndiv-1)=%0d ==", NDIV_TEST, D_GOLD);
+`ifdef CHECK_NDIV
+    // post-#28 functional N check (TENTATIVE formula -> retune localparams if needed)
+    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)
+    `CKR("CLK2DSM = VCO/4/(ndiv-1)",  I_DSM, D_GOLD)
+    // CLK2DSM and CLK2CNT must be the SAME frequency in NORMAL (offset TBD@office)
+    pdsm = (pn[I_DSM] > 0) ? (ps[I_DSM] / pn[I_DSM]) : 0.0;
+    pcnt = (pn[I_CNT] > 0) ? (ps[I_CNT] / pn[I_CNT]) : 0.0;
+    if (pn[I_DSM] == 0 || pn[I_CNT] == 0) begin
+      $display("  FAIL CLK2DSM/CLK2CNT freq match: a signal had no edges"); fails = fails + 1;
+    end else if (((pdsm/pcnt) > 1.0 + TOL) || ((pdsm/pcnt) < 1.0 - TOL)) begin
+      $display("  FAIL CLK2DSM/CLK2CNT freq match: periods %0.1f vs %0.1f", pdsm, pcnt); fails = fails + 1;
+    end else
+      $display("  PASS CLK2DSM/CLK2CNT same freq (periods %0.1f / %0.1f) -- edge offset: TODO confirm @office", pdsm, pcnt);
+`else
+    // SMOKE (the real design TODAY): only report liveness, do not fail
+    `CKWARN("OUT_NDIV", I_OUT)
+    `CKWARN("CLK2DSM",  I_DSM)
+    `CKWARN("CLK2CNT",  I_CNT)
+`endif
+
+    // ---- verdict ----
+    if (fails == 0) $display("=== TB PASS ===");
+    else            $display("=== TB FAIL (%0d) ===", fails);
+    $finish;
+  end
+
+  // safety timeout
+  initial begin
+    #(50_000_000);
+    $display("=== TB FAIL (timeout) ===");
+    $finish;
+  end
+endmodule
