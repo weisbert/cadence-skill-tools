@@ -524,6 +524,45 @@ def find_schematic_view(cell, libs, prefer_lib=None, order=None):
     return None, None
 
 
+def _has_view_dir(cell, libs, vname):
+    for L in libs:
+        d = os.path.join(libs[L], cell, vname)
+        if os.path.isdir(d) and os.listdir(d):
+            return True
+    return False
+
+
+# config viewlist entries that mean "behavioral leaf" (map to the on-disk VA_VIEW_DIRS)
+BEHAV_VIEWS = ("veriloga", "verilogams", "ahdl", "spice", "ams")
+
+
+def config_use_schematic(cell, libs, viewlist, stoplist=None):
+    """Honor the config_ams viewlist: should `cell` be DESCENDED as a schematic
+    (structural) or GATHERED as a behavioral leaf? Decided by viewlist RANK -- the first
+    schematic-like view the cell actually has vs the first behavioral view it has (a cell
+    can have BOTH; the config picks the higher-ranked one). e.g. with viewlist
+    [spectre, cmos_sch, schematic, veriloga, ...] a cell that has BOTH schematic and
+    verilogams resolves to SCHEMATIC -> descend (its veriloga/verilogams is NOT used).
+    Returns None when there is no viewlist (caller falls back to the verilogams=leaf rule)."""
+    if not viewlist:
+        return None
+    stop = set(stoplist or [])
+    sch_rank = beh_rank = None
+    for idx, v in enumerate(viewlist):
+        if v in stop:
+            continue
+        if sch_rank is None and v in SCHEM_VIEW_DIRS and _has_view_dir(cell, libs, v):
+            sch_rank = idx
+        if beh_rank is None and v in BEHAV_VIEWS \
+                and any(_has_view_dir(cell, libs, d) for d in VA_VIEW_DIRS):
+            beh_rank = idx
+    if sch_rank is None:
+        return False if beh_rank is not None else None
+    if beh_rank is None:
+        return True
+    return sch_rank < beh_rank
+
+
 def dedup_netlist(raw):
     """Collapse duplicate module defs (across merged oa2verilog runs), keeping the
     RICHEST block per name -- a real body (has instances) wins over an empty
@@ -540,15 +579,17 @@ def dedup_netlist(raw):
 
 
 def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
-                     warnings, viewlist=None):
+                     warnings, viewlist=None, stoplist=None):
     """Recursively descend hierarchy sub-blocks that the top oa2verilog run did NOT
     follow (their schematic is a cmos_sch view, or they sit under a nested config).
 
-    A sub-block is descended when it is undefined or an empty interface, has a
-    schematic-like view, has NO verilogams (verilogams => leaf, keep it), is not a
-    -v-resolved std cell, and is not a pin/stimulus/device/passive. Each descent
-    runs oa2verilog on that cell with its own schematic view; results are merged
-    and dedup'd (full body beats empty interface). Repeats to a fixpoint."""
+    A sub-block is descended when it is undefined or an empty interface, the config
+    viewlist resolves it to a SCHEMATIC-like view (so a cell that has BOTH a schematic
+    and a verilogams is descended when the viewlist ranks schematic higher -- its
+    verilogams is NOT used), it is not a -v-resolved std cell, and not a pin/stimulus/
+    device/passive. Without a viewlist we fall back to the verilogams=>leaf rule. Each
+    descent runs oa2verilog on the cell's own schematic view; merged + dedup'd
+    (full body beats empty interface). Repeats to a fixpoint."""
     schem_order = _schem_view_order(viewlist)
     skip = PIN_CELLS | STIMULUS_CELLS | NOCONN_CELLS | DEVICE_DROP | PASSIVE_CELLS
     combined = raw
@@ -566,8 +607,13 @@ def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
         for mas in sorted(cand):
             if mas in descended or mas in skip or mas in ext_index:
                 continue
-            if find_veriloga(mas, libs)[1]:    # has verilogams -> a leaf, don't descend
+            use_sch = config_use_schematic(mas, libs, viewlist, stoplist)
+            if use_sch is None:                # no config: verilogams => leaf, don't descend
+                if find_veriloga(mas, libs)[1]:
+                    continue
+            elif not use_sch:                  # config resolves it to a behavioral leaf
                 continue
+            # else: config resolves it to a schematic -> descend (even if it has verilogams)
             sl, sv = find_schematic_view(mas, libs, order=schem_order)
             if sv:
                 todo.append((mas, sl, sv))
@@ -647,14 +693,31 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         if structural[nm] and not forced:
             classes[nm] = "structural"
             continue
-        # empty interface (or forced-to-veriloga): leaf or external
+        # empty interface (or forced-to-veriloga): leaf or external. Honor the config
+        # viewlist: if it resolves this cell to a SCHEMATIC (and it wasn't an explicit
+        # `binding :veriloga`), its verilogams must NOT be gathered -- it should have been
+        # descended (its verilogams may be a stale netlist bound to another library).
         vlib, vpath = find_veriloga(nm, libs, prefer_lib=lib)
-        if vpath:
+        use_sch = config_use_schematic(nm, libs, cfg.get("viewlist"), cfg.get("stoplist"))
+        if vpath and not (use_sch and not forced):
             classes[nm] = "veriloga"
             if nm not in seen_leaf:
                 seen_leaf.add(nm)
                 leaves.append({"module": nm, "lib": vlib, "src": vpath,
                                "forced_binding": forced})
+        elif use_sch:
+            # config says schematic but we have only an empty interface here -> the
+            # schematic descent did not run/succeed; do NOT fall back to the (unused)
+            # verilogams. Record as external so it's visible, and warn.
+            classes[nm] = "external"
+            if nm not in seen_ext:
+                seen_ext.add(nm)
+                externals.append({"module": nm, "interface": tx.strip()})
+            warnings.append(
+                "cell '%s' resolves to a SCHEMATIC per the config viewlist but no descended "
+                "body was produced (oa2verilog did not follow it); its verilogams is NOT "
+                "used. Check the cell's schematic view / that OA is available for descent."
+                % nm)
         elif nm == cell:
             # the targeted top itself is empty -> a pin-only stub, flagged below;
             # it is the DUT, not a neighbor to stub, so keep it out of externals.
@@ -965,7 +1028,8 @@ def main():
         # `-view schematic` stops at sub-blocks whose hierarchy is a cmos_sch view
         # or a nested config -> recursively descend those so the whole tree is dug.
         raw = expand_hierarchy(raw, cell, libs, ext_index, cdslib, args.env_sh,
-                               args.out, warnings, viewlist=cfg.get("viewlist"))
+                               args.out, warnings, viewlist=cfg.get("viewlist"),
+                               stoplist=cfg.get("stoplist"))
 
     manifest, clean = extract(lib, cell, view, libs, raw, args.out, cfg=cfg,
                               warnings=warnings, env=env, ext_index=ext_index)
