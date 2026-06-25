@@ -91,6 +91,37 @@
     (unless (pcreMatchp "/$" d) (setq d (strcat d "/")))
     d))
 
+; Auto-write a temp cds.lib from the LIVE OA session (every defined lib + its
+; readPath). Lets the GUI run Stage A without the user pointing at a cds.lib --
+; the session already knows where every library lives. Returns the temp path, or
+; nil if OA isn't reachable. (CLI users still pass --cdslib; this is GUI-only.)
+(defun vh_autoCdslib ()
+  (let (path port)
+    (cond
+      ((null (getd 'ddGetLibList)) nil)
+      (t
+        (setq path (makeTempFileName "/tmp/vh_cdslib"))
+        (setq port (outfile path "w"))
+        (cond
+          ((null port) nil)
+          (t
+            (foreach lib (ddGetLibList)
+              (errset (fprintf port "DEFINE %s %s\n" lib~>name lib~>readPath) t))
+            (close port)
+            path))))))
+
+; Auto-find a config view's expand.cfg for lib/cell on disk (<libpath>/<cell>/
+; config/expand.cfg). Returns the path if it exists, else nil. Most DUTs have no
+; config view -> nil -> Stage A runs standalone from lib+cell (no config needed).
+(defun vh_autoConfig (lib cell "tt")
+  (let (lp cand)
+    (setq lp (car (errset (let ((o (ddGetObj lib))) (and o o~>readPath)) t)))
+    (cond
+      ((not (stringp lp)) nil)
+      (t
+        (setq cand (strcat lp "/" cell "/config/expand.cfg"))
+        (if (isFile cand) cand nil)))))
+
 ; Default browse/output dir: explicit vh_browseDir, else $WORK_ROOT2, else ".".
 (defun vh_defaultDir ()
   (let (w)
@@ -202,6 +233,21 @@
         (setq lib     (vh_str form->vh_srcLib->value))
         (setq cell    (vh_str form->vh_srcCell->value))
         (setq view    (vh_str form->vh_srcView->value))
+        ; --- derive what the live OA session already knows, so the user only has
+        ; to pick the DUT + Output ---
+        ; cds.lib: if not given, auto-write one from the session's lib list.
+        (when (equal cdslib "")
+          (let ((ac (car (errset (vh_autoCdslib) t))))
+            (when (and ac (stringp ac))
+              (setq cdslib ac)
+              (printf "[verilog-helper] auto cds.lib from session -> %s\n" ac))))
+        ; config: optional. If not given but a config view exists for the DUT, use
+        ; it; otherwise Stage A runs standalone from lib+cell.
+        (when (and (equal cfg "") (not (equal lib "")) (not (equal cell "")))
+          (let ((acfg (car (errset (vh_autoConfig lib cell) t))))
+            (when (and acfg (stringp acfg))
+              (setq cfg acfg)
+              (printf "[verilog-helper] found config view -> %s\n" acfg))))
         (setq args (strcat "--out " (vh_q out)))
         (setq ready t)
         (cond
@@ -391,6 +437,22 @@
         (reverse plines))
       "\n")))
 
+; Pop a small modeless preview window with the pin list in a (selectable) MLT
+; field, so you can eyeball it and copy straight from the dialog. The list is
+; ALSO already on the clipboard + in the file; this is the on-screen preview.
+(defun vh_showPinsForm (title txt "tt")
+  (let (fTxt form)
+    (errset (hiFormCancel vh_pinsForm) t)   ; drop a prior preview if open
+    (setq fTxt (hiCreateMLTextField ?name 'vh_pinsText ?prompt "" ?value txt
+                 ?hasVerticalScrollbar t ?hasHorizontalScrollbar t ?enableWordWrap nil))
+    (setq form (hiCreateAppForm ?name 'vh_pinsForm ?formTitle title
+                 ?fields (list (list fTxt (list 0 0) (list 430 300) 0))
+                 ?buttonLayout 'Close))
+    (hiInstantiateForm form)
+    (errset (hiSetFormSize form (list 470 360)) t)
+    (hiDisplayForm 'vh_pinsForm)
+    'vh_pinsForm))
+
 (defun vh_scanPinsCB (form "g")
   (let (lib cell view descs txt out path)
     (setq lib  (vh_str form->vh_srcLib->value))
@@ -419,8 +481,11 @@
             (setq out (vh_str form->vh_out->value))
             (setq path (strcat (if (equal out "") "/tmp" out) "/" cell "_pins.txt"))
             (errset (vh_writeFile path txt) t)           ; file export
+            (errset (vh_showPinsForm                     ; on-screen preview popup
+              (sprintf nil "Pins: %s/%s (%d) -- on clipboard + %s"
+                lib cell (length descs) path) txt) t)
             (vh_setStatus form
-              (sprintf nil "scanned %d pins -> clipboard + %s (+ CIW)"
+              (sprintf nil "scanned %d pins -> preview + clipboard + %s"
                 (length descs) path))))))
     t))
 

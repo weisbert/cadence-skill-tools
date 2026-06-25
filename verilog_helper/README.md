@@ -75,8 +75,17 @@ Then **MyTool → Verilog Helper** opens the form:
 - **Source Lib/Cell/View** combos + **[Select from Schematic]** (click an
   instance — its master lib/cell fill the combos) / **[Browse Library...]**.
 - **[Scan Pins]** scans the DUT cellview's terminals → a `name + input/output/inout
-  (+ bus <hi:lo>)` list, put on the **clipboard**, written to `<Output>/<cell>_pins.txt`,
-  and echoed to the CIW. This pin list is the basis for writing the testbench/checks.
+  (+ bus <hi:lo>)` list, shown in a **preview popup** (scrollable, selectable), put on
+  the **clipboard**, written to `<Output>/<cell>_pins.txt`, and echoed to the CIW. This
+  pin list is the basis for writing the testbench/checks.
+
+**Minimal input.** Inside Virtuoso the GUI derives most things from the live OA
+session, so you usually only set **the DUT (Select from Schematic) + Output folder**:
+- **cds.lib** — auto-written from the session's library list (every lib + its path);
+  you don't have to point at one. (CLI users still pass `--cdslib`.)
+- **expand.cfg** — *optional*. With just lib+cell, Stage A runs **standalone**; a
+  `config` view at `<libpath>/<cell>/config/expand.cfg` is auto-used if present. The
+  config only matters when you need explicit per-cell view *bindings* (force veriloga).
 - **config (expand.cfg)** / **cds.lib** / **captured netlist** / **Output
   folder** / **checks.json** / **user testbench** file pickers.
 - **external -v library** + **[Add -v lib]** (remembers it via `vh_env.py`) /

@@ -13,10 +13,12 @@
 - `vh_dut.py` — **multi-DUT driver** (one folder per DUT, `run-all` summary). ✅
 - **GUI** `vhGui.il` (+ `verilog_helper.il` loader) — thin SKILL launcher under
   **MyTool → Verilog Helper**: select-from-schematic + Lib/Cell/View picker +
-  **[Scan Pins]** (terminals → name/dir/bus to clipboard + `<out>/<cell>_pins.txt`
-  + CIW) + `[Extract A][Convert B][Generate C][Run xrun][Package D]` + external-`-v`-env
-  buttons; each button `system()`-shells out to a `vh_*.py` CLI (or `bash run.sh`
-  for Run). ✅
+  **[Scan Pins]** (terminals → name/dir/bus to a **preview popup** + clipboard +
+  `<out>/<cell>_pins.txt` + CIW) + `[Extract A][Convert B][Generate C][Run xrun][Package D]`
+  + external-`-v`-env buttons; each action button `system()`-shells out to a `vh_*.py`
+  CLI (or `bash run.sh` for Run). **Input simplification:** cds.lib is auto-written from
+  the live OA lib list (`ddGetLibList`+readPath), and expand.cfg is optional (standalone
+  lib+cell, or auto-found config view) → minimal input is **pick DUT + Output**. ✅
 - **Passives** (Stage A) — analogLib 2-terminal `res/cap/ind` on a signal net are
   removed from the path: **series → shorted** (nets merged), **shunt-to-gnd → opened**;
   non-2-terminal/bus skipped+warned; listed in `manifest_A` `PASSIVES`. So `net → ind
