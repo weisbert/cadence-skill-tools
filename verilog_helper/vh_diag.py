@@ -289,6 +289,25 @@ def main():
             if lg:
                 p("        logic: %s" % ", ".join(lg[:4]))
 
+        # INTERFACES of every cell on a boundary -- the sanitized "partial code" (ports +
+        # wreal/logic disciplines, NO bodies) needed to clone a faithful local reproducer.
+        def _iface(m):
+            out = ["module %s ( %s );" % (m["module"], ", ".join(m["ports"]))]
+            for q in m["ports"]:
+                dd, ww = m["dirs"].get(q, ("inout", ""))
+                disc = "wreal " if m["ntype"].get(q) == "wreal" else ""
+                out.append("  %s %s%s%s;" % (dd, (ww + " ") if ww else "", disc, q))
+            return out + ["endmodule  // body omitted"]
+        seen_if = set()
+        for host, nb, decl, wr, lg in boundaries:
+            for s in [host] + [x.split("/")[1].split(".")[0] for x in (wr + lg)]:
+                if s not in seen_if and s in index:
+                    seen_if.add(s)
+        p("\n  --- INTERFACES of boundary cells (ports + discipline; bodies omitted) ---")
+        for nm in sorted(seen_if):
+            for ln in _iface(index[nm]):
+                p("  " + ln)
+
     # ---- PARSE COVERAGE -------------------------------------------------------------
     p("\n## PARSE GAPS  (instances vh_extract/vh_gen's parser MISSES but xrun sees -> *E,CUVMUR)")
     if not parse_gaps:
