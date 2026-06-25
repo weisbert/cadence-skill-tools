@@ -50,6 +50,16 @@
 ; Default folder for the Browse buttons + Output field (nil => resolve at open).
 (unless (boundp 'vh_browseDir)  (setq vh_browseDir nil))
 
+; --- async run state (Extract/Convert/Generate/Run/Package run in the BACKGROUND
+; so Virtuoso stays responsive; a poll timer updates the Status line with elapsed
+; time and the final result). Only one bg run at a time. ---
+(unless (boundp 'vh_asyncBusy)  (setq vh_asyncBusy nil))   ; t while a bg run is active
+(unless (boundp 'vh_asyncLog)   (setq vh_asyncLog nil))    ; the run's stdout/stderr log
+(unless (boundp 'vh_asyncStage) (setq vh_asyncStage nil))  ; label, e.g. "Stage A"
+(unless (boundp 'vh_asyncKind)  (setq vh_asyncKind "cli")) ; "cli" | "run"
+(unless (boundp 'vh_asyncForm)  (setq vh_asyncForm nil))   ; form to report to
+(unless (boundp 'vh_asyncTick)  (setq vh_asyncTick 0))     ; poll counter (for elapsed)
+
 ; ---------------------------------------------------------------------------
 ; Small helpers
 ; ---------------------------------------------------------------------------
@@ -185,25 +195,84 @@
     (vh_runShell (sprintf nil "%s %s %s %s"
                    vh_shellPrefix vh_pythonCmd (vh_q scriptPath) argStr))))
 
-; Run a CLI and report on the Status line: exit 0 -> last log line; else "FAILED".
-(defun vh_runReport (form stageLabel script argStr "gttt")
-  (let (res rc txt)
-    (vh_setStatus form (strcat stageLabel ": running... (see CIW)"))
-    (setq res (errset (vh_runCLI script argStr) t))
+; Build a CLI command string (no redirection): <prefix> python3 <dir>/<script> <args>.
+(defun vh_cliCmd (script argStr "tt")
+  (let ((scriptPath (strcat (vh_dir) script)))
+    (unless (isFile scriptPath)
+      (error (strcat "verilog-helper: CLI not found: " scriptPath)))
+    (sprintf nil "%s %s %s %s" vh_shellPrefix vh_pythonCmd (vh_q scriptPath) argStr)))
+
+; Run `cmd` in the BACKGROUND (so Virtuoso never freezes), then poll for the
+; result. A `.done` marker file (holding the exit code) appears when the command
+; finishes; vh_pollAsync watches for it and writes the verdict to the Status line.
+; kind = "cli" (exit-0 OK / else FAILED) | "run" (TB PASS/FAIL + RUN-KIND).
+(defun vh_runAsync (form stage cmd kind "gttt")
+  (cond
+    (vh_asyncBusy
+      (vh_setStatus form
+        (sprintf nil "busy: %s still running -- wait for it to finish" vh_asyncStage))
+      nil)
+    (t
+      (setq vh_asyncLog   (makeTempFileName "/tmp/vh_async"))
+      (setq vh_asyncStage stage)
+      (setq vh_asyncKind  kind)
+      (setq vh_asyncForm  form)
+      (setq vh_asyncTick  0)
+      (setq vh_asyncBusy  t)
+      (printf "[verilog-helper] (bg) %s\n" cmd)
+      ; Run cmd in its OWN nested subshell so even a cmd that calls `exit` can't
+      ; stop the outer shell from writing the exit code to <log>.done. The trailing
+      ; & backgrounds the whole thing so system() returns immediately.
+      (system (sprintf nil "( ( %s ) > %s 2>&1 ; echo $? > %s ) &"
+                cmd (vh_q vh_asyncLog) (vh_q (strcat vh_asyncLog ".done"))))
+      (vh_setStatus form
+        (strcat stage ": running... (Virtuoso stays responsive; result appears here)"))
+      (hiRegTimer "(vh_pollAsync)" 8)
+      t)))
+
+; Poll the running bg job: if its .done marker exists, read the exit code + log,
+; write the verdict, and stop; otherwise update elapsed time and re-arm.
+(defun vh_pollAsync ()
+  (let (donef rc body)
     (cond
-      ((null res)
-        (vh_setStatus form (strcat stageLabel ": launch error -- see CIW"))
-        nil)
+      ((null vh_asyncBusy) nil)
       (t
-        (setq rc  (car  (car res)))
-        (setq txt (cadr (car res)))
+        (setq donef (strcat vh_asyncLog ".done"))
         (cond
-          ((equal rc 0)
-            (vh_setStatus form (strcat stageLabel " OK: " (vh_lastLine txt)))
-            t)
+          ((isFile donef)
+            (setq rc   (atoi (vh_readFile donef)))
+            (setq body (if (isFile vh_asyncLog) (vh_readFile vh_asyncLog) ""))
+            (printf "[verilog-helper] %s done (exit=%d)\n%s\n" vh_asyncStage rc body)
+            (vh_setStatus vh_asyncForm (vh_asyncVerdict rc body))
+            (errset (deleteFile vh_asyncLog) t)
+            (errset (deleteFile donef) t)
+            (setq vh_asyncBusy nil))
           (t
-            (vh_setStatus form (sprintf nil "%s FAILED (exit %d) -- see CIW" stageLabel rc))
-            nil))))))
+            (setq vh_asyncTick (plus vh_asyncTick 1))
+            (vh_setStatus vh_asyncForm
+              (sprintf nil "%s: running %ds... (Virtuoso responsive)"
+                vh_asyncStage (fix (times vh_asyncTick 0.8))))
+            (hiRegTimer "(vh_pollAsync)" 8)))))
+    t))
+
+; Compute the Status verdict from a finished bg job's exit code + log text.
+(defun vh_asyncVerdict (rc txt "xt")
+  (let (v k)
+    (cond
+      ((equal vh_asyncKind "run")
+        (setq v (cond
+                  ((pcreMatchp "=== TB PASS" txt) "=== TB PASS ===")
+                  ((pcreMatchp "=== TB FAIL" txt) "=== TB FAIL ===  -- see CIW")
+                  (t (sprintf nil "xrun exit %d (no PASS/FAIL line -- see CIW)" rc))))
+        (setq k (cond
+                  ((pcreMatchp "RUN-KIND: SMOKE" txt)      "  [SMOKE: externals stubbed]")
+                  ((pcreMatchp "RUN-KIND: FUNCTIONAL" txt) "  [functional: all ext resolved]")
+                  (t "")))
+        (strcat vh_asyncStage ": " v k))
+      (t
+        (if (equal rc 0)
+            (strcat vh_asyncStage " OK: " (vh_lastLine txt))
+            (sprintf nil "%s FAILED (exit %d) -- see CIW" vh_asyncStage rc))))))
 
 ; Common precheck: the Output folder field, required by A/B/C/D. Returns the
 ; trimmed path, or nil after setting the Status line if it is blank.
@@ -269,7 +338,7 @@
             (setq ready nil)))
         (when ready
           (unless (equal netlist "") (setq args (strcat args " --netlist " (vh_q netlist))))
-          (vh_runReport form "Stage A" "vh_extract.py" args))))
+          (vh_runAsync form "Stage A" (vh_cliCmd "vh_extract.py" args) "cli"))))
     t))
 
 ; Stage B (vh_convert.py): convert the manifest's analog leaves to wreal,
@@ -290,7 +359,7 @@
             ; default writes the candidate beside the cell (the user's intent);
             ; "no" keeps everything out of the OA lib (--no-cell-write).
             (when (equal write "no") (setq args (strcat args " --no-cell-write")))
-            (vh_runReport form "Stage B" "vh_convert.py" args)))))
+            (vh_runAsync form "Stage B" (vh_cliCmd "vh_convert.py" args) "cli")))))
     t))
 
 ; Stage C (vh_gen.py): TB + wreal stubs + run.sh from <out>/export (the gathered
@@ -312,7 +381,7 @@
             (cond
               ((not (equal tb "")) (setq args (strcat args " --tb " (vh_q tb))))
               ((not (equal checks "")) (setq args (strcat args " --checks " (vh_q checks)))))
-            (vh_runReport form "Stage C" "vh_gen.py" args)))))
+            (vh_runAsync form "Stage C" (vh_cliCmd "vh_gen.py" args) "cli")))))
     t))
 
 ; Stage D (vh_package.py): pack <out>/sim into a relocatable air-gap bundle.
@@ -327,7 +396,7 @@
             (vh_setStatus form "no sim/ -- run Generate (C) first"))
           (t
             (setq args (strcat "--build " (vh_q sim)))
-            (vh_runReport form "Stage D" "vh_package.py" args)))))
+            (vh_runAsync form "Stage D" (vh_cliCmd "vh_package.py" args) "cli")))))
     t))
 
 ; [Run xrun]: execute <out>/sim/run.sh -- the pure-digital xrun the whole tool
@@ -337,7 +406,7 @@
 ; wreal exits 0 even with benign spectre-license warnings, so the "=== TB PASS"
 ; marker in the log -- not the exit code -- is the real verdict.
 (defun vh_runCB (form "g")
-  (let (out runsh res rc txt verdict kind)
+  (let (out runsh)
     (cond
       ((null (setq out (vh_needOut form))) nil)
       (t
@@ -346,27 +415,8 @@
           ((not (isFile runsh))
             (vh_setStatus form "no sim/run.sh -- run Generate (C) first"))
           (t
-            (vh_setStatus form "Run: xrun running... (see CIW)")
-            (setq res (errset (vh_runShell (strcat "bash " (vh_q runsh))) t))
-            (cond
-              ((null res) (vh_setStatus form "Run: launch error -- see CIW"))
-              (t
-                (setq rc  (car  (car res)))
-                (setq txt (cadr (car res)))
-                (setq verdict
-                  (cond
-                    ((pcreMatchp "=== TB PASS" txt) "=== TB PASS ===")
-                    ((pcreMatchp "=== TB FAIL" txt) "=== TB FAIL ===  -- see CIW")
-                    (t (sprintf nil "xrun exit %d (no PASS/FAIL line -- see CIW)" rc))))
-                ; run.sh echoes RUN-KIND: SMOKE (externals stubbed) vs FUNCTIONAL
-                ; (all resolved). Tag it so a dev/stubbed smoke pass is NEVER
-                ; mistaken for a real verification.
-                (setq kind
-                  (cond
-                    ((pcreMatchp "RUN-KIND: SMOKE" txt)      "  [SMOKE: externals stubbed]")
-                    ((pcreMatchp "RUN-KIND: FUNCTIONAL" txt) "  [functional: all ext resolved]")
-                    (t "")))
-                (vh_setStatus form (strcat "Run: " verdict kind))))))))
+            ; async (xrun can take seconds-minutes); verdict via RUN-KIND/PASS-FAIL
+            (vh_runAsync form "Run" (strcat "bash " (vh_q runsh)) "run")))))
     t))
 
 ; ---------------------------------------------------------------------------

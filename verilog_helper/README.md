@@ -104,7 +104,11 @@ session, so you usually only set **the DUT (Select from Schematic) + Output fold
     only for a folder of `` `include `` headers.
 - **[Extract A] [Convert B] [Generate C] [Run xrun] [Package D]** run the
   pipeline against the Output folder (`<out>/manifest_A.json` → `<out>/export`
-  → `<out>/sim` → run → package). **[Run xrun]** executes `<out>/sim/run.sh`
+  → `<out>/sim` → run → package). They run in the **background** — the button
+  returns at once, **Virtuoso stays responsive**, and the **Status line shows a
+  live `running Ns…` counter** then the final result (so a long `oa2verilog`
+  extraction never looks like a hang). One run at a time (others say "busy").
+  **[Run xrun]** executes `<out>/sim/run.sh`
   (the pure-digital xrun) and shows the verdict on the Status line:
   `=== TB PASS ===` / `=== TB FAIL ===` **plus** `[SMOKE: externals stubbed]`
   vs `[functional: all ext resolved]` — so a dev smoke pass (externals stubbed

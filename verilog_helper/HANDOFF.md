@@ -17,7 +17,9 @@
   `<out>/<cell>_pins.txt` + CIW) + `[Extract A][Convert B][Generate C][Run xrun][Package D]`
   + **[External libraries...]** (multi-entry manager popup: several `-v`/`-y`/`+incdir`,
   Save/Reload/Clear → remembered env via `vh_env import/export`, AMS-Options-style); each
-  action button `system()`-shells out to a `vh_*.py` CLI (or `bash run.sh` for Run).
+  action button `system()`-shells out to a `vh_*.py` CLI (or `bash run.sh` for Run),
+  **in the BACKGROUND** (button returns at once, Virtuoso stays responsive, Status shows
+  a live `running Ns…` counter + final result via a poll timer — no frozen-UI/looks-hung).
   **Input simplification:** cds.lib is auto-written from the live OA lib list
   (`ddGetLibList`+readPath), and expand.cfg is optional (standalone lib+cell, or
   auto-found config view) → minimal input is **pick DUT + Output**. ✅
