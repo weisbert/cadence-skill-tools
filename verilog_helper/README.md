@@ -31,7 +31,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
 | `vh_package.py` | Stage D: pack a build into a relocatable, env-agnostic air-gap bundle (sources + `setup_env.sh` + `ext_libs.list` + `verify.sh` preflight) + tar.gz/sha256 | ✅ working |
 | `vh_dut.py`     | multi-DUT driver: one folder per DUT, auto-detect config/sources/test, run the whole pipeline per DUT, `run-all` with a PASS/FAIL summary | ✅ working |
-| `vhGui.il`      | thin SKILL GUI: select-from-schematic + Lib/Cell/View picker → `system()`-shells out to the CLIs ([Extract A][Convert B][Generate C][Run xrun][Package D]) + external-`-v`-env buttons. Registers under **MyTool → Verilog Helper** | ✅ working |
+| `vhGui.il`      | thin SKILL GUI: select-from-schematic + Lib/Cell/View picker + **[Scan Pins]** (cellview terminals → name/dir/bus to clipboard+file) → `system()`-shells out to the CLIs ([Extract A][Convert B][Generate C][Run xrun][Package D]) + external-`-v`-env buttons. Registers under **MyTool → Verilog Helper** | ✅ working |
 | `verilog_helper.il` | single-file loader (resolves `verilog_helperDir`, sources `vhGui.il`); also loaded by the `skill_tools.il` umbrella | ✅ working |
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
 | `examples/schem_nested/` | **schematic-nested** example: captured oa2verilog netlist + on-disk veriloga leaves, Stage A→C→xrun **verified PASS** | ✅ |
@@ -74,6 +74,9 @@ Then **MyTool → Verilog Helper** opens the form:
 
 - **Source Lib/Cell/View** combos + **[Select from Schematic]** (click an
   instance — its master lib/cell fill the combos) / **[Browse Library...]**.
+- **[Scan Pins]** scans the DUT cellview's terminals → a `name + input/output/inout
+  (+ bus <hi:lo>)` list, put on the **clipboard**, written to `<Output>/<cell>_pins.txt`,
+  and echoed to the CIW. This pin list is the basis for writing the testbench/checks.
 - **config (expand.cfg)** / **cds.lib** / **captured netlist** / **Output
   folder** / **checks.json** / **user testbench** file pickers.
 - **external -v library** + **[Add -v lib]** (remembers it via `vh_env.py`) /
@@ -114,6 +117,17 @@ Stage A strips OA pin artifacts (`ipin/opin/iopin`) and analogLib TB stimulus
 stub DUT ("nothing to verify"), gathers veriloga leaves as `.va`, records external
 modules (with oa2verilog-accurate port directions) for Stage C to stub, and writes a
 wreal-normalized structural top to `<dir>/export/` plus `manifest_A.{json,txt}`.
+
+**Passives on a signal net.** analogLib 2-terminal passives (`res/cap/ind`) are
+*functionally transparent* in a pure-digital wreal check, so Stage A removes them
+from the signal path: a **series** element (a net goes through it to the next cell)
+is **shorted** (its two nets are merged), and a **shunt to ground** is **opened**
+(dropped). This means `net → ind → next cell` is handled correctly (the signal
+passes straight through), and multiple passives of the same kind no longer collide
+in one shared stub. Non-2-terminal or bus-bit passives are left in place + warned.
+The `PASSIVES` section of `manifest_A.{txt,json}` lists what was shorted/opened.
+(If a passive is *load-bearing*/analog — a real filter or resonance — that's a
+"needs spectre" case, not pure-digital; model it as wreal or keep it analog.)
 
 ## External HDL env (vh_env) — where the `-v` library files live
 

@@ -13,9 +13,15 @@
 - `vh_dut.py` — **multi-DUT driver** (one folder per DUT, `run-all` summary). ✅
 - **GUI** `vhGui.il` (+ `verilog_helper.il` loader) — thin SKILL launcher under
   **MyTool → Verilog Helper**: select-from-schematic + Lib/Cell/View picker +
-  `[Extract A][Convert B][Generate C][Run xrun][Package D]` + external-`-v`-env
+  **[Scan Pins]** (terminals → name/dir/bus to clipboard + `<out>/<cell>_pins.txt`
+  + CIW) + `[Extract A][Convert B][Generate C][Run xrun][Package D]` + external-`-v`-env
   buttons; each button `system()`-shells out to a `vh_*.py` CLI (or `bash run.sh`
   for Run). ✅
+- **Passives** (Stage A) — analogLib 2-terminal `res/cap/ind` on a signal net are
+  removed from the path: **series → shorted** (nets merged), **shunt-to-gnd → opened**;
+  non-2-terminal/bus skipped+warned; listed in `manifest_A` `PASSIVES`. So `net → ind
+  → next cell` is handled (signal passes through), and the old multi-passive shared-stub
+  collapse is gone. ✅
 
 Verified: `examples/{nested_chain,schem_nested,analog_leaf}` + `examples/duts/` (3/3).
 **Red zone preflight PASSED** (xrun 19.04, pure-digital wreal, zero spectre license, xrun

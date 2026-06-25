@@ -245,6 +245,119 @@ def wrealize(text, warns):
     return text
 
 
+# analogLib 2-terminal passives that sit ON a signal net (not stimulus). A SERIES
+# one (neither terminal grounded) is transparent in a pure-digital functional check
+# -> SHORT it (merge the two nets). A SHUNT to ground -> OPEN it (drop). Anything
+# load-bearing/analog (filter, resonance) can't be done pure-digital -> that's a
+# "needs spectre" case; this only removes elements that are functionally transparent.
+PASSIVE_CELLS = {"res", "cap", "ind", "resistor", "capacitor", "inductor"}
+GROUND_NETS = {"gnd", "gnd!", "0", "vss", "vss!", "agnd", "agnd!", "dgnd", "dgnd!",
+               "vgnd", "vgnd!", "gnda", "gndd", "vssa", "vssd", "cds_globals"}
+
+
+def _is_ground(net):
+    n = net.strip().lower()
+    return n in GROUND_NETS or n.startswith("gnd") or n.startswith("vss")
+
+
+def short_passives(text, warns=None, report=None):
+    """In ONE structural module's text, remove analogLib 2-terminal passives that
+    are functionally transparent:
+      - SERIES (neither terminal grounded): MERGE the two nets (signal passes
+        straight through) by renaming one net to the other and dropping the
+        merged net's declaration; then delete the passive instance.
+      - SHUNT to ground (one terminal grounded): delete the instance (OPEN).
+    A module PORT involved in a merge is kept as the representative so the port
+    survives. Non-2-terminal / bus-bit passives are left in place + warned (they
+    fall through to the normal external-stub path). Returns the modified text."""
+    warns = warns if warns is not None else []
+    report = report if report is not None else []
+    mods = vp.parse_text(text)
+    if not mods:
+        return text
+    mi = mods[0]
+    ports = set(mi["ports"])
+
+    parent = {}
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        # keep a PORT as the root so the port name survives the merge
+        if rb in ports and ra not in ports:
+            ra, rb = rb, ra
+        parent[rb] = ra
+
+    drop_masters, handled = set(), False
+    for it in mi["instances"]:
+        if it["master"] not in PASSIVE_CELLS:
+            continue
+        nets = (list(it["conns"]["named"].values()) if it["conns"]["named"]
+                else (it["conns"]["pos"] or []))
+        nets = [n.strip() for n in nets]
+        if len(nets) != 2:
+            warns.append("module '%s': %s '%s' is not 2-terminal (nets=%s) -> left "
+                         "in place (stubbed)" % (mi["module"], it["master"], it["inst"], nets))
+            continue
+        a, b = nets
+        if "[" in a or "[" in b:
+            warns.append("module '%s': %s '%s' on a bus bit -> left in place (stubbed)"
+                         % (mi["module"], it["master"], it["inst"]))
+            continue
+        ga, gb = _is_ground(a), _is_ground(b)
+        if ga and gb:
+            report.append((mi["module"], it["inst"], it["master"], "both grounded -> dropped"))
+        elif ga or gb:
+            report.append((mi["module"], it["inst"], it["master"],
+                           "shunt to %s -> opened" % (a if ga else b)))
+        else:
+            union(a, b)
+            report.append((mi["module"], it["inst"], it["master"],
+                           "series -> shorted (%s = %s)" % (a, b)))
+        drop_masters.add(it["master"])
+        handled = True
+
+    if not handled:
+        return text
+    rename = {n: find(n) for n in list(parent) if find(n) != n}
+
+    # statement-level surgery on the module body (keeps the header/port list intact)
+    m = re.search(r'(.*?\)\s*;)(.*)(\bendmodule\b.*)', text, re.S)
+    if not m:
+        return strip_instances(text, drop_masters)   # fallback: at least drop them
+    header, body, tail = m.group(1), m.group(2), m.group(3)
+    body = vp.strip_comments(body)   # avoid stray ';' in comments breaking the split
+    NETKW = re.compile(r'^\s*(wire|wreal|electrical|tri|reg|logic)\b\s*(\[[^\]]*\])?\s*(.*)$', re.S)
+    DIR = re.compile(r'^\s*(input|output|inout)\b')
+    out_stmts = []
+    for raw in vp.split_statements(body):
+        stmt = raw
+        it = vp.parse_instance(vp.strip_comments(stmt))
+        if it and it["master"] in drop_masters:
+            continue                                  # drop the passive instance
+        dm = NETKW.match(stmt)
+        if dm and not DIR.match(stmt):                # a plain net decl -> drop merged-away names
+            kw, rng, names = dm.group(1), dm.group(2) or "", dm.group(3)
+            keep = [nm.strip() for nm in names.split(",")
+                    if nm.strip() and nm.strip() not in rename]
+            if not keep:
+                continue                              # whole decl was merged away
+            out_stmts.append("  %s %s%s" % (kw, (rng + " ") if rng else "", ", ".join(keep)))
+            continue
+        for src, dst in rename.items():               # remap nets used in instance conns
+            stmt = re.sub(r'\b%s\b' % re.escape(src), dst, stmt)
+        if stmt.strip():
+            out_stmts.append(stmt.rstrip())
+    new_body = "\n" + ";\n".join(s.strip() for s in out_stmts) + ";\n"
+    return header + new_body + tail
+
+
 def strip_instances(text, drop_masters):
     """Remove every instance statement whose master is in drop_masters (balanced)."""
     if not drop_masters:
@@ -323,12 +436,15 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     forced_va = {c for (lb, c), v in cfg.get("cell_bindings", {}).items()
                  if v == "veriloga"}
 
-    # first pass: who has real instances (ignoring pin/stimulus artifacts)?
+    passive_report = []   # (module, inst, master, action) from short_passives
+
+    # first pass: who has real instances (ignoring pin/stimulus/passive artifacts)?
     structural = {}
     for nm, tx in blocks:
         insts = instances_of(tx)
         real = [(mas, ins) for mas, ins in insts
-                if mas not in PIN_CELLS and mas not in STIMULUS_CELLS]
+                if mas not in PIN_CELLS and mas not in STIMULUS_CELLS
+                and mas not in PASSIVE_CELLS]
         structural[nm] = real
 
     drop_arti = PIN_CELLS | STIMULUS_CELLS
@@ -342,6 +458,12 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     for nm, tx in blocks:
         if nm in drop_arti:
             classes[nm] = "pin" if nm in PIN_CELLS else "stimulus"
+            continue
+        if nm in PASSIVE_CELLS:
+            # a 2-terminal passive primitive's own (empty) interface -> not a
+            # neighbor to verify; short_passives removes its instances, so its
+            # def is simply dropped (never stubbed, never gathered).
+            classes[nm] = "passive"
             continue
         forced = nm in forced_va
         if structural[nm] and not forced:
@@ -374,6 +496,9 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     for nm, tx in blocks:
         if classes.get(nm) != "structural":
             continue
+        # short series passives / open shunt-to-gnd FIRST (merges nets), then drop
+        # pin/stimulus artifacts, then normalize to wreal.
+        tx = short_passives(tx, warnings, passive_report)
         kept.append(wrealize(strip_instances(tx, drop_arti), warnings))
 
     # is the targeted top a pin-only stub?  (its def survives but has no real instances)
@@ -434,6 +559,8 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         "external_modules": ext_records,
         "ext_env": {k: env.get(k, []) for k in ("lib_files", "lib_dirs", "inc_dirs")},
         "stripped": {"pins": pin_seen, "stimulus": stim_seen},
+        "passives": [{"module": m, "inst": i, "master": ms, "action": ac}
+                     for (m, i, ms, ac) in passive_report],
         "top_is_pin_only_stub": bool(top_is_stub),
         "warnings": warnings,
     }
@@ -497,6 +624,11 @@ def render_summary(manifest):
             L.append("  -y %s" % d)
         for d in env.get("inc_dirs", []):
             L.append("  +incdir+%s" % d)
+    if manifest.get("passives"):
+        L.append("")
+        L.append("PASSIVES (analogLib 2-terminal, removed from the signal path):")
+        for p in manifest["passives"]:
+            L.append("  - %-12s in %-14s %s" % (p["inst"], p["module"], p["action"]))
     st = manifest["stripped"]
     if st["pins"] or st["stimulus"]:
         L.append("")

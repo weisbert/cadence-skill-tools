@@ -112,6 +112,13 @@
         (close port)
         out))))
 
+; Write a string to a file (overwriting). Returns t / nil.
+(defun vh_writeFile (path str "tg")
+  (let ((port (outfile path "w")))
+    (cond
+      ((null port) nil)
+      (t (fprintf port "%s" (or str "")) (close port) t))))
+
 ; Last non-empty line of a log, trimmed + capped -- used for the Status line.
 (defun vh_lastLine (txt "t")
   (let (lines last)
@@ -335,6 +342,89 @@
   t)
 
 ; ---------------------------------------------------------------------------
+; [Scan Pins] -- scan the DUT cellview's terminals (name + input/output/inout
+; + bus range) and hand the list back three ways: onto the clipboard (paste it
+; straight to me as the basis for the testbench), to a <cell>_pins.txt file, and
+; to the CIW. Reuses dreg_gen's dgenScanPins when present (bus<hi:lo> merge);
+; falls back to a self-contained scalar scan otherwise.
+; ---------------------------------------------------------------------------
+
+; Normalize an OA terminal direction to input/output/inout.
+(defun vh_normDir (d "g")
+  (cond
+    ((equal d "input")  "input")
+    ((equal d "output") "output")
+    ((member d (list "inputOutput" "inout" "io")) "inout")
+    (t (or d "inout"))))
+
+; Self-contained fallback scan (scalar only, no bus merge) -- used if dreg_gen's
+; dgenScanPins isn't loaded. Returns dgenScanPins-shaped descriptors.
+(defun vh_scanPinsLocal (lib cell view "ttt")
+  (let (cv out)
+    (setq cv (dbOpenCellViewByType lib cell view nil "r"))
+    (unless cv (error (strcat "vh_scanPins: cannot open " lib "/" cell "/" view)))
+    (foreach term cv~>terminals
+      (setq out (cons (list nil 'name term~>name 'isBus nil
+                            'srcDirection (or term~>direction "inout")) out)))
+    (dbClose cv)
+    (reverse out)))
+
+; Pin descriptors for lib/cell/view (dgenScanPins if available, else local).
+(defun vh_scanPins (lib cell view "ttt")
+  (if (getd 'dgenScanPins) (dgenScanPins lib cell view)
+    (vh_scanPinsLocal lib cell view)))
+
+; Format the descriptors into a paste-friendly, parseable table.
+(defun vh_fmtPins (descs lib cell view "lttt")
+  (let (plines)
+    (foreach d descs
+      (let (nm bus)
+        (setq nm (get d 'name))
+        (setq bus (if (get d 'isBus)
+                      (sprintf nil "<%d:%d>" (get d 'busHi) (get d 'busLo)) ""))
+        (setq plines (cons (sprintf nil "%-24s %s"
+                             (strcat nm bus) (vh_normDir (get d 'srcDirection))) plines))))
+    (buildString
+      (append
+        (list (sprintf nil "# pins  %s/%s:%s  (%d)" lib cell view (length descs))
+              (sprintf nil "# %-22s %s" "name" "dir"))
+        (reverse plines))
+      "\n")))
+
+(defun vh_scanPinsCB (form "g")
+  (let (lib cell view descs txt out path)
+    (setq lib  (vh_str form->vh_srcLib->value))
+    (setq cell (vh_str form->vh_srcCell->value))
+    (setq view (vh_str form->vh_srcView->value))
+    (when (equal view "") (setq view "symbol"))
+    (cond
+      ((or (equal lib "") (equal cell ""))
+        (vh_setStatus form "set Source Lib + Cell first (or Select from Schematic)"))
+      ((null (ddGetObj lib cell))
+        (vh_setStatus form (sprintf nil "%s/%s not found" lib cell)))
+      (t
+        (setq descs (car (errset (vh_scanPins lib cell view) t)))
+        ; pins live on the symbol -- if the chosen view has none, retry symbol
+        (when (and (null descs) (nequal view "symbol"))
+          (setq descs (car (errset (vh_scanPins lib cell "symbol") t)))
+          (when descs (setq view "symbol")))
+        (cond
+          ((null descs)
+            (vh_setStatus form
+              (sprintf nil "no pins on %s/%s (try a symbol/schematic view)" lib cell)))
+          (t
+            (setq txt (vh_fmtPins descs lib cell view))
+            (printf "%s\n" txt)                          ; CIW
+            (errset (hiSetClipboard txt) t)              ; clipboard
+            (setq out (vh_str form->vh_out->value))
+            (setq path (strcat (if (equal out "") "/tmp" out) "/" cell "_pins.txt"))
+            (errset (vh_writeFile path txt) t)           ; file export
+            (vh_setStatus form
+              (sprintf nil "scanned %d pins -> clipboard + %s (+ CIW)"
+                (length descs) path))))))
+    t))
+
+; ---------------------------------------------------------------------------
 ; [Select from Schematic] -- interactive instance pick (copied from
 ; dgenGui.il's enterPoint + dbGetOverlaps hit-test, which is the proven path:
 ; enterPoint only captures a COORDINATE, so we hit-test it to find the
@@ -462,7 +552,7 @@
   t)
 
 (defun vh_guiBuild ()
-  (let (fLib fCell fView fSel fBrowse
+  (let (fLib fCell fView fSel fBrowse fScan
         fCfg fCds fNet fOut fChecks fTb fBwrite fExt fAddLib fShow
         fA fB fC fRun fD fStatus
         form fieldW promptW rowH sizePt btnH preDir)
@@ -480,6 +570,8 @@
                     ?callback "(vh_selSchemCB (vh_curForm))"))
     (setq fBrowse (hiCreateButton ?name 'vh_btnBrowse ?buttonText "Browse Library..."
                     ?callback "(vh_browseCB (vh_curForm))"))
+    (setq fScan   (hiCreateButton ?name 'vh_btnScan ?buttonText "Scan Pins"
+                    ?callback "(vh_scanPinsCB (vh_curForm))"))
     ; ----- inputs -----
     (setq fCfg (hiCreateFileSelectorField ?name 'vh_cfg ?mode 'existingFile
                  ?prompt "config (expand.cfg)" ?value ""))
@@ -530,8 +622,9 @@
         (list fLib    (list 0 0)    sizePt promptW)
         (list fCell   (list 0 28)   sizePt promptW)
         (list fView   (list 0 56)   sizePt promptW)
-        (list fSel    (list 0 88)   (list 180 btnH) 0)
-        (list fBrowse (list 190 88) (list 150 btnH) 0)
+        (list fSel    (list 0 88)   (list 160 btnH) 0)
+        (list fBrowse (list 165 88) (list 130 btnH) 0)
+        (list fScan   (list 300 88) (list 110 btnH) 0)
         (list fCfg    (list 0 124)  sizePt promptW)
         (list fCds    (list 0 152)  sizePt promptW)
         (list fNet    (list 0 180)  sizePt promptW)
