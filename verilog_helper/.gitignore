@@ -1,5 +1,6 @@
 # generated per-run artifacts and python caches
 examples/*/build/
+examples/*/build*/
 __pycache__/
 *.pyc
 xcelium.d/

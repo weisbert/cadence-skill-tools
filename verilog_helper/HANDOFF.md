@@ -86,6 +86,13 @@ proven runnable via a captured-netlist fixture. Decisions baked into `vh_extract
    netlist without OA. This is how `examples/schem_nested` runs end-to-end here.
 6. **cds.lib** parsed recursively (DEFINE + INCLUDE + SOFTINCLUDE) → lib→path map; leaf
    `.va` resolved at `<libpath>/<cell>/veriloga/veriloga.va`.
+7. **External HDL resolution (`vh_env.py`)**: the tool owns a remembered list of `-v`
+   library files / `-y` dirs / `+incdir` (user-level `~/.config/verilog_helper/env.json`,
+   per-run `--ext-lib/--ext-dir/--ext-inc` override). Stage A parses those files; an
+   external **found** there is RESOLVED (real def compiled by xrun via `-v`, not stubbed)
+   and flagged analog/wreal; **not found** → Stage C stubs it. `vh_gen` skips stubbing
+   resolved externals and bakes the `-v/-y/+incdir` (and `+libext+.v`) into `run.sh`.
+   This replaces the earlier (wrong) `.scs ahdl_include` plan — see §6.4.
 - Side fixes this surfaced: `vh_parse` now tolerates combined port decls
   (`input wreal x;`); `vh_gen.gen_stub` multi-output `_const` bug fixed.
 
@@ -168,21 +175,28 @@ dev(linux8, this box) ──git push──▶ GitHub ──git pull──▶ yel
 1. **Pure-digital only, no spectre.** Verified achievable for wreal designs.
 2. **Voltage-only** functional checks (no current).
 3. **config scope = the DUT only** (not a full TB).
-4. **External binding** = some cells bind to a std/external file whose path lives in the
-   sim file (on this box the concrete mechanism is `.scs` `ahdl_include "<path>"`; real
-   flow may also use `hdl.var` / `amsControl` / xrun `-v`). Stage A must resolve these.
+4. **External binding** = some cells reference a std/external HDL file. The REAL place
+   this path lives (user-confirmed 2026-06-25, correcting an earlier `.scs ahdl_include`
+   guess) is **AMS Options -> Include Option Settings -> Library Files (`-v`)** in an AMS
+   testbench, e.g. `…/workarea/ams_models/L16_SVT_ana.v` (= xrun `-v`). BUT the user runs
+   ordinary (non-AMS) analyses and will NOT build an AMS TB just to hold these paths.
+   **Decision: the TOOL owns the external include list** — user sets `-v` files / `-y`
+   dirs / `+incdir` once, the tool remembers them (user-level `~/.config/verilog_helper/
+   env.json`, per-run override) and bakes them into the generated `run.sh`. Stage A parses
+   the `-v` files to report which externals are covered (and flags analog ones), falling
+   back to a stub for anything unresolved. (`vh_env.py` manages this; see §3a.)
 5. **Analog DUT** (electrical/analog begin) → **FLAG "needs spectre"**, do NOT digitize to
    "verify" it (circular). Digitize only *neighbors*, and an **ideal stub** usually suffices.
 6. Conversion is **assisted/bounded + non-destructive** (§3), never blind.
 
 ## 7. Open items / next steps
-- [x] **Stage A `vh_extract.py`** — built & verified (see §3a). Remaining refinements:
-      (a) **external file-path resolution** (the `.scs ahdl_include` / `hdl.var` / xrun
-      `-v` mechanism) — deferred until the user supplies a real external-binding config +
-      sim file; today externals are recorded by interface and stubbed by Stage C.
-      (b) honor a `cell … binding :veriloga` override *when the cell also has a schematic*
-      (the dev-box design has no such conflict, so it's coded but untested).
-      (c) bus/vector ports flow through as-is + warn (scalar-wreal only end-to-end).
+- [x] **Stage A `vh_extract.py`** — built & verified (see §3a).
+- [x] **External HDL resolution `vh_env.py`** — built & verified: remembered `-v`/`-y`/
+      `+incdir` env; externals resolved-or-stubbed; flags analog; baked into `run.sh`.
+      (Replaces the wrong `.scs` plan — real location is AMS Options Library Files; §6.4.)
+      Remaining Stage-A refinements: (a) honor `cell … binding :veriloga` *when the cell
+      also has a schematic* (coded, untested — dev-box design has no such conflict);
+      (b) bus/vector ports flow through as-is + warn (scalar-wreal only end-to-end).
 - [ ] **Stage B `vh_convert.py`**: pattern-matching analog→wreal per §3. (The real leaves
       `ldo_core_pll/vco/vref_bias` are analog `electrical`/`analog begin` → prime B input.)
 - [ ] **Stage D**: make `run.sh` env-agnostic; wire `airgap_deploy_template`; red preflight.

@@ -18,6 +18,7 @@ import sys, os, re, json, argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vh_parse as vp
+import vh_env as ve
 
 XCELIUM_HOME = "/home/yusheng/Program/eda/cadence/XCELIUM1803"
 CDS_LIC_FILE = "/home/yusheng/Program/eda/cadence/license/license.dat"
@@ -196,11 +197,19 @@ def gen_tb(top, index, checks):
     return '\n'.join(L) + '\n', warns
 
 
-def gen_runsh(top, src_files, stub_files, tb_file):
+def gen_runsh(top, src_files, stub_files, tb_file, ext_flags=None):
     files = src_files + stub_files + [tb_file]
     flines = ' \\\n  '.join('"%s"' % f for f in files)
+    extl = ''
+    if ext_flags:
+        # quote bare path args (-v <file> / -y <dir>); leave +incdir+/+... tokens as-is
+        q = []
+        for tok in ext_flags:
+            q.append(tok if tok.startswith(('-', '+')) else '"%s"' % tok)
+        extl = '  ' + ' '.join(q) + ' \\\n'
     return """#!/usr/bin/env bash
 # AUTO-GENERATED. Pure-digital VerilogAMS run via xrun (no spectre).
+# External library files/dirs come from the tool-remembered env (vh_env).
 set -uo pipefail
 export XCELIUM_HOME=%s
 export CDS_LIC_FILE=%s
@@ -210,8 +219,8 @@ rm -rf xcelium.d INCA_libs .simvision waves.shm xrun.log xrun.key
 
 xrun -64bit -ams -timescale 1s/1fs \\
   -amsvlog_ext .vams,.va \\
-  %s \\
-  -top tb -access +rwc +libext+.va+.vams \\
+%s  %s \\
+  -top tb -access +rwc +libext+.v+.va+.vams \\
   -l xrun.log
 rc=$?
 
@@ -219,7 +228,7 @@ echo "================= RESULT ================="
 grep -E "=== TB (PASS|FAIL)|^FAIL " xrun.log || echo "(no PASS/FAIL line -- check xrun.log)"
 echo "xrun exit code: $rc"
 exit $rc
-""" % (XCELIUM_HOME, CDS_LIC_FILE, flines)
+""" % (XCELIUM_HOME, CDS_LIC_FILE, extl, flines)
 
 
 SIM_TCL = """# Optional waveform dump (batch or GUI). Use:  ./run.sh  then  simvision waves.shm
@@ -230,16 +239,22 @@ exit
 """
 
 
-def inst_tree(master, index, indent=1):
+def inst_tree(master, index, indent=1, resolved=None):
+    resolved = resolved or {}
     pad = '    ' * indent
     out = []
     if master in index:
         for it in index[master]['instances']:
             m = it['master']
-            tag = '' if m in index else '   <-- EXTERNAL (stubbed)'
-            kind = ('[%s]' % index[m]['kind']) if m in index else '[external]'
+            if m in index:
+                tag, kind = '', '[%s]' % index[m]['kind']
+            elif m in resolved:
+                tag = '   <-- EXTERNAL (resolved via %s)' % os.path.basename(resolved[m]['file'])
+                kind = '[external:%s]' % resolved[m]['kind']
+            else:
+                tag, kind = '   <-- EXTERNAL (stubbed)', '[external]'
             out.append('%s* %s : %s %s%s' % (pad, it['inst'], m, kind, tag))
-            out += inst_tree(m, index, indent + 1)
+            out += inst_tree(m, index, indent + 1, resolved)
     return out
 
 
@@ -249,10 +264,37 @@ def main():
     ap.add_argument('--out', required=True, help='output/build directory')
     ap.add_argument('--top', help='top DUT module (default: unique top in the graph)')
     ap.add_argument('--checks', help='JSON {output: expected-expr-in-terms-of-inputs}')
+    ap.add_argument('--manifest', help='Stage-A manifest_A.json (default: auto-find near --src)')
+    ap.add_argument('--ext-lib', action='append', default=[], help='external -v file (per-run)')
+    ap.add_argument('--ext-dir', action='append', default=[], help='external -y dir (per-run)')
+    ap.add_argument('--ext-inc', action='append', default=[], help='external +incdir dir (per-run)')
     args = ap.parse_args()
 
     files, mods, index, dups = vp.parse_files(args.src)
     g = vp.build_graph(mods, index)
+
+    # external HDL env: explicit --ext-* > Stage-A manifest ext_env > remembered store
+    env = {k: [] for k in ('lib_files', 'lib_dirs', 'inc_dirs')}
+    mpath = args.manifest
+    if not mpath:
+        for s in args.src:
+            cand = os.path.join(s if os.path.isdir(s) else os.path.dirname(s),
+                                os.pardir, 'manifest_A.json')
+            if os.path.isfile(cand):
+                mpath = cand
+                break
+    if args.ext_lib or args.ext_dir or args.ext_inc:
+        ve.merge(env, lib_files=args.ext_lib, lib_dirs=args.ext_dir, inc_dirs=args.ext_inc)
+    elif mpath and os.path.isfile(mpath):
+        try:
+            me = json.load(open(mpath)).get('ext_env', {})
+            for k in env:
+                env[k] = list(me.get(k, []))
+        except (ValueError, OSError):
+            pass
+    if ve.is_empty(env):
+        env = ve.load_env()
+    ext_index = ve.index_modules(env)
 
     # pick top
     if args.top:
@@ -266,6 +308,13 @@ def main():
 
     externals = g['externals']
     ext_ports = infer_external_dirs(index, externals)
+    # externals provided by the remembered env are RESOLVED (xrun -v compiles them);
+    # only the rest get an auto-stub.
+    resolved = {e: ext_index[e] for e in externals if e in ext_index}
+    to_stub = [e for e in externals if e not in resolved]
+    ext_warns = ["external '%s' resolves to an ANALOG model (%s) -> needs spectre; "
+                 "pure-digital xrun cannot solve it" % (e, resolved[e]['file'])
+                 for e in resolved if resolved[e]['kind'] == 'analog']
 
     checks = {}
     if args.checks:
@@ -275,9 +324,9 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     src_files = [os.path.abspath(f) for f in files]
 
-    # stubs
+    # stubs (only for externals NOT provided by the env)
     stub_files = []
-    for e in externals:
+    for e in to_stub:
         stub = gen_stub(e, ext_ports[e])
         path = os.path.join(args.out, 'stub_%s.vams' % e)
         open(path, 'w').write(stub)
@@ -289,24 +338,29 @@ def main():
     open(tb_path, 'w').write(tb_src)
 
     # run.sh + sim.tcl
+    ext_flags = ve.xrun_flags(env)
     runsh = os.path.join(args.out, 'run.sh')
-    open(runsh, 'w').write(gen_runsh(top, src_files, stub_files, os.path.abspath(tb_path)))
+    open(runsh, 'w').write(gen_runsh(top, src_files, stub_files, os.path.abspath(tb_path),
+                                     ext_flags=ext_flags))
     os.chmod(runsh, 0o755)
     open(os.path.join(args.out, 'sim.tcl'), 'w').write(SIM_TCL)
 
     # manifest
     existing = sorted(m for m in g['used'] if m in index)
     tree = ['%s : %s [%s]  (TOP)' % (top, index[top]['file'], index[top]['kind'])]
-    tree += inst_tree(top, index)
+    tree += inst_tree(top, index, resolved=resolved)
     manifest = {
         'top': top, 'top_file': index[top]['file'],
         'existing_verilogams': [{'module': m, 'file': index[m]['file'], 'kind': index[m]['kind']}
                                 for m in existing],
-        'external_verilogams': [{'module': e, 'inferred_ports': ext_ports[e],
-                                 'stub': 'stub_%s.vams' % e} for e in externals],
+        'external_resolved': [{'module': e, 'file': resolved[e]['file'],
+                               'kind': resolved[e]['kind']} for e in sorted(resolved)],
+        'external_stubbed': [{'module': e, 'inferred_ports': ext_ports[e],
+                              'stub': 'stub_%s.vams' % e} for e in to_stub],
+        'ext_flags': ext_flags,
         'duplicates': [{'module': n, 'ignored_file': f2, 'kept_file': f1} for n, f2, f1 in dups],
         'tb': os.path.basename(tb_path), 'run': 'run.sh',
-        'checks': checks, 'tb_warnings': tb_warns,
+        'checks': checks, 'tb_warnings': tb_warns + ext_warns,
         'instance_tree': tree,
     }
     json.dump(manifest, open(os.path.join(args.out, 'manifest.json'), 'w'), indent=2)
@@ -325,13 +379,26 @@ def main():
     for m in existing:
         out.append("  - %-14s %s" % (m, index[m]['file']))
     out.append("")
-    out.append("EXTERNAL verilogams (undefined -> auto-stubbed):")
-    if externals:
-        for e in externals:
+    out.append("EXTERNAL resolved via env (-v, real def used by xrun):")
+    if resolved:
+        for e in sorted(resolved):
+            out.append("  - %-14s %s [%s]" % (e, os.path.basename(resolved[e]['file']),
+                                              resolved[e]['kind']))
+    else:
+        out.append("  (none)")
+    out.append("")
+    out.append("EXTERNAL undefined -> auto-stubbed:")
+    if to_stub:
+        for e in to_stub:
             pd = ", ".join("%s:%s" % (p, d) for p, d in ext_ports[e].items())
             out.append("  - %-14s ports{ %s }  -> stub_%s.vams" % (e, pd, e))
     else:
         out.append("  (none)")
+    if ext_flags:
+        out.append("")
+        out.append("EXTERNAL ENV baked into run.sh:  %s" % " ".join(ext_flags))
+    for w in ext_warns:
+        tb_warns.append(w)
     if dups:
         out.append("")
         out.append("DUPLICATE module defs (first kept):")
@@ -344,7 +411,7 @@ def main():
             out.append("  ! " + w)
     out.append("")
     out.append("GENERATED in %s :" % args.out)
-    for f in ['tb_%s.vams' % top] + ['stub_%s.vams' % e for e in externals] + ['run.sh', 'sim.tcl', 'manifest.json']:
+    for f in ['tb_%s.vams' % top] + ['stub_%s.vams' % e for e in to_stub] + ['run.sh', 'sim.tcl', 'manifest.json']:
         out.append("  - %s" % f)
     out.append("")
     out.append("RUN:  bash %s" % runsh)

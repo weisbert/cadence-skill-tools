@@ -34,6 +34,7 @@ import sys, os, re, json, argparse, subprocess, shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vh_parse as vp
+import vh_env as ve
 
 # --- OA / Spectre env for oa2verilog on this RHEL8 box (see oa2verilog-rhel8-recipe) ---
 DEFAULT_ENV_SH = "/home/yusheng/cadence_work/Test/workarea/LDO_modeling/cadence/env.sh"
@@ -304,10 +305,17 @@ def has_schematic(cell, libs):
 # --------------------------------------------------------------------------- #
 # main extraction                                                             #
 # --------------------------------------------------------------------------- #
-def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None):
-    """Process a raw oa2verilog netlist into clean top + gathered leaves + manifest dict."""
+def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None,
+            env=None, ext_index=None):
+    """Process a raw oa2verilog netlist into clean top + gathered leaves + manifest dict.
+
+    env/ext_index (optional): the remembered external HDL environment and its
+    {module: {file,kind}} index. Externals found in it are RESOLVED (left for xrun
+    to compile via -v, not stubbed); the rest are recorded for Stage C to stub."""
     warnings = warnings if warnings is not None else []
     cfg = cfg or {}
+    env = env or {k: [] for k in ("lib_files", "lib_dirs", "inc_dirs")}
+    ext_index = ext_index or {}
     preamble, blocks = split_modules(raw_netlist)
     by_name = {nm: tx for nm, tx in blocks}
 
@@ -395,7 +403,8 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
               % (lib, cell, view))
     open(clean_path, "w").write(header + "\n\n".join(kept) + ("\n" if kept else ""))
 
-    # classify external port dirs from their oa2verilog interface (symbol-accurate)
+    # classify external port dirs from their oa2verilog interface (symbol-accurate),
+    # and resolve each against the remembered external HDL env (-v library files).
     ext_records = []
     for e in externals:
         mods = vp.parse_text(e["interface"])
@@ -404,7 +413,14 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
             mi = mods[0]
             for p in mi["ports"]:
                 ports[p] = mi["dirs"].get(p, ("inout", ""))[0]
-        ext_records.append({"module": e["module"], "ports": ports})
+        hit = ext_index.get(e["module"])
+        resolved = ({"file": hit["file"], "kind": hit["kind"]} if hit else None)
+        ext_records.append({"module": e["module"], "ports": ports, "resolved": resolved})
+        if resolved and resolved["kind"] == "analog":
+            warnings.append(
+                "external '%s' resolves to an ANALOG model (%s) -> pure-digital xrun "
+                "cannot solve its electrical nodes (needs spectre); provide a wreal "
+                "model or let Stage C stub it." % (e["module"], resolved["file"]))
 
     manifest = {
         "stage": "A",
@@ -416,6 +432,7 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         "clean_top": os.path.relpath(clean_path, out_dir),
         "veriloga_leaves": gathered,
         "external_modules": ext_records,
+        "ext_env": {k: env.get(k, []) for k in ("lib_files", "lib_dirs", "inc_dirs")},
         "stripped": {"pins": pin_seen, "stimulus": stim_seen},
         "top_is_pin_only_stub": bool(top_is_stub),
         "warnings": warnings,
@@ -458,13 +475,28 @@ def render_summary(manifest):
     else:
         L.append("  (none)")
     L.append("")
-    L.append("EXTERNAL MODULES (undefined -> Stage C will stub):")
+    L.append("EXTERNAL MODULES:")
     if manifest["external_modules"]:
         for e in manifest["external_modules"]:
             pd = ", ".join("%s:%s" % (p, dr) for p, dr in e["ports"].items()) or "(no ports)"
-            L.append("  - %-16s { %s }" % (e["module"], pd))
+            r = e.get("resolved")
+            if r:
+                tag = "-> RESOLVED via %s [%s]" % (os.path.basename(r["file"]), r["kind"])
+            else:
+                tag = "-> (no -v match) Stage C will STUB"
+            L.append("  - %-16s { %s }  %s" % (e["module"], pd, tag))
     else:
         L.append("  (none)")
+    env = manifest.get("ext_env", {})
+    if env.get("lib_files") or env.get("lib_dirs") or env.get("inc_dirs"):
+        L.append("")
+        L.append("EXTERNAL ENV (remembered; baked into Stage C run.sh):")
+        for f in env.get("lib_files", []):
+            L.append("  -v %s" % f)
+        for d in env.get("lib_dirs", []):
+            L.append("  -y %s" % d)
+        for d in env.get("inc_dirs", []):
+            L.append("  +incdir+%s" % d)
     st = manifest["stripped"]
     if st["pins"] or st["stimulus"]:
         L.append("")
@@ -490,6 +522,16 @@ def main():
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--netlist", help="reuse a pre-made oa2verilog .v (skip OA)")
     ap.add_argument("--env-sh", default=DEFAULT_ENV_SH, help="Cadence env.sh to source for oa2verilog")
+    ap.add_argument("--ext-lib", action="append", default=[],
+                    help="external HDL library file (xrun -v); repeatable, remembered")
+    ap.add_argument("--ext-dir", action="append", default=[],
+                    help="external HDL library dir (xrun -y); repeatable, remembered")
+    ap.add_argument("--ext-inc", action="append", default=[],
+                    help="external +incdir dir; repeatable, remembered")
+    ap.add_argument("--ext-clear", action="store_true",
+                    help="start from an empty external env (ignore the remembered one)")
+    ap.add_argument("--no-remember", action="store_true",
+                    help="use --ext-* for this run only; do not persist them")
     args = ap.parse_args()
 
     warnings = []
@@ -522,6 +564,15 @@ def main():
         warnings.append("design lib '%s' not in cds.lib (%s); leaf lookup may miss it"
                         % (lib, cdslib))
 
+    # remembered external HDL env (+ per-run --ext-* overrides)
+    env = {k: [] for k in ("lib_files", "lib_dirs", "inc_dirs")} if args.ext_clear \
+        else ve.load_env()
+    if args.ext_lib or args.ext_dir or args.ext_inc:
+        ve.merge(env, lib_files=args.ext_lib, lib_dirs=args.ext_dir, inc_dirs=args.ext_inc)
+        if not args.no_remember:
+            ve.save_env(env)
+    ext_index = ve.index_modules(env, warn=warnings)
+
     os.makedirs(args.out, exist_ok=True)
 
     # phase 1: get a netlist
@@ -534,7 +585,8 @@ def main():
             sys.exit("ERROR: oa2verilog failed:\n" + msg)
         raw = open(raw_v, errors="replace").read()
 
-    manifest, clean = extract(lib, cell, view, libs, raw, args.out, cfg=cfg, warnings=warnings)
+    manifest, clean = extract(lib, cell, view, libs, raw, args.out, cfg=cfg,
+                              warnings=warnings, env=env, ext_index=ext_index)
     json.dump(manifest, open(os.path.join(args.out, "manifest_A.json"), "w"), indent=2)
     text = render_summary(manifest)
     open(os.path.join(args.out, "manifest_A.txt"), "w").write(text + "\n")

@@ -27,6 +27,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_parse.py` | VerilogA static parser (ports/dirs/disciplines/instances+connections) + graph (top/leaf/external/dups); also an inventory CLI | ✅ working |
 | `vh_gen.py`   | Stage C: hierarchy → wreal stub per external + self-checking TB + run.sh + sim.tcl + manifest | ✅ working |
 | `vh_extract.py` | Stage A: config (cds.lib+expand.cfg) → oa2verilog hierarchy → clean structural top + gathered `.va` leaves + external interfaces + manifest | ✅ working |
+| `vh_env.py`     | tool-remembered **external HDL env** (`-v` lib files / `-y` dirs / `+incdir`); resolves externals & bakes into `run.sh` | ✅ working |
 | `vh_convert.py` | Stage B: analog `.va` → wreal `.v` (pattern catalog) | ⏳ TODO |
 | `vhGui.il`      | thin SKILL GUI (select-from-schematic → config → folder → Extract) | ⏳ TODO |
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
@@ -70,6 +71,27 @@ Stage A strips OA pin artifacts (`ipin/opin/iopin`) and analogLib TB stimulus
 stub DUT ("nothing to verify"), gathers veriloga leaves as `.va`, records external
 modules (with oa2verilog-accurate port directions) for Stage C to stub, and writes a
 wreal-normalized structural top to `<dir>/export/` plus `manifest_A.{json,txt}`.
+
+## External HDL env (vh_env) — where the `-v` library files live
+
+External cells (the design instantiates them but their bodies live in a shared HDL
+library, e.g. `…/workarea/ams_models/L16_SVT_ana.v`) are normally pointed at via an AMS
+testbench's *Library Files (-v)*. To avoid building an AMS TB just for that, **the tool
+remembers the list itself** (user-level `~/.config/verilog_helper/env.json`):
+
+```bash
+python3 vh_env.py add-lib /path/ams_models/L16_SVT_ana.v   # remember a -v library file
+python3 vh_env.py add-dir /path/some_lib                    # remember a -y library dir
+python3 vh_env.py add-inc /path/includes                    # remember a +incdir dir
+python3 vh_env.py show                                      # list + which modules it provides
+python3 vh_env.py remove <path> | clear
+```
+
+Once remembered, `vh_extract`/`vh_gen` use it automatically: an external **found** in a
+`-v` file is **resolved** (its real def is compiled by xrun via `-v`, not stubbed) and
+flagged `[analog]`/`[wreal]`; anything **not** found falls back to an auto-stub. Per-run
+override on either tool: `--ext-lib <file> --ext-dir <dir> --ext-inc <dir>`
+(`--no-remember` to not persist, `--ext-clear` to ignore the remembered set).
 
 xrun env on the dev box: `source <workarea>/Verilog_check/setup_xcelium.sh` (or let
 `run.sh` set it). See **HANDOFF.md** for the full context, env recipes, and decisions.
