@@ -48,7 +48,11 @@ D  package via airgap_deploy_template → red-zone verify.sh runs pure-digital x
   `sim_yusheng/Test_PMU` config (TB-stimulus stripped & warned, `--cell PMU_top` flags
   the pin-only stub) and end-to-end on `examples/schem_nested` (Stage A→C→xrun = PASS).
   See §3a for the decisions this surfaced.
-- **B:** not built. Pattern catalog locked (§3).
+- **B:** **built & verified** — `vh_convert.py`. Detection list + bounded analog→wreal +
+  non-destructive candidate beside each cell. Verified on the real leaves (dreg_Test_cell
+  → CONVERTED, the LDO/bias models → FLAGGED skeleton) and end-to-end on
+  `examples/analog_leaf` (Stage A→B→C→xrun = PASS, analog gain `V(o)<+k*V(i)` → `assign
+  o=k*i`, `out=3*in`). Decisions in §3b.
 - **C:** **built & verified** — `vh_parse.py` + `vh_gen.py`. `examples/nested_chain`
   runs end-to-end to `=== TB PASS ===` (exit 0): top `chain`→`preproc`→{scaler,summer};
   `ext_sensor` correctly classified EXTERNAL, its port dirs inferred from connectivity
@@ -117,6 +121,31 @@ spectre-accelerated modeling and are NOT brought into functional checks):
 - **Unrecognized pattern → FLAG, never guess-convert.**
 - **Never overwrite originals.** The "binding" (existing-source vs converted vs stub) is
   recorded in the manifest; converted files are separate artifacts. (No `_bk` overwrite.)
+
+## 3b. Stage-B decisions (as built in `vh_convert.py`, 2026-06-25)
+
+The user's two-cell-version insight: #1 = the ORIGINAL `<cell>/veriloga/veriloga.va` (may
+be analog, **is what ships to the top**); #2 = the digital copy we verify. Verifying #2
+isn't enough — the analog #1 must eventually be replaced. So Stage B's deliverable is:
+
+1. **Detection list** (`manifest_B.{txt,json}`): every cell → `DIGITAL` (no action) /
+   `CONVERTED` / `FLAGGED` (needs manual), with the reason.
+2. **Non-destructive candidate beside the cell**: writes `<cell>/veriloga/veriloga_wreal.va`
+   (chosen by user over a parallel view / `.wreal` suffix). It **never** touches
+   `veriloga.va`; the user reviews + overwrites. `--no-cell-write` opts out.
+3. **`export/` (the verification copy) is updated** to the converted source in `--manifest`
+   mode, so the pure-digital run uses digital. FLAGGED cells leave `export/` analog and the
+   list says the design isn't fully digital-verifiable until the skeleton is filled.
+4. **Convertible = analog block is ONLY `V(node[,ref]) <+ expr`** with expr free of
+   `I()`/`ddt`/`idt`/noise/filters/`@`/`if`/`for`/temp-var assignments. `V(a,b)`→`(a-b)`,
+   `V(a)`→`a`; `V(o,r)<+e` → `assign o = e + r`. Params copied verbatim (keeps real/integer).
+5. **Buses**: `wreal [msb:lsb]` is REJECTED by xrun (`*E,WRERNG Range specification not
+   allowed on wreal`). Per-bit `V(bus[i])<+…` is emitted as an **unpacked wreal array**
+   `wreal bus[msb:lsb];` + `assign bus[i]=…` (verified runnable). The candidate header warns
+   to check the packed-wire↔unpacked-array connection in the real hierarchy.
+6. Real-cell results: **dreg_Test_cell → CONVERTED** (bit-decompose control reg, bus);
+   **ldo_core_pll/vco, vref_bias → FLAGGED** (temp-vars + `I()<+` + `ddt`/`white_noise`) →
+   skeleton with inferred I/O directions (LHS of V/I contributions = outputs) + all params.
 
 ---
 
@@ -197,12 +226,19 @@ dev(linux8, this box) ──git push──▶ GitHub ──git pull──▶ yel
       Remaining Stage-A refinements: (a) honor `cell … binding :veriloga` *when the cell
       also has a schematic* (coded, untested — dev-box design has no such conflict);
       (b) bus/vector ports flow through as-is + warn (scalar-wreal only end-to-end).
-- [ ] **Stage B `vh_convert.py`**: pattern-matching analog→wreal per §3. (The real leaves
-      `ldo_core_pll/vco/vref_bias` are analog `electrical`/`analog begin` → prime B input.)
-- [ ] **Stage D**: make `run.sh` env-agnostic; wire `airgap_deploy_template`; red preflight.
+- [x] **Stage B `vh_convert.py`** — built & verified (see §3b). Remaining: richer pattern
+      coverage if real cells need it (sample/hold, dff with explicit clocks → currently
+      skeleton); verify bus packed-wire↔unpacked-wreal-array connection in a real hierarchy.
+- [ ] **Stage D**: make `run.sh` env-agnostic. **Red-zone facts (preflight done 2026-06-25,
+      see [[xcelium-working-and-gotchas]] / project memory):** red `xrun = 19.04-a001`, the
+      pure-digital wreal smoke PASSed with **zero** spectre license errors (cleaner than dev)
+      and no `*F,INTERR`; **xrun is ambient** in the user's interactive shell. So Stage-D
+      run.sh must NOT hardcode dev's `XCELIUM_HOME/CDS_LIC_FILE/PATH` (that breaks red) —
+      source an optional site env else use ambient xrun. Still need: whether xrun resolves in
+      a non-interactive `bash -c` on red (decides if run.sh must source a site setup).
 - [ ] **GUI `vhGui.il`**: note_helper-style launcher (select-from-schematic + config picker).
-- [ ] Get from user: a real external-binding config + its sim file; red-zone XCELIUM
-      path/version/license + air-gap transfer specifics.
+- [ ] Get from user: the red-zone `-v` external-lib paths + whether they're wreal/electrical;
+      a real DUT cell that actually instantiates leaves; non-interactive xrun-env answer.
 
 ## 8. Memory pointers (Claude Code persistent memory)
 `xcelium-working-and-gotchas`, `oa2verilog-rhel8-recipe`, `verilog-check-project`,

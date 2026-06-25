@@ -1,0 +1,10 @@
+`include "constants.vams"
+`include "disciplines.vams"
+// ANALOG leaf: ideal voltage gain  V(o) = k*V(i).  Stage B should convert this to wreal.
+module ana_gain(i, o);
+  inout i, o;
+  electrical i, o;
+  parameter real k = 3.0;
+  analog
+    V(o) <+ k*V(i);
+endmodule

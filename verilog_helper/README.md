@@ -28,10 +28,11 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_gen.py`   | Stage C: hierarchy → wreal stub per external + self-checking TB + run.sh + sim.tcl + manifest | ✅ working |
 | `vh_extract.py` | Stage A: config (cds.lib+expand.cfg) → oa2verilog hierarchy → clean structural top + gathered `.va` leaves + external interfaces + manifest | ✅ working |
 | `vh_env.py`     | tool-remembered **external HDL env** (`-v` lib files / `-y` dirs / `+incdir`); resolves externals & bakes into `run.sh` | ✅ working |
-| `vh_convert.py` | Stage B: analog `.va` → wreal `.v` (pattern catalog) | ⏳ TODO |
+| `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
 | `vhGui.il`      | thin SKILL GUI (select-from-schematic → config → folder → Extract) | ⏳ TODO |
 | `examples/nested_chain/` | text-nested pure-digital example (`.va` instantiates `.va`), **verified end-to-end PASS** | ✅ |
 | `examples/schem_nested/` | **schematic-nested** example: captured oa2verilog netlist + on-disk veriloga leaves, Stage A→C→xrun **verified PASS** | ✅ |
+| `examples/analog_leaf/` | **Stage-B** example: an analog gain leaf, Stage A→B(convert)→C→xrun **verified PASS** (`out=3*in`) | ✅ |
 
 ## Run the examples (CLI, no GUI)
 
@@ -92,6 +93,23 @@ Once remembered, `vh_extract`/`vh_gen` use it automatically: an external **found
 flagged `[analog]`/`[wreal]`; anything **not** found falls back to an auto-stub. Per-run
 override on either tool: `--ext-lib <file> --ext-dir <dir> --ext-inc <dir>`
 (`--no-remember` to not persist, `--ext-clear` to ignore the remembered set).
+
+## Stage B (vh_convert) — analog cell → digital, non-destructively
+
+The ORIGINAL cell `<cell>/veriloga/veriloga.va` is what ships to the real top and may be
+analog; the thing we verify must be digital. Stage B bridges that:
+
+```bash
+python3 vh_convert.py --manifest <out>/manifest_A.json     # convert Stage A's leaves
+python3 vh_convert.py --src <cell>/veriloga/veriloga.va --out <dir>   # standalone
+```
+For each cell it prints a **detection list** (already-digital / converted / needs-manual)
+and writes a candidate **`veriloga_wreal.va` right next to the original** (it never
+overwrites `veriloga.va` — you review, then copy it over). Voltage-transfer analog
+(`V(o[,r]) <+ expr`, incl. bus `V(bus[i])<+…` → unpacked wreal arrays) is auto-converted
+to `assign`s; anything with `I(…)<+` / `ddt` / noise / temp-vars gets a **TODO skeleton**
+to fill in. In `--manifest` mode the gathered `export/` copy is updated to the digital
+version so the pure-digital run uses it. `--no-cell-write` keeps everything out of the lib.
 
 xrun env on the dev box: `source <workarea>/Verilog_check/setup_xcelium.sh` (or let
 `run.sh` set it). See **HANDOFF.md** for the full context, env recipes, and decisions.
