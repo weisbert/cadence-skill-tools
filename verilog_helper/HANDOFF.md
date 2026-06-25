@@ -85,14 +85,54 @@ literal pixel *display* (`hiDisplayForm`) is left for the user to eyeball from t
   Note: oa2verilog emits ports as the direction decl only (no separate `wire`) — the
   fixture mirrors that (a double `input a; wire a;` would trip wrealize into `*E,DUPIDN`).
 
-**NEXT (real red-zone, in progress):** the FIRST real Stage-C run of `LPBT_NDIV_TOP` hit
-two issues — ① `*E,CUVMUR` (the structural-verilogams gather above, now FIXED — re-run
-Stage A→C) and ② `*E,CUVPOM` "Port name 'en' invalid or multiple connections" in
-`LPBT_NDIV_TOP_struct.vams` (an instance connects `.en(ndiv_en)` to a master whose
-gathered interface lacks/duplicates `en` — a symbol-pin vs verilogams-port mismatch;
-awaiting the struct snippet + that master's port decl to fix). No bus/array errors — the
-bus-aware TB compiled clean. Live status + all decisions in the project memory
-(`…/Verilog-check/memory/verilog-check-project.md`).
+- **Real-design bring-up of `LPBT_NDIV_TOP` — the whole error-class sweep (DONE 2026-06-25,
+  HEAD 8728c8e).** Iterating on the real design surfaced (and fixed, each reproduced in a
+  LOCAL fixture first) a chain of real-world failure classes:
+  1. `*E,CUVMUR` (unresolved `WL_PLL_Ndiv_*`) — caused by (a) the **AMS netlister's
+     `(* integer library_binding="LIB"; *)` attribute** between master & instance names
+     defeating the parser → fixed by stripping `(\*..\*)` in `vp.strip_comments`; (b) a
+     **stale verilogams** for `pll_ndiv_delay_reload` bound to another chip's lib — fixed by
+     **honoring the config viewlist** (descend the schematic for a cell whose verilogams is
+     structural; gather verilogams only for *behavioral* leaves — `verilogams_is_behavioral`).
+  2. `*E,CUVPOM` (port mismatch, `.en`/`.VPP`/`.D`) — `reconcile_ports()` drops instance
+     connections to ports the known child lacks (overlap-guarded; zero-overlap ⇒ wrong-view
+     warn).
+  3. `*E,CUNDCM` (wreal↔logic, 512×) — **the design is logic** (32 logic leaves + 1 cell,
+     `pll_ndiv_div2_tspc`, that only declares its **supply** pins wreal). Fixes: discipline
+     **auto-detect** (logic vs wreal by *functional* leaf discipline — supply-only-wreal = a
+     logic leaf), **don't wrealize a logic design**, **drop wreal SUPPLY pins** in a logic
+     design (`drop_wreal_supply`, `SUPPLY_RE`), and **stubs default to the design discipline**
+     (`gen_stub default_logic`). All proven on `examples/logic_supply` (faithful clone:
+     logic cells + wreal-supply divider + stubbed counter on shared VDD/VPP/VSS → 0
+     boundaries, xrun TB PASS).
+  **`vh_diag` is now the ground-truth instrument** — sections: SUMMARY (incl. discipline +
+  wreal/logic leaf counts), DISCIPLINE BOUNDARIES (per-net wreal/logic mix = static CUNDCM
+  predictor, with which masters are on each side) + **INTERFACES of boundary cells** (ports
+  + discipline, bodies omitted = a sanitized clone-able spec), PARSE GAPS, UNRESOLVED (with
+  `library_binding`), PORT MISMATCHES, xrun.log digest. **Process lesson (locked):** observe
+  via vh_diag → clone the failure in a LOCAL fixture against local xrun → fix+verify there;
+  red zone = final check only. CUNDCM is about disciplines+wiring, NOT bodies, so interfaces
+  suffice to clone.
+
+**NEXT (the immediate thing):** user must **redeploy 8728c8e to the red zone, re-run
+Extract A → Generate C → Run xrun → Diagnose.** EXPECTED: `0` CUNDCM → the design
+**elaborates + runs for the first time** (RUN-KIND **SMOKE**, since `CLK_PLL_NDIV_counter_
+div2_lvt` is stubbed). Look for `=== TB PASS/FAIL ===` and DISCIPLINE-BOUNDARY = 0.
+Remaining, in priority order:
+  - **#28 `pll_ndiv_mmd_core` wrong-view** (warnings `*W,CUVWSP/CUVWSI`, NOT a hard error):
+    its descended `cmos_sch` interface `{N_div,clk,out_dsm,rstn,...}` ≠ how the parent
+    instantiates it `{E_pfd,reload,q1,q2,divisor_b,...}` → its real signal ports float →
+    functionally hollow. Fix = descend the view whose interface MATCHES the parent
+    instantiation (need `ls .../pll_ndiv_mmd_core/` view list). Until then the run is
+    "elaborates but mmd_core does nothing".
+  - **FUNCTIONAL run** (vs SMOKE): resolve `CLK_PLL_NDIV_counter_div2_lvt` (it's stubbed;
+    its `library_binding` / a `-v` or verilogams is needed).
+  - **Real testbench**: the auto-TB is smoke/generic. Pinout recorded in project memory —
+    drive `fromVCO`+`ndiv[13:0]`+`pwsel[5:0]`+enables, check `OUT_NDIV` = fromVCO/N.
+  - **Generality gap**: a genuine **functional** wreal↔logic boundary (not supply) is
+    diagnosed by vh_diag but NOT auto-fixed (would need generated connect modules — not
+    built). All decisions/details in the project memory
+    (`…/Verilog-check/memory/verilog-check-project.md`).
 
 ---
 
