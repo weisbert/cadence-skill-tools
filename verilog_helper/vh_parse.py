@@ -74,6 +74,28 @@ def _split_commas(s):
     return parts
 
 
+def parse_range(w):
+    """'[13:0]' -> (13, 0); '[3]' -> (3, 3); '' / None -> None. Tolerates spaces."""
+    if not w:
+        return None
+    m = re.match(r'\s*\[\s*(\d+)\s*(?::\s*(\d+)\s*)?\]', w)
+    if not m:
+        return None
+    msb = int(m.group(1))
+    lsb = int(m.group(2)) if m.group(2) is not None else msb
+    return (msb, lsb)
+
+
+def range_bits(w):
+    """List of bit indices a range covers, MSB-first. '[3:0]'->[3,2,1,0]; ''->[]."""
+    r = parse_range(w)
+    if not r:
+        return []
+    msb, lsb = r
+    step = -1 if msb >= lsb else 1
+    return list(range(msb, lsb + step, step))
+
+
 def parse_conns(connstr):
     """Return {'named': {port:net}} or {'pos': [net,...]}."""
     named = re.findall(r'\.(\w+)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)', connstr)
@@ -108,13 +130,15 @@ def parse_instance(stmt):
     inst = mm.group(1)
     if inst in KW:
         return None
+    arr = (mm.group(2) or '').strip() or None      # array-instance range, e.g. '[1:0]'
     i += mm.end()
     if i >= len(s) or s[i] != '(':
         return None
     k = find_matching(s, i)
     if k < 0:
         return None
-    return {'master': master, 'inst': inst, 'conns': parse_conns(s[i + 1:k])}
+    return {'master': master, 'inst': inst, 'arr': arr,
+            'conns': parse_conns(s[i + 1:k])}
 
 
 def parse_file(path):
@@ -145,12 +169,16 @@ def parse_text(raw, path='<text>'):
                     rest = rest[wm.end():]
                 for nm in rest.split(','):
                     nm = nm.strip()
-                    if re.match(r'^\w+$', nm):
+                    # tolerate an unpacked array decl:  output y[3:0];  -> name y, width [3:0]
+                    am = re.match(r'^(\w+)\s*(\[[^\]]*\])\s*$', nm)
+                    if am:
+                        info['dirs'][am.group(1)] = (d, w or am.group(2).strip())
+                    elif re.match(r'^\w+$', nm):
                         info['dirs'][nm] = (d, w)
         for disc in ('electrical', 'wreal', 'wire', 'reg', 'logic'):
             for mm in re.finditer(r'\b%s\b\s*(\[[^\]]*\])?\s*([^;]+);' % disc, body):
                 for nm in mm.group(2).split(','):
-                    nm = nm.strip()
+                    nm = re.sub(r'\[[^\]]*\]\s*$', '', nm.strip()).strip()  # drop unpacked range
                     if re.match(r'^\w+$', nm):
                         info['ntype'][nm] = disc
         for mm in re.finditer(

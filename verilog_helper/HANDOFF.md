@@ -49,18 +49,34 @@ clean hints; `vh_env show` confirmed read-only; registers once under MyTool. Onl
 literal pixel *display* (`hiDisplayForm`) is left for the user to eyeball from the menu
 (it blocks the bridge, so it can't be scripted).
 
-**NEXT MAJOR WORK — BUS / ARRAY SUPPORT (Stage C blocker):** Stage A now extracts the
-real design cleanly, but the design is heavily **bus-based** and the pure-digital flow is
-**scalar-wreal only**. Outstanding for Stage C (`vh_gen`) to produce a runnable TB:
-- top/sub bus PORTS (`ndiv[13:0]`, `pwsel[5:0]`, `d_n`, `N_div`, `N_div_sel`, …) —
-  `wreal` can't be **packed** (`*E,WRERNG`); must become **unpacked wreal arrays**
-  `wreal x[msb:lsb]` (Stage B already does this for buses it converts — reuse that).
-- bus **slices** `ndiv[7:0]` / `ndiv[13:8]` and **concatenations** `{a,b}` in instance
-  connections — need expansion/bit-mapping.
-- **array instances** `I119[1:0]` — Stage A parses+keeps them; Stage C must replicate.
-- the generated TB + checks must drive/observe bus bits.
-This is the piece that lets the real DUT actually run. (Then: real red-zone run with the
-`-v` libs.) Live status + all decisions in the project memory
+- **Bus / array support** (Stage C, DONE 2026-06-25) — the real design is heavily
+  bus-based; the TB generator is now **bus-aware**. KEY INSIGHT that shrank the scope:
+  slices `ndiv[7:0]`, concatenations `{a,b}` and array instances `I119[1:0]` all live
+  **inside Stage A's `<top>_struct.vams`** (the oa2verilog netlist) — Stage C only emits
+  the **TB + stubs** and instantiates the top, so for **packed-logic buses** (which is
+  what `wrealize` leaves them as: it only converts *scalar* `wire→wreal`) those constructs
+  are **native Verilog — xrun handles them with zero expansion**. So the work was making
+  the TB/stub *match* the struct's bus port types, per-port:
+    - scalar (`width==''`) → `real drv; wreal net; assign` (unchanged);
+    - logic bus (sized + ntype `wire`/`reg`/none) → `reg [m:l]`(in)/`wire [m:l]`(out),
+      integer-vector stimulus (`ndiv`/`pwsel`/`N_div` control words);
+    - real bus (sized + ntype `wreal`) → **unpacked wreal array** `wreal x[m:l]` + per-bit
+      drive (Stage-B convention; `*E,WRERNG` only if you *packed* a wreal).
+  Stubs are bus-aware too: width inferred from connection slices/concats (÷ array-instance
+  count), and **logic-vs-wreal chosen from the connected net's type** — a wreal stub on a
+  logic net (or vice-versa) needs a connect module (`*E,CUNDCM`), so the stub net type
+  mirrors what it's wired to. Golden checks stay scalar-output (bus bits referencable as
+  `name[i]` in checks.json, e.g. `sel[0]`); bus outputs are displayed.
+  Verified end-to-end under xrun on `examples/bus_div` (logic bus in/out, slices, concat,
+  `dbuf Ub[3:0]` array instance, scalar wreal path → **TB PASS**) + a wreal-unpacked-array
+  fixture + a stubbed-external (logic) + a wide-bus external (passthrough). All prior
+  examples still PASS (3/3 duts, nested_chain, schem_nested, analog_leaf). ✅
+
+**NEXT:** real red-zone run of `LPBT_NDIV_TOP` — Stage A→C→`run.sh` with the actual `-v`
+libs (`Common_verilog/L16,L20_{S,L}VT_ana.v`). Stage C should now produce a runnable TB;
+remaining risk is anything the synthetic fixture didn't mirror (e.g. a real-valued bus
+that's sliced — would need struct-level expansion, currently only logic buses are sliced).
+Live status + all decisions in the project memory
 (`…/Verilog-check/memory/verilog-check-project.md`).
 
 ---

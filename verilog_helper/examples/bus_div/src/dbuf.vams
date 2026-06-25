@@ -1,0 +1,8 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// 1-bit logic buffer -- instantiated as an ARRAY (dbuf Ub[3:0]) to buffer a bus
+module dbuf(i, o);
+  input  i;
+  output o;
+  assign o = i;
+endmodule

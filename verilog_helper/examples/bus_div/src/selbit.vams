@@ -1,0 +1,10 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// real 2:1 mux on a 1-bit logic select (mixed wreal data + logic control)
+module selbit(a, b, s, y);
+  input  a, b;
+  input  s;
+  output y;
+  wreal  a, b, y;
+  assign y = s ? b : a;
+endmodule

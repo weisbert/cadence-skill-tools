@@ -25,7 +25,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | File | Role | Status |
 |------|------|--------|
 | `vh_parse.py` | VerilogA static parser (ports/dirs/disciplines/instances+connections) + graph (top/leaf/external/dups); also an inventory CLI | ✅ working |
-| `vh_gen.py`   | Stage C: hierarchy → wreal stub per external + self-checking TB + run.sh + sim.tcl + manifest | ✅ working |
+| `vh_gen.py`   | Stage C: hierarchy → **bus-aware** stub per external + self-checking TB + run.sh + sim.tcl + manifest (logic control buses → `reg/wire[m:l]`; real buses → unpacked `wreal[m:l]`; slices/concats/array-instances in the struct are native Verilog) | ✅ working |
 | `vh_extract.py` | Stage A: config (cds.lib+expand.cfg) → oa2verilog hierarchy → clean structural top + gathered `.va` leaves + external interfaces + manifest | ✅ working |
 | `vh_env.py`     | tool-remembered **external HDL env** (`-v` lib files / `-y` dirs / `+incdir`); resolves externals & bakes into `run.sh` | ✅ working |
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
@@ -168,6 +168,19 @@ in one shared stub. Non-2-terminal or bus-bit passives are left in place + warne
 The `PASSIVES` section of `manifest_A.{txt,json}` lists what was shorted/opened.
 (If a passive is *load-bearing*/analog — a real filter or resonance — that's a
 "needs spectre" case, not pure-digital; model it as wreal or keep it analog.)
+
+**Buses & array instances.** The generated TB is bus-aware and mirrors each top
+port's declared type so it always matches the DUT: a **logic control bus** (sized,
+net type `wire`/`reg` — e.g. a divider ratio `ndiv[13:0]` or `pwsel[5:0]`) becomes a
+`reg [m:l]`/`wire [m:l]` driven with integer vectors; a **real bus** (sized, net type
+`wreal`) becomes an **unpacked wreal array** `wreal x[m:l]` driven per bit (`wreal`
+can't be *packed* → `*E,WRERNG`); a scalar stays `wreal`. Bus **slices** `x[7:0]`,
+**concatenations** `{a,b}` and **array instances** `I[1:0]` live inside Stage A's
+structural top and — for packed-logic buses — are native Verilog, so xrun handles them
+with no expansion. External stubs are bus-aware too (width inferred from the connection
+slices/concats; logic-vs-wreal chosen from the connected net so no connect module is
+needed). Golden checks are scalar-output; reference bus bits as `name[i]` in checks.json
+(e.g. `"y": "(sel[0] ? b : a)"`); bus outputs are displayed. See `examples/bus_div`.
 
 ## External HDL env (vh_env) — where the `-v` library files live
 
