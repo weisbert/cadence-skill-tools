@@ -369,23 +369,123 @@
                 (vh_setStatus form (strcat "Run: " verdict kind))))))))
     t))
 
-; External env: remember a -v library file (vh_env.py add-lib <path>). The
-; tool then resolves externals found there automatically in A/C.
-(defun vh_envAddCB (form "g")
-  (let ((lib (vh_str form->vh_extLib->value)))
+; ---------------------------------------------------------------------------
+; External libraries manager -- a multi-entry list (like AMS Options -> Include
+; Option Settings -> Library Files). Several -v files / -y dirs / +incdir dirs,
+; one per line, persisted in the remembered env via vh_env. The list is exchanged
+; with Python as ext_libs.list-format text (plain path = -v file, '-y <dir>',
+; '+incdir+<dir>') -- same format the air-gap package uses -- so vh_env owns all
+; the parsing/persistence and the GUI is just a text editor + file pickers.
+; ---------------------------------------------------------------------------
+
+; vh_env export <tmp> -> text (the current remembered list), "" if none.
+(defun vh_elExportText ()
+  (let (tmp txt)
+    (setq tmp (makeTempFileName "/tmp/vh_extlibs"))
+    (errset (vh_runCLI "vh_env.py" (strcat "export " (vh_q tmp))) t)
+    (setq txt (if (isFile tmp) (vh_readFile tmp) ""))
+    (errset (deleteFile tmp) t)
+    txt))
+
+; Count non-blank, non-comment entries in a list blob.
+(defun vh_elCount (txt "t")
+  (length (setof l (parseString (or txt "") "\n")
+            (and (nequal (vh_str l) "") (not (pcreMatchp "^\\s*#" l))))))
+
+; Open the manager: load the current list and show the popup.
+(defun vh_extLibsCB (form "g")
+  (vh_showExtLibsForm (vh_elExportText))
+  t)
+
+; Append an entry to the list MLT (kind = "v" file / "y" dir / "inc" dir).
+(defun vh_elAddCB (kind "t")
+  (let (entry cur d)
     (cond
-      ((equal lib "")
-        (vh_setStatus form "pick an external -v library file to remember"))
-      ((not (isFile lib))
-        (vh_setStatus form "external -v file not found -- check the path"))
+      ((equal kind "v") (setq entry (vh_str vh_extLibsForm->vh_elFile->value)))
+      ((equal kind "y")
+        (setq d (vh_str vh_extLibsForm->vh_elDir->value))
+        (unless (equal d "") (setq entry (strcat "-y " d))))
+      ((equal kind "inc")
+        (setq d (vh_str vh_extLibsForm->vh_elDir->value))
+        (unless (equal d "") (setq entry (strcat "+incdir+" d)))))
+    (cond
+      ((or (null entry) (equal entry ""))
+        (errset (vh_extLibsForm->vh_elStatus->value = "pick a file / type a dir first") t))
       (t
-        (vh_runReport form "env add-lib" "vh_env.py" (strcat "add-lib " (vh_q lib)))))
+        (setq cur (vh_str vh_extLibsForm->vh_elList->value))
+        (errset (vh_extLibsForm->vh_elList->value =
+                  (if (equal cur "") entry (strcat cur "\n" entry))) t)
+        (errset (vh_extLibsForm->vh_elStatus->value =
+                  (strcat "added (not saved yet): " entry)) t)))
     t))
 
-; External env: print the remembered env (and which modules it provides) to CIW.
-(defun vh_envShowCB (form "g")
-  (vh_runReport form "env show" "vh_env.py" "show")
+; Save the list to the remembered env (REPLACE), via vh_env import.
+(defun vh_elSaveCB ()
+  (let (txt tmp)
+    (setq txt (vh_str vh_extLibsForm->vh_elList->value))
+    (setq tmp (makeTempFileName "/tmp/vh_extlibs"))
+    (vh_writeFile tmp txt)
+    (errset (vh_runCLI "vh_env.py" (strcat "import " (vh_q tmp))) t)
+    (errset (deleteFile tmp) t)
+    (errset (vh_extLibsForm->vh_elStatus->value =
+              (sprintf nil "saved %d entries to remembered env" (vh_elCount txt))) t)
+    t))
+
+; Reload the list from the remembered env (discard unsaved edits).
+(defun vh_elReloadCB ()
+  (errset (vh_extLibsForm->vh_elList->value = (vh_elExportText)) t)
+  (errset (vh_extLibsForm->vh_elStatus->value = "reloaded from remembered env") t)
   t)
+
+; Empty the list (Save then applies the clear to the env).
+(defun vh_elClearCB ()
+  (errset (vh_extLibsForm->vh_elList->value = "") t)
+  (errset (vh_extLibsForm->vh_elStatus->value = "list cleared -- click Save to apply") t)
+  t)
+
+; Build + show the manager popup.
+(defun vh_showExtLibsForm (txt "t")
+  (let (fList fFile fAddF fDir fAddY fAddI fSave fReload fClear fStatus form)
+    (errset (hiFormCancel vh_extLibsForm) t)
+    (setq fList (hiCreateMLTextField ?name 'vh_elList ?prompt "" ?value txt
+                  ?hasVerticalScrollbar t ?hasHorizontalScrollbar t ?enableWordWrap nil))
+    (setq fFile (hiCreateFileSelectorField ?name 'vh_elFile ?mode 'existingFile
+                  ?prompt "a -v file" ?value ""))
+    (vh_cfgFileSel fFile "Choose a -v library file" "Verilog (*.v *.vams *.va);;All Files (*)")
+    (setq fAddF (hiCreateButton ?name 'vh_elBtnAddF ?buttonText "Add -v file"
+                  ?callback "(vh_elAddCB \"v\")"))
+    (setq fDir  (hiCreateStringField ?name 'vh_elDir ?prompt "a dir" ?value ""))
+    (setq fAddY (hiCreateButton ?name 'vh_elBtnAddY ?buttonText "Add -y dir"
+                  ?callback "(vh_elAddCB \"y\")"))
+    (setq fAddI (hiCreateButton ?name 'vh_elBtnAddI ?buttonText "Add +incdir"
+                  ?callback "(vh_elAddCB \"inc\")"))
+    (setq fSave   (hiCreateButton ?name 'vh_elBtnSave ?buttonText "Save"
+                    ?callback "(vh_elSaveCB)"))
+    (setq fReload (hiCreateButton ?name 'vh_elBtnReload ?buttonText "Reload"
+                    ?callback "(vh_elReloadCB)"))
+    (setq fClear  (hiCreateButton ?name 'vh_elBtnClear ?buttonText "Clear"
+                    ?callback "(vh_elClearCB)"))
+    (setq fStatus (hiCreateStringField ?name 'vh_elStatus ?prompt "" ?editable nil
+                    ?value (sprintf nil "%d entries remembered" (vh_elCount txt))))
+    (setq form (hiCreateAppForm
+      ?name 'vh_extLibsForm
+      ?formTitle "External HDL libraries (xrun -v / -y / +incdir) -- remembered"
+      ?fields (list
+        (list fList   (list 0 0)    (list 450 170) 0)
+        (list fFile   (list 0 178)  (list 380 28)  70)
+        (list fAddF   (list 0 210)  (list 110 28)  0)
+        (list fDir    (list 0 244)  (list 320 28)  60)
+        (list fAddY   (list 0 276)  (list 110 28)  0)
+        (list fAddI   (list 120 276) (list 120 28) 0)
+        (list fSave   (list 0 312)  (list 90 28)   0)
+        (list fReload (list 100 312) (list 90 28)  0)
+        (list fClear  (list 200 312) (list 90 28)  0)
+        (list fStatus (list 0 348)  (list 450 28)  0))
+      ?buttonLayout 'Close))
+    (hiInstantiateForm form)
+    (errset (hiSetFormSize form (list 490 450)) t)
+    (hiDisplayForm 'vh_extLibsForm)
+    'vh_extLibsForm))
 
 ; ---------------------------------------------------------------------------
 ; [Scan Pins] -- scan the DUT cellview's terminals (name + input/output/inout
@@ -618,7 +718,7 @@
 
 (defun vh_guiBuild ()
   (let (fLib fCell fView fSel fBrowse fScan
-        fCfg fCds fNet fOut fChecks fTb fBwrite fExt fAddLib fShow
+        fCfg fCds fNet fOut fChecks fTb fBwrite fExtLibs
         fA fB fC fRun fD fStatus
         form fieldW promptW rowH sizePt btnH preDir)
     (setq rowH 28) (setq fieldW 380) (setq promptW 155)
@@ -657,14 +757,10 @@
     (setq fBwrite (hiCreateCyclicField ?name 'vh_bwrite
                     ?prompt "Stage B: write candidate beside cell"
                     ?choices (list "yes" "no") ?value "yes"))
-    ; ----- external env -----
-    (setq fExt (hiCreateFileSelectorField ?name 'vh_extLib ?mode 'existingFile
-                 ?prompt "external -v library" ?value ""))
-    (vh_cfgFileSel fExt "Choose an external -v library file" "Verilog (*.v *.vams *.va);;All Files (*)")
-    (setq fAddLib (hiCreateButton ?name 'vh_btnAddLib ?buttonText "Add -v lib"
-                    ?callback "(vh_envAddCB (vh_curForm))"))
-    (setq fShow   (hiCreateButton ?name 'vh_btnShow ?buttonText "Show env"
-                    ?callback "(vh_envShowCB (vh_curForm))"))
+    ; ----- external libraries (multi-entry manager popup) -----
+    (setq fExtLibs (hiCreateButton ?name 'vh_btnExtLibs
+                     ?buttonText "External libraries..."
+                     ?callback "(vh_extLibsCB (vh_curForm))"))
     ; ----- stage actions -----
     (setq fA (hiCreateButton ?name 'vh_btnA ?buttonText "Extract A"
                ?callback "(vh_extractCB (vh_curForm))"))
@@ -697,9 +793,7 @@
         (list fChecks (list 0 236)  sizePt promptW)
         (list fTb     (list 0 264)  sizePt promptW)
         (list fBwrite (list 0 292)  (list 340 rowH) 255)
-        (list fExt    (list 0 324)  sizePt promptW)
-        (list fAddLib (list 0 356)  (list 110 btnH) 0)
-        (list fShow   (list 120 356) (list 110 btnH) 0)
+        (list fExtLibs (list 0 330) (list 180 btnH) 0)
         (list fA      (list 0 392)   (list 102 btnH) 0)
         (list fB      (list 105 392) (list 102 btnH) 0)
         (list fC      (list 210 392) (list 102 btnH) 0)

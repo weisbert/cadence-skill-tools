@@ -88,8 +88,11 @@ session, so you usually only set **the DUT (Select from Schematic) + Output fold
   config only matters when you need explicit per-cell view *bindings* (force veriloga).
 - **config (expand.cfg)** / **cds.lib** / **captured netlist** / **Output
   folder** / **checks.json** / **user testbench** file pickers.
-- **external -v library** + **[Add -v lib]** (remembers it via `vh_env.py`) /
-  **[Show env]**.
+- **[External libraries...]** opens a multi-entry manager (like AMS Options →
+  Include Option Settings → Library Files): a scrollable, editable list of **several**
+  `-v` files / `-y` dirs / `+incdir` dirs (one per line, `ext_libs.list` format),
+  with file/dir pickers to append and **Save/Reload/Clear** persisting to the
+  remembered env (`vh_env`). Stage A/C then use the whole list automatically.
 - **[Extract A] [Convert B] [Generate C] [Run xrun] [Package D]** run the
   pipeline against the Output folder (`<out>/manifest_A.json` → `<out>/export`
   → `<out>/sim` → run → package). **[Run xrun]** executes `<out>/sim/run.sh`
@@ -151,6 +154,8 @@ python3 vh_env.py add-dir /path/some_lib                    # remember a -y libr
 python3 vh_env.py add-inc /path/includes                    # remember a +incdir dir
 python3 vh_env.py show                                      # list + which modules it provides
 python3 vh_env.py remove <path> | clear
+python3 vh_env.py export [file]                             # dump as ext_libs.list lines
+python3 vh_env.py import <file>                             # REPLACE env from such a file
 ```
 
 Once remembered, `vh_extract`/`vh_gen` use it automatically: an external **found** in a

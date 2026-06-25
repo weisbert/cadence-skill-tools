@@ -20,6 +20,7 @@ CLI:
   python3 vh_env.py show
   python3 vh_env.py add-lib <file>...   |  add-dir <dir>...  |  add-inc <dir>...
   python3 vh_env.py remove <path>...    |  clear
+  python3 vh_env.py export [file]       |  import <file>   # ext_libs.list format
 """
 import sys, os, json, glob, datetime
 
@@ -77,6 +78,43 @@ def merge(env, lib_files=None, lib_dirs=None, inc_dirs=None):
 
 def is_empty(env):
     return not (env.get("lib_files") or env.get("lib_dirs") or env.get("inc_dirs"))
+
+
+def to_lines(env):
+    """Serialize env to ext_libs.list-format lines (plain path = -v file,
+    '-y <dir>', '+incdir+<dir>') -- the same format the air-gap package uses."""
+    lines = list(env.get("lib_files", []))
+    lines += ["-y " + d for d in env.get("lib_dirs", [])]
+    lines += ["+incdir+" + d for d in env.get("inc_dirs", [])]
+    return lines
+
+
+def from_lines(lines):
+    """Parse ext_libs.list-format lines back into an env dict (REPLACE semantics).
+    plain path / '-v <file>' -> lib_files; '-y <dir>' -> lib_dirs; '+incdir+<dir>'
+    -> inc_dirs. Blank lines and '#' comments are ignored."""
+    env = {k: [] for k in _EMPTY}
+    for ln in lines:
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("-y"):
+            d = s[2:].strip()
+            if d:
+                env["lib_dirs"].append(d)
+        elif s.startswith("-v"):
+            f = s[2:].strip()
+            if f:
+                env["lib_files"].append(f)
+        elif s.startswith("+incdir+"):
+            d = s[len("+incdir+"):].strip()
+            if d:
+                env["inc_dirs"].append(d)
+        elif s.startswith("+") or s.startswith("-"):
+            continue                      # unknown flag -> skip (don't guess)
+        else:
+            env["lib_files"].append(s)
+    return env
 
 
 def xrun_flags(env):
@@ -154,6 +192,22 @@ def _cli(argv):
         save_env({k: [] for k in _EMPTY}, path)
         print("cleared %s" % path)
         return 0
+    if cmd == "export":
+        # dump the env as ext_libs.list-format lines to a file (or stdout)
+        lines = to_lines(env)
+        text = "\n".join(lines) + ("\n" if lines else "")
+        if rest:
+            open(rest[0], "w").write(text)
+        else:
+            sys.stdout.write(text)
+        return 0
+    if cmd == "import":
+        # REPLACE the remembered env from an ext_libs.list-format file
+        if not rest:
+            sys.stderr.write("import needs a file path\n")
+            return 2
+        save_env(from_lines(open(rest[0]).read().splitlines()), path)
+        return _cli(["show"])
     if cmd in ("add-lib", "add-dir", "add-inc"):
         key = {"add-lib": "lib_files", "add-dir": "lib_dirs", "add-inc": "inc_dirs"}[cmd]
         env[key] = dedup(env.get(key, []) + rest)
