@@ -431,6 +431,98 @@ def has_schematic(cell, libs):
     return None
 
 
+# schematic-like view-dir names (the hierarchy lives here). A design's config
+# viewlist often names the real schematic "cmos_sch", not "schematic" -- which is
+# exactly why `oa2verilog -view schematic` stops at such a sub-block.
+SCHEM_VIEW_DIRS = ("schematic", "cmos_sch", "cmos.sch", "sch")
+
+
+def _schem_view_order(viewlist):
+    """Order the schematic-like view names by the config viewlist (so cmos_sch is
+    tried before schematic when the config prefers it), then any remaining."""
+    sset = set(SCHEM_VIEW_DIRS)
+    order = [v for v in (viewlist or []) if v in sset]
+    for v in SCHEM_VIEW_DIRS:
+        if v not in order:
+            order.append(v)
+    return order
+
+
+def find_schematic_view(cell, libs, prefer_lib=None, order=None):
+    """Locate a cell's schematic-like view: (lib, viewname) or (None, None)."""
+    names = order or list(SCHEM_VIEW_DIRS)
+    liborder = ([prefer_lib] if prefer_lib in libs else []) + \
+               [L for L in libs if L != prefer_lib]
+    for L in liborder:
+        for v in names:
+            vdir = os.path.join(libs[L], cell, v)
+            if os.path.isdir(vdir) and os.listdir(vdir):
+                return L, v
+    return None, None
+
+
+def dedup_netlist(raw):
+    """Collapse duplicate module defs (across merged oa2verilog runs), keeping the
+    RICHEST block per name -- a real body (has instances) wins over an empty
+    interface emitted by a parent run."""
+    pre, blocks = split_modules(raw)
+    best, order = {}, []
+    for nm, tx in blocks:
+        if nm not in best:
+            best[nm] = tx
+            order.append(nm)
+        elif instances_of(tx) and not instances_of(best[nm]):
+            best[nm] = tx                      # full body replaces empty interface
+    return pre + "\n\n".join(best[nm] for nm in order) + "\n"
+
+
+def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
+                     warnings, viewlist=None):
+    """Recursively descend hierarchy sub-blocks that the top oa2verilog run did NOT
+    follow (their schematic is a cmos_sch view, or they sit under a nested config).
+
+    A sub-block is descended when it is undefined or an empty interface, has a
+    schematic-like view, has NO verilogams (verilogams => leaf, keep it), is not a
+    -v-resolved std cell, and is not a pin/stimulus/device/passive. Each descent
+    runs oa2verilog on that cell with its own schematic view; results are merged
+    and dedup'd (full body beats empty interface). Repeats to a fixpoint."""
+    schem_order = _schem_view_order(viewlist)
+    skip = PIN_CELLS | STIMULUS_CELLS | NOCONN_CELLS | DEVICE_DROP | PASSIVE_CELLS
+    combined = raw
+    descended = {top_cell}
+    for _ in range(64):                        # depth guard
+        _, blocks = split_modules(combined)
+        defined = {nm for nm, _ in blocks}
+        empty_defs = {nm for nm, tx in blocks if not instances_of(tx)}
+        used = set()
+        for nm, tx in blocks:
+            for mas, _ in instances_of(tx):
+                used.add(mas)
+        cand = (used - defined) | (empty_defs - {top_cell})
+        todo = []
+        for mas in sorted(cand):
+            if mas in descended or mas in skip or mas in ext_index:
+                continue
+            if find_veriloga(mas, libs)[1]:    # has verilogams -> a leaf, don't descend
+                continue
+            sl, sv = find_schematic_view(mas, libs, order=schem_order)
+            if sv:
+                todo.append((mas, sl, sv))
+        if not todo:
+            break
+        for mas, mlib, mview in todo:
+            descended.add(mas)
+            sub_v = os.path.join(out_dir, "_sub_%s.v" % re.sub(r"\W", "_", mas))
+            ok, msg = run_oa2verilog(mlib, mas, mview, cdslib, sub_v, env_sh=env_sh)
+            if ok and os.path.isfile(sub_v):
+                combined += "\n" + open(sub_v, errors="replace").read()
+                print("[vh_extract] descended sub-block %s:%s" % (mas, mview))
+            else:
+                warnings.append("could not descend sub-block '%s:%s' -> left external "
+                                "(%s)" % (mas, mview, (msg or "").strip()[:160]))
+    return dedup_netlist(combined)
+
+
 # --------------------------------------------------------------------------- #
 # main extraction                                                             #
 # --------------------------------------------------------------------------- #
@@ -745,6 +837,10 @@ def main():
         if not ok:
             sys.exit("ERROR: oa2verilog failed:\n" + msg)
         raw = open(raw_v, errors="replace").read()
+        # `-view schematic` stops at sub-blocks whose hierarchy is a cmos_sch view
+        # or a nested config -> recursively descend those so the whole tree is dug.
+        raw = expand_hierarchy(raw, cell, libs, ext_index, cdslib, args.env_sh,
+                               args.out, warnings, viewlist=cfg.get("viewlist"))
 
     manifest, clean = extract(lib, cell, view, libs, raw, args.out, cfg=cfg,
                               warnings=warnings, env=env, ext_index=ext_index)

@@ -143,6 +143,13 @@ stub DUT ("nothing to verify"), gathers veriloga leaves as `.va`, records extern
 modules (with oa2verilog-accurate port directions) for Stage C to stub, and writes a
 wreal-normalized structural top to `<dir>/export/` plus `manifest_A.{json,txt}`.
 
+**Deep / config-based hierarchy.** `oa2verilog -view schematic` stops at a
+sub-block whose schematic is a `cmos_sch` view or sits under a nested `config_ams`
+(common in real designs). Stage A then **recursively descends** each such sub-block
+(re-running oa2verilog with that cell's own schematic view, ordered by the config
+viewlist) until only verilogams leaves + std cells remain — so the whole tree is dug,
+not just the top level. Watch the CIW for `descended sub-block <cell>:<view>` lines.
+
 **Behavioral leaves (veriloga / verilogams).** Stage A gathers a leaf cell's
 behavioral source from a `veriloga`, **`verilogams`**, or `ahdl` view dir (so your
 own Verilog-AMS cells are gathered as `.va`/`.vams`, not stubbed). Cells with no such
