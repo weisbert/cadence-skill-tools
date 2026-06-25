@@ -1,5 +1,29 @@
 # verilog_helper — HANDOFF / design context
 
+## 0. STATUS (2026-06-25)
+
+**The whole command-line pipeline is built, verified end-to-end, and pushed.** Stages:
+- **A** `vh_extract.py` — OA config (cds.lib+expand.cfg) → oa2verilog hierarchy → clean
+  wreal structural top + gathered `.va` leaves + `manifest_A.json`. ✅
+- **B** `vh_convert.py` — analog cell → wreal (detection list + non-destructive
+  `veriloga_wreal.va` candidate beside each cell). ✅
+- **C** `vh_parse.py`+`vh_gen.py` — TB + stubs + `run.sh` (+ `--tb` for your own test). ✅
+- **D** `vh_package.py` — relocatable, env-agnostic air-gap bundle + preflight + tar/sha256. ✅
+- `vh_env.py` — remembered external `-v` library env. ✅
+- `vh_dut.py` — **multi-DUT driver** (one folder per DUT, `run-all` summary). ✅
+
+Verified: `examples/{nested_chain,schem_nested,analog_leaf}` + `examples/duts/` (3/3).
+**Red zone preflight PASSED** (xrun 19.04, pure-digital wreal, zero spectre license, xrun
+ambient even in `bash -c`). Dev box OA design is a SHELL (PMU_top is a pin-only stub).
+
+**Remaining:** (1) **GUI `vhGui.il`** (note_helper-style launcher → shells out to these
+CLIs; copy Lib/Cell/View picker from `dreg_gen/dgenGui.il`, pin scan from `dgenPinScan.il`).
+(2) From the user: real red-zone `-v` lib paths (+ wreal/electrical?) and a REAL DUT cell
+that actually instantiates leaves. Full detail below; live status also in the project
+memory (`…/Verilog-check/memory/verilog-check-project.md`).
+
+---
+
 - **Date:** 2026-06-25
 - **Dev box:** `eda` (Rocky 8.10 / RHEL8 = "linux8"), the dev/green zone.
 - **Goal:** given veriloga `.va`/`.vams` files, auto-generate a testbench, run it under
