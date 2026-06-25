@@ -42,6 +42,12 @@ OA_ENV = {"OA_UNSUPPORTED_PLAT": "linux_rhel60", "CDS_ENABLE_EXP_PCELL": "1"}
 
 # netlist artifacts to strip (def + every instance of them)
 PIN_CELLS = {"ipin", "opin", "iopin"}
+# no-connect markers -- pure artifacts, drop them
+NOCONN_CELLS = {"noConn", "noConn_"}
+# parasitic substrate / well / ESD diode devices (2-terminal, to substrate/supply):
+# no functional role in a pure-digital check -> dropped. PDK-specific; extend as needed.
+DEVICE_DROP = {"pdio_mac", "ndio_mac", "dnwpsub", "pwdnw", "pnwdio", "pdiode",
+               "ndiode", "dnw_psub", "nwdio", "pwdio"}
 # analogLib stimulus / globals that show up only when you netlist a TESTBENCH
 STIMULUS_CELLS = {
     "vdc", "vpulse", "vsin", "vexp", "vpwl", "vpwlf", "vpwlfile", "vsource",
@@ -364,7 +370,7 @@ def strip_instances(text, drop_masters):
         return text
     out, i, n = [], 0, len(text)
     while i < n:
-        m = re.compile(r'(\b(%s)\b)\s*\\?\w+\s*\(' %
+        m = re.compile(r'(\b(%s)\b)\s*\\?\w+(?:\s*\[[^\]]*\])?\s*\(' %
                        "|".join(re.escape(d) for d in drop_masters)).match(text, i)
         if m:
             close = vp.find_matching(text, m.end() - 1)
@@ -389,20 +395,30 @@ def strip_instances(text, drop_masters):
 # --------------------------------------------------------------------------- #
 # leaf resolution                                                             #
 # --------------------------------------------------------------------------- #
-def find_veriloga(cell, libs, prefer_lib=None):
-    """Locate <libpath>/<cell>/veriloga/veriloga.va (or any .va in a veriloga view).
+# behavioral view-dir names to gather a leaf from. Cadence names the Verilog-A
+# view "veriloga" and the Verilog-AMS view "verilogams" (the user's leaf cells use
+# verilogams); "ahdl" is the older analog-HDL view. Checked in this order.
+VA_VIEW_DIRS = ("veriloga", "verilogams", "ahdl")
 
-    Search prefer_lib first, then all libs. Returns (libname, abspath) or (None, None).
-    """
+
+def find_veriloga(cell, libs, prefer_lib=None):
+    """Locate a cell's behavioral source: <libpath>/<cell>/<view>/*.va|*.vams for
+    view in veriloga / verilogams / ahdl. Search prefer_lib first, then all libs.
+    Returns (libname, abspath) or (None, None)."""
     order = ([prefer_lib] if prefer_lib in libs else []) + \
             [L for L in libs if L != prefer_lib]
     for L in order:
-        vdir = os.path.join(libs[L], cell, "veriloga")
-        if os.path.isdir(vdir):
-            cand = os.path.join(vdir, "veriloga.va")
-            if os.path.isfile(cand):
-                return L, cand
-            vas = [f for f in os.listdir(vdir) if f.endswith((".va", ".vams"))]
+        cdir = os.path.join(libs[L], cell)
+        for vname in VA_VIEW_DIRS:
+            vdir = os.path.join(cdir, vname)
+            if not os.path.isdir(vdir):
+                continue
+            # prefer the conventional filenames, else any .va/.vams in the view
+            for pref in ("veriloga.va", "verilogams.vams", vname + ".va", vname + ".vams"):
+                cand = os.path.join(vdir, pref)
+                if os.path.isfile(cand):
+                    return L, cand
+            vas = sorted(f for f in os.listdir(vdir) if f.endswith((".va", ".vams")))
             if vas:
                 return L, os.path.join(vdir, vas[0])
     return None, None
@@ -438,26 +454,33 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
 
     passive_report = []   # (module, inst, master, action) from short_passives
 
-    # first pass: who has real instances (ignoring pin/stimulus/passive artifacts)?
+    drop_arti = PIN_CELLS | STIMULUS_CELLS | NOCONN_CELLS | DEVICE_DROP
+
+    # first pass: who has real instances (ignoring pin/stimulus/passive/noconn/device)?
     structural = {}
     for nm, tx in blocks:
         insts = instances_of(tx)
         real = [(mas, ins) for mas, ins in insts
-                if mas not in PIN_CELLS and mas not in STIMULUS_CELLS
-                and mas not in PASSIVE_CELLS]
+                if mas not in drop_arti and mas not in PASSIVE_CELLS]
         structural[nm] = real
 
-    drop_arti = PIN_CELLS | STIMULUS_CELLS
     stim_seen = sorted({mas for nm, tx in blocks for mas, _ in instances_of(tx)
                         if mas in STIMULUS_CELLS})
     pin_seen = sorted({mas for nm, tx in blocks for mas, _ in instances_of(tx)
                        if mas in PIN_CELLS})
+    dropped_seen = sorted({mas for nm, tx in blocks for mas, _ in instances_of(tx)
+                           if mas in (NOCONN_CELLS | DEVICE_DROP)})
 
-    # classify every defined module
-    classes, leaves, externals = {}, [], []
+    # classify every defined module (dedup by name -- oa2verilog can emit a leaf's
+    # interface more than once)
+    classes, leaves, externals, seen_leaf, seen_ext = {}, [], [], set(), set()
     for nm, tx in blocks:
+        if nm in classes:
+            continue
         if nm in drop_arti:
-            classes[nm] = "pin" if nm in PIN_CELLS else "stimulus"
+            classes[nm] = ("pin" if nm in PIN_CELLS else
+                           "stimulus" if nm in STIMULUS_CELLS else
+                           "noconn" if nm in NOCONN_CELLS else "device")
             continue
         if nm in PASSIVE_CELLS:
             # a 2-terminal passive primitive's own (empty) interface -> not a
@@ -473,8 +496,10 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         vlib, vpath = find_veriloga(nm, libs, prefer_lib=lib)
         if vpath:
             classes[nm] = "veriloga"
-            leaves.append({"module": nm, "lib": vlib, "src": vpath,
-                           "forced_binding": forced})
+            if nm not in seen_leaf:
+                seen_leaf.add(nm)
+                leaves.append({"module": nm, "lib": vlib, "src": vpath,
+                               "forced_binding": forced})
         elif nm == cell:
             # the targeted top itself is empty -> a pin-only stub, flagged below;
             # it is the DUT, not a neighbor to stub, so keep it out of externals.
@@ -482,7 +507,9 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         else:
             # interface ports/dirs come straight from oa2verilog (symbol-accurate)
             classes[nm] = "external"
-            externals.append({"module": nm, "interface": tx.strip()})
+            if nm not in seen_ext:
+                seen_ext.add(nm)
+                externals.append({"module": nm, "interface": tx.strip()})
 
     # which masters are actually instantiated somewhere?
     used = set()
@@ -512,7 +539,8 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     # gather leaf .va bodies
     gathered = []
     for lf in leaves:
-        dst = os.path.join(export, "%s.va" % lf["module"])
+        ext = ".vams" if lf["src"].endswith(".vams") else ".va"
+        dst = os.path.join(export, lf["module"] + ext)
         shutil.copyfile(lf["src"], dst)
         gathered.append({"module": lf["module"], "lib": lf["lib"],
                          "src": lf["src"], "gathered": os.path.relpath(dst, out_dir),
@@ -558,7 +586,7 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         "veriloga_leaves": gathered,
         "external_modules": ext_records,
         "ext_env": {k: env.get(k, []) for k in ("lib_files", "lib_dirs", "inc_dirs")},
-        "stripped": {"pins": pin_seen, "stimulus": stim_seen},
+        "stripped": {"pins": pin_seen, "stimulus": stim_seen, "devices": dropped_seen},
         "passives": [{"module": m, "inst": i, "master": ms, "action": ac}
                      for (m, i, ms, ac) in passive_report],
         "top_is_pin_only_stub": bool(top_is_stub),
@@ -630,9 +658,10 @@ def render_summary(manifest):
         for p in manifest["passives"]:
             L.append("  - %-12s in %-14s %s" % (p["inst"], p["module"], p["action"]))
     st = manifest["stripped"]
-    if st["pins"] or st["stimulus"]:
+    if st["pins"] or st["stimulus"] or st.get("devices"):
         L.append("")
-        L.append("STRIPPED      : pins=%s  stimulus=%s" % (st["pins"] or "-", st["stimulus"] or "-"))
+        L.append("STRIPPED      : pins=%s  stimulus=%s  devices=%s"
+                 % (st["pins"] or "-", st["stimulus"] or "-", st.get("devices") or "-"))
     if manifest["warnings"]:
         L.append("")
         L.append("WARNINGS:")

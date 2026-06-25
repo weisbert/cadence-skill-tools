@@ -143,6 +143,14 @@ stub DUT ("nothing to verify"), gathers veriloga leaves as `.va`, records extern
 modules (with oa2verilog-accurate port directions) for Stage C to stub, and writes a
 wreal-normalized structural top to `<dir>/export/` plus `manifest_A.{json,txt}`.
 
+**Behavioral leaves (veriloga / verilogams).** Stage A gathers a leaf cell's
+behavioral source from a `veriloga`, **`verilogams`**, or `ahdl` view dir (so your
+own Verilog-AMS cells are gathered as `.va`/`.vams`, not stubbed). Cells with no such
+view are recorded as externals (resolved via the `-v` libraries, else stubbed).
+No-connect markers (`noConn`) and parasitic substrate/well/ESD diodes (`pdio_mac`,
+`dnwpsub`, `pwdnw`, `pnwdio`, …) are dropped (`DEVICE_DROP` in `vh_extract.py`,
+extend for your PDK). Array instances `I12[1:0]` are now parsed/stripped correctly.
+
 **Passives on a signal net.** analogLib 2-terminal passives (`res/cap/ind`) are
 *functionally transparent* in a pure-digital wreal check, so Stage A removes them
 from the signal path: a **series** element (a net goes through it to the next cell)

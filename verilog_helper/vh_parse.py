@@ -101,7 +101,8 @@ def parse_instance(stmt):
             if k < 0:
                 return None
             i = k + 1
-    mm = re.match(r'\s*(\\?\w+)\s*', s[i:])
+    # instance name, with an optional array range:  foo I12[1:0] (...)
+    mm = re.match(r'\s*(\\?\w+)\s*(\[[^\]]*\])?\s*', s[i:])
     if not mm:
         return None
     inst = mm.group(1)
