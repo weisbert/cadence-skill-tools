@@ -1,0 +1,6 @@
+// logic top: a logic `en` net meets wmon_buf's wreal `en` -> the boundary Stage B fixes.
+module wmon_top ( OUT, IN, en, VDD, VSS, VPP );
+  output OUT;
+  input  IN, en, VDD, VSS, VPP;
+  wmon_buf I0 ( .OUT(OUT), .IN(IN), .en(en), .VDD(VDD), .VSS(VSS), .VPP(VPP) );
+endmodule

@@ -1,0 +1,19 @@
+`timescale 1ns/1ps
+module tb;
+  reg IN, en, VDD, VSS, VPP;
+  wire OUT;
+  integer fails = 0;
+  wmon_top dut ( .OUT(OUT), .IN(IN), .en(en), .VDD(VDD), .VSS(VSS), .VPP(VPP) );
+  initial begin
+    VDD = 1; VPP = 1; VSS = 0;            // nominal supplies (logic)
+    IN = 1; en = 0; #10;                  // en=0 -> OUT=0
+    if (OUT !== 1'b0) begin $display("  FAIL en=0: OUT=%b exp 0", OUT); fails = fails + 1; end
+    en = 1; #10;                          // en=1, IN=1 -> OUT=1
+    if (OUT !== 1'b1) begin $display("  FAIL en=1,IN=1: OUT=%b exp 1", OUT); fails = fails + 1; end
+    IN = 0; #10;                          // en=1, IN=0 -> OUT=0
+    if (OUT !== 1'b0) begin $display("  FAIL en=1,IN=0: OUT=%b exp 0", OUT); fails = fails + 1; end
+    if (fails == 0) $display("=== TB PASS (OUT = en ? IN : 0) ===");
+    else            $display("=== TB FAIL (%0d) ===", fails);
+    $finish;
+  end
+endmodule

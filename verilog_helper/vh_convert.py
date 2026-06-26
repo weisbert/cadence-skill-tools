@@ -43,6 +43,13 @@ CONTRIB = re.compile(r'^\s*([VI])\s*\(\s*(%s)\s*(?:,\s*(%s)\s*)?\)\s*<\+\s*(.+)$
                      % (NODE, NODE), re.S)
 V_ACCESS = re.compile(r'\bV\s*\(\s*(%s)\s*(?:,\s*(%s)\s*)?\)' % (NODE, NODE))
 
+# supply/ground pins (their threshold checks are "is the rail nominal" -> assumed OK in a
+# pure-digital check). Kept in sync with vh_extract.SUPPLY_RE.
+SUPPLY_RE = re.compile(r'(?i)^(vdd|vss|vpp|vbb|vnw|vpw|vcc|vee|vgnd|gnd|agnd|dgnd|avdd|avss|'
+                       r'dvdd|dvss|vdda|vssa|vddd|vssd|psub|nwell|pwell|sub)(_.*|[0-9].*)?$')
+# a wreal net compared to a threshold: `(net >= k)` / `(net < k)` (no nested parens in rhs)
+_CMP = r'(>=|<=|>(?!>)|<(?!<))'
+
 
 def base(node):
     return node.split('[')[0].strip()
@@ -62,12 +69,57 @@ def extract_analog(body):
     return m.group(1) if m else None
 
 
+def _wreal_nets(body):
+    """Names declared `wreal a, b[3:0];` in a module body."""
+    nets = set()
+    for m in re.finditer(r'(?m)^[ \t]*wreal\b([^;]*);', body):
+        for tok in m.group(1).split(','):
+            t = tok.strip().split('[')[0].strip()
+            if re.match(r'^[A-Za-z_]\w*$', t):
+                nets.add(t)
+    return nets
+
+
+def analyze_wreal_monitor(mi, src, body):
+    """A wreal cell with NO analog block but whose wreal ports are read as analog LEVELS in
+    THRESHOLD comparisons -- a supply/enable monitor, e.g.
+        assign ok = (VDD > k) && (VSS < j) && (en > k);  assign OUT = ok ? IN : 1'b0;
+    On a logic design this wreal `en` meets a logic net -> *E,CUNDCM. The pure-digital intent:
+    supplies are ideal (their checks -> 1), a signal check `(en > k)` -> the logic enable `en`.
+    Returns a status dict, or None when this is not the pattern (leave it 'digital')."""
+    nets = _wreal_nets(body)
+    if not nets or FORBIDDEN.search(body) or re.search(r'\banalog\b', body):
+        return None
+    work = body
+    for pat in (r'(?m)^[ \t]*wreal\b[^;]*;', r'(?m)^[ \t]*(input|output|inout)\b[^;]*;',
+                r'(?m)^[ \t]*(parameter|localparam)\b[^;]*;'):
+        work = re.sub(pat, '', work)
+    used_cmp, bad = 0, set()
+    for net in nets:
+        for m in re.finditer(r'\b' + re.escape(net) + r'\b', work):
+            if re.match(r'\s*' + _CMP, work[m.end():m.end() + 4]):
+                used_cmp += 1
+            else:
+                bad.add(net)                      # used as a value, not just a threshold
+    if used_cmp == 0:
+        return None                               # wreal nets not used as thresholds -> not this
+    base = {'contribs': [], 'outputs': set(), 'inputs': set(), 'wreal_nets': nets}
+    if bad:
+        return dict(base, status='flagged',
+                    reason="wreal net(s) %s used outside a threshold comparison "
+                           "(not a clean supply/enable monitor)" % sorted(bad))
+    return dict(base, status='wreal_logic', reason='wreal supply/enable threshold monitor')
+
+
 def analyze(mi, src):
     """Classify a parsed module. Returns dict(status, reason, contribs, outputs, inputs)."""
     body = vp.strip_comments(re.search(r'\)\s*;(.*)\bendmodule\b', src, re.S).group(1)
                              if re.search(r'\)\s*;(.*)\bendmodule\b', src, re.S) else '')
     inner = extract_analog(body)
     if inner is None and mi['kind'] != 'analog':
+        wl = analyze_wreal_monitor(mi, src, body)
+        if wl:
+            return wl
         return {'status': 'digital', 'reason': 'no analog content', 'contribs': [],
                 'outputs': set(), 'inputs': set()}
     if inner is None:
@@ -201,6 +253,31 @@ def gen_skeleton(mi, src, an):
     return '\n'.join(L) + '\n'
 
 
+def gen_wreal_logic(mi, src, an):
+    """Convert a wreal supply/enable monitor to logic: drop the `wreal` decls (the nets
+    become logic), and rewrite each `(net <op> threshold)` -> 1'b1 for a SUPPLY net (rail
+    assumed nominal), -> the net for a SIGNAL `>`/`>=` (active-high), -> !net for `<`/`<=`.
+    Everything else (muxes, assigns, params) is kept. Result is pure logic -> no boundary."""
+    nets = an['wreal_nets']
+    text = re.sub(r'(?m)^[ \t]*wreal\b[^;]*;[ \t]*\n?', '', src)   # nets -> logic
+    cmp_pat = re.compile(r'\(\s*(' + '|'.join(re.escape(n) for n in nets) + r')\s*'
+                         + _CMP + r'\s*[^()]*?\)')
+
+    def repl(m):
+        net, op = m.group(1), m.group(2)
+        if SUPPLY_RE.match(net):
+            return "1'b1"                          # supply rail assumed nominal in pure-digital
+        return net if op[0] == '>' else ('!' + net)   # signal: active-high / active-low
+
+    text = cmp_pat.sub(repl, text)
+    header = ('`include "disciplines.vams"\n`timescale 1s/1fs\n'
+              '// AUTO-GENERATED logic conversion of wreal supply/enable monitor "%s"\n'
+              '// (vh_convert / Stage B): supply thresholds -> assumed-OK (1\'b1), signal\n'
+              '// thresholds -> the logic signal. REVIEW, then overwrite the original.\n'
+              % mi['module'])
+    return header + text + '\n', []
+
+
 def convert_file(path):
     """Parse a .va; return [(mi, status, reason, candidate_source_or_None, warns)]."""
     out = []
@@ -214,6 +291,9 @@ def convert_file(path):
             out.append((mi, 'digital', an['reason'], None, []))
         elif an['status'] == 'convertible':
             cand, warns = gen_converted(mi, src, an)
+            out.append((mi, 'converted', an['reason'], cand, warns))
+        elif an['status'] == 'wreal_logic':
+            cand, warns = gen_wreal_logic(mi, src, an)
             out.append((mi, 'converted', an['reason'], cand, warns))
         else:
             out.append((mi, 'flagged', an['reason'], gen_skeleton(mi, src, an), []))
