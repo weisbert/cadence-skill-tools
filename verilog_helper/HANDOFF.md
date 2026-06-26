@@ -1,20 +1,30 @@
 # verilog_helper — HANDOFF / design context
 
-## 0b. SESSION HANDOFF (2026-06-26)  — HEAD = `8dfd219`, all pushed
+## 0b. SESSION HANDOFF (2026-06-26)  — HEAD = `0c3f48f`, all pushed
 
-**NEXT FOCUS (resume here after compact): the NDIV *AMS testbench*.** The real design
-`Hi1108_BT_LP_PLL_ANA.LPBT_NDIV_TOP` now extracts CLEAN and ELABORATES (mmd_core fixed, counter
-no longer stubbed, only benign warnings). The hand-written real TB exists and is verified
-locally. Immediate steps:
-1. **Wire the real TB**: Generate C with `--tb examples/lpbt_ndiv/tb_LPBT_NDIV_TOP.vams`
-   (GUI: set the "user testbench" field — the top auto-detects now; or CLI). Run WITHOUT
-   `+CHECK_NDIV` first → expect CAL `CLK2CNT=VCO/4` + TEST `TESTCLK=VCO/16` **HARD PASS**, and
-   `OUT_NDIV/CLK2DSM` now **LIVE** (mmd_core is connected after the #28 fix).
-2. Then `+define+CHECK_NDIV` → functional N check `OUT_NDIV = VCO/4/(ndiv[7:0]−1)`. Watch the
-   `pll_ndiv_nor4_svt_x2` `D`-drop (could perturb the exact N) + `M=ndiv−1` is user spec.
-3. GUI default [Run] = generic smoke (extraction-completeness, top=`tb`); the real TB is a
-   SEPARATE functional run. GUI has no `+CHECK_NDIV` toggle → that check is CLI (or add a
-   `VH_DEFINES` passthrough to run.sh — offered, not built).
+**NEXT FOCUS (resume here): run the NDIV real TB against the REAL export and read the result.**
+The real design `Hi1108_BT_LP_PLL_ANA.LPBT_NDIV_TOP` extracts CLEAN and ELABORATES (mmd_core fixed,
+counter no longer stubbed). The hand-written real TB is verified locally vs the good-model
+(`./run.sh` and `+define+CHECK_NDIV` → both `=== TB PASS ===`, VCO/4 + VCO/16 + VCO/36). Wiring it
+to the real netlist is now a **GUI click-flow** (no CLI). Open Verilog Helper and:
+1. **Output folder** = the extract dir (the one with `export/`; pointing straight at an `export/`
+   dir also works — Stage C falls back from `<out>/export` to `<out>`).
+2. **Example TB (Stage C)** dropdown → `lpbt_ndiv/tb_LPBT_NDIV_TOP.vams` (auto-discovered from
+   `examples/<x>/tb_*.vams`; grows by itself). Leave "user testbench" blank (it overrides the dropdown).
+3. **Generate C** → builds `<out>/sim/` (real TB + run.sh wired to the real `export/` netlist).
+4. **Run xrun** with the **xrun defines (Run)** box BLANK → generic smoke; expect CAL `CLK2CNT=VCO/4`
+   + TEST `TESTCLK=VCO/16` **HARD PASS**. Read RUN-KIND + whether `OUT_NDIV/CLK2DSM` are WARN-live
+   (should be live now that mmd_core is connected) vs WARN-dead.
+5. Then put `+define+CHECK_NDIV` (and `+define+WAVES` for SimVision) in that box → functional N check
+   `OUT_NDIV = VCO/4/(ndiv[7:0]−1)`. Waves land at `<out>/sim/ndiv.shm` → `simvision <out>/sim/ndiv.shm &`.
+   Watch the `pll_ndiv_nor4_svt_x2` `D`-drop (could perturb the exact N); `M=ndiv−1` is user spec.
+
+**How the defines reach xrun:** the generated `run.sh` now forwards `"$@"`; the GUI [Run] appends the
+defines field; `./run.sh +define+...` works from the CLI too. Blank field = the generic completeness
+smoke run (unchanged default — top auto-detected, `-access +rwc` always on so WAVES probes work).
+The example's own `examples/lpbt_ndiv/run.sh` (vs the **good-model**, for TB mechanics) takes the same
+`+define+...` args: `./run.sh +define+CHECK_NDIV +define+WAVES`, `+define+BREAK_NDIV` for negative self-test.
+
 TB design (all CONFIRMED from the real struct's clock tree): front-end `fromVCO→div2→div2 =
 VCO/4` prescaler; CAL `cal_en=1`→`CLK2CNT=VCO/4`, OUT_NDIV/CLK2DSM/TESTCLK quiet; TEST
 `en_test=1`→`TESTCLK=VCO/16`; NORM→`OUT_NDIV=CLK2DSM=VCO/4/M`, `M=ndiv−1`. `pwsel`=duty (NC bit0),
@@ -38,6 +48,14 @@ VCO/4` prescaler; CAL `cal_en=1`→`CLK2CNT=VCO/4`, OUT_NDIV/CLK2DSM/TESTCLK qui
 - `8dfd219` Stage B converts a **wreal supply/enable MONITOR → logic** (WuR_XO_output_driver:
   `OUT=(supplies_ok&&en_high)?IN:0` with wreal `en` → CUNDCM; → `OUT=en?IN:0`). Fixture
   `examples/wreal_monitor/`.
+- `04ad553` NDIV TB **`+define+WAVES`** gate → `$shm_open/$shm_probe("AS")` → `ndiv.shm` (SimVision);
+  example `run.sh` adds `-access +rwc` only when WAVES set (default path byte-identical).
+- `4da6194` **generated `run.sh` forwards `"$@"`** to xrun → real-design builds take
+  `+define+CHECK_NDIV` / `+define+WAVES` (GUI [Run] passes none → unchanged); also cleans `*.shm`.
+- `0c3f48f` **GUI no-CLI workflow**: `vh_exampleTBs()` auto-discovers `examples/<x>/tb_*.vams` →
+  "Example TB (Stage C)" dropdown (resolved via `vh_exTbMap` → `--tb`); Stage C src falls back
+  `<out>/export`→`<out>`; new "xrun defines (Run)" field forwarded to `run.sh`. Live-verified on
+  the running Virtuoso (instantiate only, no hiDisplayForm).
 
 **SIDE THREAD — WuR_DIG_REFBUF_TOP_H1 (paused):** extracts clean now (config-view fix). Was
 blocked on the wreal `en` CUNDCM → Stage B monitor conversion (8dfd219) is the fix. **WuR NEXT:**
