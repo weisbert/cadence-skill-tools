@@ -1,12 +1,29 @@
 # verilog_helper — HANDOFF / design context
 
-## 0b. SESSION HANDOFF (2026-06-26)  — HEAD = `0c3f48f`, all pushed
+## 0b. SESSION HANDOFF (2026-06-26)  — HEAD = `0c3f48f`+, all pushed
 
-**NEXT FOCUS (resume here): run the NDIV real TB against the REAL export and read the result.**
+**ROOT CAUSE FOUND + FIXED (real run, red zone xcelium 19.04): the whole NDIV clock tree was
+DEAD** — even the front-end taps `CLK2CNT=VCO/4` and `TESTCLK=VCO/16` (which do NOT touch
+mmd_core) showed `no edges`. Cause: `pll_ndiv_div2_tspc` (the /2 TSPC prescaler, instances I7/I9
+feeding DIV4sig) is a flop **gated by a wreal supply-headroom check** `((VDD-VSS)>k)&&((VPP-VSS)>k)`,
+and the struct netlist instantiates it with **no supply connection** (`I7 (.CLK(fromVCO),.Q(net058))`
+— rails are global/inherited, `oa2verilog` drops them). Wreal rails float → `power_on=0` → `Q` stuck
+→ DIV4sig dead → everything hanging off it dead. **NOT #28.** Fix: Stage B now recognizes the
+supply-DIFFERENCE / headroom threshold form (`(SUP±SUP)<cmp>k → 1'b1`, was only `(SUP<cmp>k)`), so
+div2_tspc converts to a clean `always @(posedge CLK) Q<=~Q;` /2 divider. Reproduced + verified in
+`examples/wreal_prediv/` (`./run.sh`=PASS CLKOUT=VCO/4, `./run.sh raw`=dead).
+
+**NEXT FOCUS (resume here): re-run the real export through Stage B → C → Run.** On the GUI:
+**Convert B** (now converts div2_tspc) → **Generate C** (Example TB dropdown =
+`lpbt_ndiv/tb_LPBT_NDIV_TOP.vams`) → **Run** blank → expect CAL `CLK2CNT=VCO/4` + TEST
+`TESTCLK=VCO/16` **HARD PASS** and `OUT_NDIV/CLK2DSM` now **WARN-live**; then defines
+`+define+CHECK_NDIV` → `OUT_NDIV=VCO/4/(ndiv−1)`. (Watch `nor4 D`-drop perturbing exact N.) The
+real div2_tspc + full struct are saved in gitignored `examples/lpbt_ndiv/_ref/`.
+
 The real design `Hi1108_BT_LP_PLL_ANA.LPBT_NDIV_TOP` extracts CLEAN and ELABORATES (mmd_core fixed,
 counter no longer stubbed). The hand-written real TB is verified locally vs the good-model
 (`./run.sh` and `+define+CHECK_NDIV` → both `=== TB PASS ===`, VCO/4 + VCO/16 + VCO/36). Wiring it
-to the real netlist is now a **GUI click-flow** (no CLI). Open Verilog Helper and:
+to the real netlist is a **GUI click-flow** (no CLI). Open Verilog Helper and:
 1. **Output folder** = the extract dir (the one with `export/`; pointing straight at an `export/`
    dir also works — Stage C falls back from `<out>/export` to `<out>`).
 2. **Example TB (Stage C)** dropdown → `lpbt_ndiv/tb_LPBT_NDIV_TOP.vams` (auto-discovered from

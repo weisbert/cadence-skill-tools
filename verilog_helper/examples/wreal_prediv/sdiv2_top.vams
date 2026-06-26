@@ -1,0 +1,12 @@
+`timescale 1ps/1ps
+// Two sdiv2 in series = /4 prescaler (fromVCO -> net1 -> CLKOUT). KEY: the divider
+// instances get NO supply connection -- exactly what oa2verilog emits when the schematic
+// wires VDD/VPP/VSS through GLOBAL/inherited nets. So inside sdiv2 the wreal rails float
+// to 0, `(VDD-VSS)>k` is false, and CLKOUT is DEAD until Stage B converts the gate.
+module sdiv2_top ( CLKOUT, fromVCO, VDD, VPP, VSS );
+  input fromVCO, VDD, VPP, VSS;
+  output CLKOUT;
+  wire net1;
+  sdiv2 I7 ( .CLK(fromVCO), .Q(net1) );      // supplies intentionally unconnected
+  sdiv2 I9 ( .CLK(net1),    .Q(CLKOUT) );
+endmodule

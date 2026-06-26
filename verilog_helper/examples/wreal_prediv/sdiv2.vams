@@ -1,0 +1,22 @@
+//Verilog-AMS HDL -- SYNTHETIC, mirrors a real TSPC prescaler (pll_ndiv_div2_tspc).
+// A divide-by-2 flop GATED by a wreal supply HEADROOM check: it only counts while the
+// rails are nominal. The rails are read as analog levels via a DIFFERENCE threshold
+// `(VDD-VSS) > k` -- the form Stage B must recognize (a bare `(VDD>k)` is the easy case).
+`timescale 1ps/1ps
+`include "disciplines.vams"
+module sdiv2 ( Q, VDD, VPP, VSS, CLK );
+  input VPP;
+  input VDD;
+  output Q;
+  input CLK;
+  input VSS;
+  wire power_on;
+  initial begin Q = 1'b0; end
+  reg Q;
+  wreal VDD, VSS, VPP;
+  assign power_on = ((VDD-VSS)>0.8*0.9)&&((VPP-VSS)>0.8*0.9);
+  always @(posedge CLK) begin
+    if (power_on) Q <= ~Q;
+    else          Q <= 0;
+  end
+endmodule

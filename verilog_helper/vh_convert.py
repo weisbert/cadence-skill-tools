@@ -80,13 +80,34 @@ def _wreal_nets(body):
     return nets
 
 
+def _supply_threshold_pats(nets):
+    """Regexes (diff_pat, single_pat) for the threshold forms Stage B understands over the
+    wreal `nets`. Used by BOTH analyze_wreal_monitor (classify) and gen_wreal_logic (rewrite)
+    -- keep them in sync by going through this one builder.
+      diff_pat   : a rail HEADROOM check `(SUP +/- SUP) <cmp> <const>`  e.g. (VDD-VSS)>0.8*0.9
+      single_pat : a single-net threshold `(NET <cmp> <const>)`         e.g. (VDD>k) / (en>k)
+    The RHS `[^()&|;?]+` allows parameters/products (VNOM*0.9) but stops at ) & | ; ? so a
+    match can never straddle a comparison or a && / || / ?: boundary."""
+    sup = '|'.join(re.escape(n) for n in sorted((x for x in nets if SUPPLY_RE.match(x)),
+                                                 key=len, reverse=True)) or r'(?!x)x'
+    alln = '|'.join(re.escape(n) for n in sorted(nets, key=len, reverse=True)) or r'(?!x)x'
+    rhs = r'[^()&|;?]+'
+    diff = re.compile(r'\(?\s*(?:%s)\s*[-+]\s*(?:%s)\s*\)?\s*%s\s*%s' % (sup, sup, _CMP, rhs))
+    single = re.compile(r'\(?\s*(%s)\s*%s\s*%s\)?' % (alln, _CMP, rhs))
+    return diff, single
+
+
 def analyze_wreal_monitor(mi, src, body):
     """A wreal cell with NO analog block but whose wreal ports are read as analog LEVELS in
-    THRESHOLD comparisons -- a supply/enable monitor, e.g.
-        assign ok = (VDD > k) && (VSS < j) && (en > k);  assign OUT = ok ? IN : 1'b0;
-    On a logic design this wreal `en` meets a logic net -> *E,CUNDCM. The pure-digital intent:
-    supplies are ideal (their checks -> 1), a signal check `(en > k)` -> the logic enable `en`.
-    Returns a status dict, or None when this is not the pattern (leave it 'digital')."""
+    THRESHOLD comparisons -- a supply/enable monitor. Two threshold forms are recognized:
+        (VDD > k)             single supply rail        -> assumed-OK (1'b1)
+        (VDD - VSS) > k       rail HEADROOM / differential check -> assumed-OK (1'b1)
+        (en  > k)             a SIGNAL level            -> the logic net `en`
+    e.g. `assign ok=(VDD>k)&&(VSS<j)&&(en>k); assign OUT=ok?IN:0;` (a logic `en` meeting wreal
+    `en` -> *E,CUNDCM), and the TSPC prescaler gated by `((VDD-VSS)>k)&&((VPP-VSS)>k)`
+    (pll_ndiv_div2_tspc) whose supplies are wired by GLOBAL nets -> left unconnected in the
+    structural netlist -> wreal rails float to 0 -> gate false -> divider DEAD. Converting the
+    rail checks to 1'b1 revives it. Returns a status dict, or None when not the pattern."""
     nets = _wreal_nets(body)
     if not nets or FORBIDDEN.search(body) or re.search(r'\banalog\b', body):
         return None
@@ -94,15 +115,13 @@ def analyze_wreal_monitor(mi, src, body):
     for pat in (r'(?m)^[ \t]*wreal\b[^;]*;', r'(?m)^[ \t]*(input|output|inout)\b[^;]*;',
                 r'(?m)^[ \t]*(parameter|localparam)\b[^;]*;'):
         work = re.sub(pat, '', work)
-    used_cmp, bad = 0, set()
-    for net in nets:
-        for m in re.finditer(r'\b' + re.escape(net) + r'\b', work):
-            if re.match(r'\s*' + _CMP, work[m.end():m.end() + 4]):
-                used_cmp += 1
-            else:
-                bad.add(net)                      # used as a value, not just a threshold
+    diff_pat, single_pat = _supply_threshold_pats(nets)
+    used_cmp = len(diff_pat.findall(work)) + len(single_pat.findall(work))
     if used_cmp == 0:
         return None                               # wreal nets not used as thresholds -> not this
+    # strip every recognized threshold; any wreal net STILL present is used as a value -> bad
+    stripped = single_pat.sub(' ', diff_pat.sub(' ', work))
+    bad = set(n for n in nets if re.search(r'\b' + re.escape(n) + r'\b', stripped))
     base = {'contribs': [], 'outputs': set(), 'inputs': set(), 'wreal_nets': nets}
     if bad:
         return dict(base, status='flagged',
@@ -260,8 +279,7 @@ def gen_wreal_logic(mi, src, an):
     Everything else (muxes, assigns, params) is kept. Result is pure logic -> no boundary."""
     nets = an['wreal_nets']
     text = re.sub(r'(?m)^[ \t]*wreal\b[^;]*;[ \t]*\n?', '', src)   # nets -> logic
-    cmp_pat = re.compile(r'\(\s*(' + '|'.join(re.escape(n) for n in nets) + r')\s*'
-                         + _CMP + r'\s*[^()]*?\)')
+    diff_pat, single_pat = _supply_threshold_pats(nets)
 
     def repl(m):
         net, op = m.group(1), m.group(2)
@@ -269,7 +287,8 @@ def gen_wreal_logic(mi, src, an):
             return "1'b1"                          # supply rail assumed nominal in pure-digital
         return net if op[0] == '>' else ('!' + net)   # signal: active-high / active-low
 
-    text = cmp_pat.sub(repl, text)
+    text = diff_pat.sub("1'b1", text)              # rail HEADROOM (VDD-VSS)>k -> nominal
+    text = single_pat.sub(repl, text)              # single supply -> 1'b1 ; signal -> net/!net
     header = ('`include "disciplines.vams"\n`timescale 1s/1fs\n'
               '// AUTO-GENERATED logic conversion of wreal supply/enable monitor "%s"\n'
               '// (vh_convert / Stage B): supply thresholds -> assumed-OK (1\'b1), signal\n'
