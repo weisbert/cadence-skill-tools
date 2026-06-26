@@ -4,31 +4,33 @@
 //
 // Strategy = "period-ratio" check: drive fromVCO as a square clock, set the divide
 // word + the live enables (lpbt_en NC), and for each MODE measure
-// period(out)/period(fromVCO) and assert the expected divide, plus assert that the
-// outputs which should be quiet in that mode have no edges.
+// period(out)/period(fromVCO) and assert the expected divide, plus assert the
+// outputs which should be quiet in that mode have no edges, plus assert OUT_NDIV's
+// duty cycle.
 //
-// MODE behaviors below are CONFIRMED FROM THE STAGE-A NETLIST (clock tree traced
-// 2026-06-26), not guessed:
+// MODE behaviors are CONFIRMED FROM THE STAGE-A NETLIST (clock tree traced 2026-06-26):
 //   front-end : fromVCO -div2(I7)- -div2(I9)- DIV4sig = VCO/4   (the /4 prescaler)
 //   CAL  cal_en=1 : CLK2CNT=nand(DIV4sig,cal_en)=VCO/4 ; NDIVCKIN=nor(DIV4sig,cal_en)
 //                   frozen -> OUT_NDIV/CLK2DSM quiet ; TESTCLK pulled low (en_test=0)
 //   TEST en_test=1: DIV4sig -div4_tspc- = VCO/16 -> TESTCLK_300M ; CLK2CNT static-high
-//                   OUT_NDIV=CLK2DSM=VCO/4/M (divider still runs, cal_en=0)
-//   NORM cal_en=0 : OUT_NDIV=CLK2DSM=VCO/4/M ; CLK2CNT static-high ; TESTCLK low
-// The only NON-netlist assumption is M = ndiv[7:0]-1 (user spec) -> localparam.
+//                   OUT_NDIV=CLK2DSM=VCO/4/(ndiv-1) (divider runs, cal_en=0)
+//   NORM cal_en=0 : OUT_NDIV=CLK2DSM=VCO/4/(ndiv-1) ; CLK2CNT static-high ; TESTCLK low
+// NON-netlist assumption: M = ndiv[7:0]-1 (user spec) -> localparam.
 //
-// OUT_NDIV/CLK2DSM run through mmd_8bit->mmd_core, which is hollow today (#28: the
-// mmd_core view we descend has interface {N_div,N_div_sel,SUB,clk,out_dsm,out_pd,
-// rstn} but mmd_8bit instantiates a core with {E_pfd,Nor,q1,q2,divisor_b,clk_to_PFD,
-// reload...} -> clk_to_PFD undriven). So gate the divider check behind
-// +define+CHECK_NDIV; without it NORM/TEST OUT_NDIV/CLK2DSM are liveness WARN only.
-// The CAL/TEST front-end taps (VCO/4, VCO/16) do NOT touch mmd_core -> they are real
-// HARD checks that pass on the red zone TODAY.
+// OUT_NDIV = clk_to_PFD = DFF_out.Q reclocked on NDIVCKIN(=VCO/4). pwsel (d_ndiv_pw_sel)
+// selects WHICH counter state fires the EOC that drops clk_to_PFD = positions the falling
+// edge. Validated duty law (sim, 2026-06-26):
+//     low(NDIVCKIN) = pwsel-3 ; high = (ndiv-1)-(pwsel-3) ; duty = (ndiv+2-pwsel)/(ndiv-1)
+//     => 50% duty  <=>  pwsel = (ndiv+5)/2   AND   ndiv % 4 == 3   (pwsel bit0 is unused, so
+//        low quantizes ODD -> exact 50% only when (ndiv-1)/2 is an odd integer).
+// So NDIV_TEST must be == 3 (mod 4) for the 50% duty check below to be exact. CLK2DSM
+// (=SDMOUT) rises a FIXED 8.5 VCO = 2.125 NDIVCKIN cycles AFTER OUT_NDIV (structural,
+// ndiv-independent). The CAL/TEST front-end taps (VCO/4, VCO/16) do NOT touch the mmd.
 // -----------------------------------------------------------------------------
 
-// measurement slots: rising-edge count + running-average period (via $realtime)
+// measurement slots: rising-edge count + running-average period + high-time (for duty)
 //   0 = OUT_NDIV   1 = CLK2DSM   2 = CLK2CNT   3 = TESTCLK_300M
-`define RST(i) lr[i] = -1.0; ps[i] = 0.0; pn[i] = 0; ed[i] = 0;
+`define RST(i) lr[i] = -1.0; ps[i] = 0.0; pn[i] = 0; ed[i] = 0; hr[i] = -1.0; hs[i] = 0.0; hn[i] = 0;
 
 `define CKR(label, i, gold) \
   avgp  = (pn[i] > 0) ? (ps[i] / pn[i]) : 0.0; \
@@ -42,11 +44,13 @@
   if (ed[i] > 0) begin $display("  FAIL %0s: expected quiet, saw %0d edges", label, ed[i]); fails = fails + 1; end \
   else $display("  PASS %0s: quiet", label);
 
-// soft report (does NOT fail the TB): OUT_NDIV/CLK2DSM depend on the hollow
-// mmd_core(#28)+stubbed counter, so they may not toggle yet -- expected.
-`define CKWARN(label, i) \
-  if (ed[i] > 0) $display("  WARN %0s: live (%0d edges) -- functional N-check deferred to #28", label, ed[i]); \
-  else $display("  WARN %0s: NOT toggling (expected until #28 mmd_core view + counter resolved)", label);
+// duty check: 100*avg_high/avg_period vs goldpct, tolerance DTOL (percent points)
+`define CKD(label, i, goldpct) \
+  duty = (hn[i] > 0 && pn[i] > 0) ? (100.0 * (hs[i]/hn[i]) / (ps[i]/pn[i])) : -1.0; \
+  if (duty < 0.0) begin $display("  FAIL %0s duty: no edges", label); fails = fails + 1; end \
+  else if ((duty > ((goldpct)+DTOL)) || (duty < ((goldpct)-DTOL))) begin \
+    $display("  FAIL %0s duty = %0.1f%% (expected %0d%% +/-%0.0f)", label, duty, goldpct, DTOL); fails = fails + 1; end \
+  else $display("  PASS %0s duty = %0.1f%% (expected %0d%%)", label, duty, goldpct);
 
 module tb_LPBT_NDIV_TOP;
   // ---- slot indices ---------------------------------------------------------
@@ -54,10 +58,12 @@ module tb_LPBT_NDIV_TOP;
 
   // ---- knobs ----------------------------------------------------------------
   localparam integer TVCO      = 200;                 // VCO period [ps] (=5GHz; 4.8G also OK)
-  localparam integer NDIV_TEST = 10;                  // divide word ndiv[7:0]
+  localparam integer NDIV_TEST = 11;                  // divide word ndiv[7:0]; ==3 (mod 4) for exact 50% duty
   localparam integer M_GOLD    = NDIV_TEST - 1;       // MMD divisor    = ndiv-1  (user spec)
   localparam integer D_GOLD    = 4 * (NDIV_TEST - 1); // total = VCO / 4 / (ndiv-1) (netlist /4)
-  localparam real    TOL       = 0.05;                // ratio tolerance
+  localparam integer PWSEL     = (NDIV_TEST + 5) / 2; // duty law: pwsel=(ndiv+5)/2 -> 50% (ndiv%4==3)
+  localparam real    TOL       = 0.05;                // divide-ratio tolerance
+  localparam real    DTOL      = 3.0;                 // duty tolerance [percent points]
   localparam integer SETTLE    = 60   * TVCO;         // let a mode settle before measuring
   localparam integer WIN       = 4000 * TVCO;         // measurement window
 
@@ -70,13 +76,16 @@ module tb_LPBT_NDIV_TOP;
   reg         VDD, VPP, VSS, VDD_VCO, VPP_VCO, VSS_VCO, psub;
 
   integer fails;
-  real    avgp, ratio;
+  real    avgp, ratio, duty;
 
   // ---- measurement state ----------------------------------------------------
   real    lr [0:3];      // last rising-edge time
   real    ps [0:3];      // accumulated period
   integer pn [0:3];      // period samples
   integer ed [0:3];      // rising-edge count
+  real    hr [0:3];      // last rising-edge time (for high-time / duty)
+  real    hs [0:3];      // accumulated HIGH time
+  integer hn [0:3];      // high-time samples
 
   LPBT_NDIV_TOP dut (
     .fromVCO(fromVCO), .ndiv(ndiv), .pwsel(pwsel),
@@ -90,17 +99,21 @@ module tb_LPBT_NDIV_TOP;
   initial fromVCO = 1'b0;
   always #(TVCO/2) fromVCO = ~fromVCO;
 
-  // ---- edge measurement (one always per observed output) --------------------
+  // ---- edge measurement (period via posedge, high-time via posedge->negedge) ----
   always @(posedge OUT_NDIV) begin
     ed[I_OUT] = ed[I_OUT] + 1;
     if (lr[I_OUT] >= 0.0) begin ps[I_OUT] = ps[I_OUT] + ($realtime - lr[I_OUT]); pn[I_OUT] = pn[I_OUT] + 1; end
-    lr[I_OUT] = $realtime;
+    lr[I_OUT] = $realtime;  hr[I_OUT] = $realtime;
   end
+  always @(negedge OUT_NDIV)
+    if (hr[I_OUT] >= 0.0) begin hs[I_OUT] = hs[I_OUT] + ($realtime - hr[I_OUT]); hn[I_OUT] = hn[I_OUT] + 1; end
   always @(posedge CLK2DSM) begin
     ed[I_DSM] = ed[I_DSM] + 1;
     if (lr[I_DSM] >= 0.0) begin ps[I_DSM] = ps[I_DSM] + ($realtime - lr[I_DSM]); pn[I_DSM] = pn[I_DSM] + 1; end
-    lr[I_DSM] = $realtime;
+    lr[I_DSM] = $realtime;  hr[I_DSM] = $realtime;
   end
+  always @(negedge CLK2DSM)
+    if (hr[I_DSM] >= 0.0) begin hs[I_DSM] = hs[I_DSM] + ($realtime - hr[I_DSM]); hn[I_DSM] = hn[I_DSM] + 1; end
   always @(posedge CLK2CNT) begin
     ed[I_CNT] = ed[I_CNT] + 1;
     if (lr[I_CNT] >= 0.0) begin ps[I_CNT] = ps[I_CNT] + ($realtime - lr[I_CNT]); pn[I_CNT] = pn[I_CNT] + 1; end
@@ -116,7 +129,7 @@ module tb_LPBT_NDIV_TOP;
   initial begin
     fails   = 0;
     ndiv    = NDIV_TEST;          // ndiv[13:8] are NC -> upper bits don't matter
-    pwsel   = 6'b000010;          // pwsel[1]=1 (duty step); pwsel[0] NC -> don't-care
+    pwsel   = PWSEL;              // = (ndiv+5)/2 -> 50% duty on OUT_NDIV (see header)
     ndiv_en = 1'b0; cal_en = 1'b0; en_test = 1'b0; lpbt_en = 1'b0;   // lpbt_en NC
     {VDD,VPP,VDD_VCO,VPP_VCO} = 4'b1111;
     {VSS,VSS_VCO,psub}        = 3'b000;
@@ -141,29 +154,28 @@ module tb_LPBT_NDIV_TOP;
     $display("== TEST (ndiv_en=1,cal_en=0,en_test=1) ==");
     `CKR("TESTCLK_300M = VCO/16", I_TST, 16)  // CONFIRMED netlist: DIV4sig->div4_tspc, front-end tap
     `CKQ("CLK2CNT static (cal_en=0)", I_CNT)  // CONFIRMED netlist: nand(DIV4sig,0)=1
-`ifdef CHECK_NDIV
-    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)   // needs #28; M=ndiv-1 is spec
+    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)
     `CKR("CLK2DSM = VCO/4/(ndiv-1)",  I_DSM, D_GOLD)
-`else
-    `CKWARN("OUT_NDIV", I_OUT)
-    `CKWARN("CLK2DSM",  I_DSM)
-`endif
 
     // ===================== MODE: NORMAL divide =====================
     cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b0;
     #(SETTLE);
     `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
     #(WIN);
-    $display("== NORM (ndiv_en=1,cal_en=0) : ndiv=%0d -> D=4*(ndiv-1)=%0d ==", NDIV_TEST, D_GOLD);
+    $display("== NORM (ndiv_en=1,cal_en=0) : ndiv=%0d pwsel=%0d -> D=4*(ndiv-1)=%0d ==", NDIV_TEST, PWSEL, D_GOLD);
     `CKQ("CLK2CNT static (cal_en=0)", I_CNT)  // CONFIRMED netlist
     `CKQ("TESTCLK low (en_test=0)",   I_TST)  // CONFIRMED netlist
-`ifdef CHECK_NDIV
-    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)   // needs #28; M=ndiv-1 is spec
+    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)
     `CKR("CLK2DSM = VCO/4/(ndiv-1)",  I_DSM, D_GOLD)
-`else
-    `CKWARN("OUT_NDIV", I_OUT)
-    `CKWARN("CLK2DSM",  I_DSM)
-`endif
+    // OUT_NDIV duty: hard 50% check when ndiv%4==3 (exact), else informational
+    if ((NDIV_TEST % 4) == 3) begin
+      `CKD("OUT_NDIV", I_OUT, 50)
+    end else begin
+      duty = (hn[I_OUT]>0 && pn[I_OUT]>0) ? (100.0*(hs[I_OUT]/hn[I_OUT])/(ps[I_OUT]/pn[I_OUT])) : 0.0;
+      $display("  INFO OUT_NDIV duty = %0.1f%% (exact 50%% only when ndiv%%4==3 with pwsel=(ndiv+5)/2)", duty);
+    end
+    duty = (hn[I_DSM]>0 && pn[I_DSM]>0) ? (100.0*(hs[I_DSM]/hn[I_DSM])/(ps[I_DSM]/pn[I_DSM])) : 0.0;
+    $display("  INFO CLK2DSM(SDMOUT) duty = %0.1f%% ; SDMOUT.pe lags OUT_NDIV.pe by 8.5 VCO (fixed)", duty);
 
     // ---- verdict ----
     if (fails == 0) $display("=== TB PASS ===");

@@ -33,12 +33,18 @@ a fixed ~3-cycle tail. Empirical fit (exact at every point):
   low(NDIVCKIN)  = pwsel - 3
   high           = (ndiv-1) - (pwsel-3) = ndiv+2 - pwsel
   duty           = (ndiv+2 - pwsel) / (ndiv-1)
-  => 50% duty  <=>  **pwsel = (ndiv+5)/2**  (= ndiv/2 + 2.5, NOT ndiv/2)
-Exact 50% needs ODD ndiv (so (ndiv+5)/2 is integer). VERIFIED: ndiv=83 -> pwsel=44 -> duty 50.0%
-(high 41 / period 82); the whole sweep matched duty=(85-pwsel)/82 to the decimal. pwsel bit0 is
-unused (44 == 45). The user's first guess pwsel=ndiv/2 divides correctly but gives 60-89% duty
-(the +2.5 reload-tail offset is why). TODO offered: set TB pwsel=(ndiv+5)/2 and promote OUT_NDIV
-to a hard CKR + duty check.
+  => 50% duty  <=>  **pwsel = (ndiv+5)/2  AND  ndiv % 4 == 3**
+pwsel bit0 is UNUSED so low quantizes to ODD NDIVCKIN counts (low=2*floor(pwsel/2)-3); exact 50%
+needs (ndiv-1)/2 to be an odd integer => ndiv == 3 (mod 4). (Earlier "odd ndiv" was too loose:
+ndiv=13,17,21 give 55-58%, NOT 50%; ndiv=11,23,43,83 give exactly 50%.) VERIFIED: ndiv=83->pwsel44
+->50.0%, ndiv=11->pwsel8->50.0%. User's first guess pwsel=ndiv/2 divides right but gives 60-89%
+duty (the +2.5 reload-tail offset is why).
+PHASE: CLK2DSM(SDMOUT) rising edge lags OUT_NDIV rising edge by a FIXED **8.5 VCO = 2.125 NDIVCKIN
+cycles** (1700ps), zero jitter, independent of ndiv (23/43/83 all 8.5 VCO) -- structural, set by
+the reload tail.
+DONE: `testbenches/tb_LPBT_NDIV_TOP.vams` now defaults ndiv=11, pwsel=(NDIV_TEST+5)/2, and HARD-
+checks OUT_NDIV divide (VCO/40) + OUT_NDIV duty (50%+/-3pp) unconditionally (no more +CHECK_NDIV
+gate / no CKWARN). Validated: default `bash run.sh` -> all PASS, `=== TB PASS ===`, FUNCTIONAL.
 
 **CORRECTION to an earlier claim in this section (do not trust the struck-through line below):**
 the user fixed the `nor4_svt_x2` model (added the 4th input `D`; `I281.D(reload1)` now connected;
