@@ -522,6 +522,12 @@ def drop_wreal_supply(text, port_disc, warns=None, report=None):
     return drop_instance_ports(text, drops)
 
 
+def _is_supply_or_clk(port):
+    """A port carrying no functional logic signal (supply/ground/clock) -- dropping its
+    connection in a reconcile is harmless; dropping a FUNCTIONAL pin changes behavior."""
+    return bool(SUPPLY_RE.match(port)) or "clk" in port.lower() or "clock" in port.lower()
+
+
 def reconcile_ports(text, port_index, warns=None, report=None):
     """Drop instance connections to ports their (known) master does NOT have -- the cause
     of `*E,CUVPOM "Port name 'X' is invalid"` (e.g. power pins VPP/VDD on the symbol but
@@ -551,10 +557,18 @@ def reconcile_ports(text, port_index, warns=None, report=None):
                          % (host, it["inst"], mas, sorted(connected)[:10], sorted(mports), mas))
             continue
         drops[(mas, it["inst"])] = absent
+        func = sorted(p for p in absent if not _is_supply_or_clk(p))
         for p in sorted(absent):
-            report.append({"module": host, "inst": it["inst"], "master": mas, "dropped_port": p})
-        warns.append("module '%s': dropped %s on '%s' (%s has no such port) -> reconciled "
-                     "to the cell's actual interface" % (host, sorted(absent), it["inst"], mas))
+            report.append({"module": host, "inst": it["inst"], "master": mas,
+                           "dropped_port": p, "functional": not _is_supply_or_clk(p)})
+        if func:
+            warns.append("module '%s': FUNCTIONAL pin(s) %s dropped on '%s' -- '%s' behavioral "
+                         "model lacks a pin its symbol drives; the cell computes WITHOUT it "
+                         "(logic may differ). Align the cell's model<->symbol, or confirm it is "
+                         "a don't-care." % (host, func, it["inst"], mas))
+        else:
+            warns.append("module '%s': dropped supply/clk %s on '%s' (%s lacks it) -> reconciled"
+                         % (host, sorted(absent), it["inst"], mas))
     return drop_instance_ports(text, drops)
 
 

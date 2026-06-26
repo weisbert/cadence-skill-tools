@@ -404,6 +404,10 @@ def main():
         p("    descended interface (%d): %s" % (len(desc_ports), ", ".join(desc_ports) or "(none)"))
         p("    parent still connects   : %s" % (", ".join(sorted(surviving)) or "(none)"))
         p("    DROPPED (parent wanted, this view lacks): %s" % ", ".join(dropped))
+        if sig_dropped and not wrong:
+            p("    >>> FUNCTIONAL pin(s) dropped: %s -- the behavioral model lacks a pin the "
+              "symbol drives; the cell computes WITHOUT it (logic may differ). Align the cell's "
+              "model<->symbol, or confirm it is a don't-care." % ", ".join(sig_dropped))
         if libs:
             for Lname, vw in cell_views(mas, libs):
                 p("    on-disk views in '%s': %s" % (Lname, ", ".join(vw)))
