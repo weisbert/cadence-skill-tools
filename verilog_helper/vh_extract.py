@@ -946,12 +946,18 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
 
     os.makedirs(out_dir, exist_ok=True)
     export = os.path.join(out_dir, "export")
-    os.makedirs(export, exist_ok=True)
     # PRISTINE originals are copied here too. export/ is the verification set (its leaf
     # copies get OVERWRITTEN by Stage B's digital conversion); orig/ is never touched, so
     # you always have the source and can diff orig/<cell> vs export/<cell>.
     orig = os.path.join(out_dir, "orig")
-    os.makedirs(orig, exist_ok=True)
+    # FRESH each run. A prior extraction's files MUST NOT linger: if a cell was gathered last
+    # time under a different extension (.va vs .vams), the stale twin survives, xrun compiles
+    # BOTH, and the raw twin silently shadows this run's (converted) leaf -> dead logic that
+    # re-extraction appears not to fix. Wipe + recreate so export/ is EXACTLY this run's gather.
+    for _d in (export, orig):
+        if os.path.isdir(_d):
+            shutil.rmtree(_d)
+        os.makedirs(_d)
 
     def _gather_copy(src, module, ext):
         # ONE export file per MODULE. A cell with BOTH a veriloga (.va) AND a verilogams
