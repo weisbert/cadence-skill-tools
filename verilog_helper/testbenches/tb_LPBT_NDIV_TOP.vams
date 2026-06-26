@@ -1,4 +1,4 @@
-`timescale 1ps/1ps
+`timescale 1ps/1fs
 // -----------------------------------------------------------------------------
 // tb_LPBT_NDIV_TOP.vams -- real testbench for the LPBT_NDIV_TOP feedback divider.
 //
@@ -57,15 +57,18 @@ module tb_LPBT_NDIV_TOP;
   localparam integer I_OUT = 0, I_DSM = 1, I_CNT = 2, I_TST = 3;
 
   // ---- knobs ----------------------------------------------------------------
-  localparam integer TVCO      = 200;                 // VCO period [ps] (=5GHz; 4.8G also OK)
-  localparam integer NDIV_TEST = 11;                  // divide word ndiv[7:0]; ==3 (mod 4) for exact 50% duty
+  // VCO = 4.8 GHz.  NDIVCKIN=CLK2CNT=VCO/4=1.2 GHz ; TESTCLK_300M=VCO/16=300 MHz ;
+  // OUT_NDIV=CLK2DSM=VCO/4/(ndiv-1).  ndiv=51 -> D=200 -> 4.8 GHz/200 = 24 MHz.
+  localparam real    TVCO      = 1000.0 / 4.8;        // VCO period [ps] -> 4.8 GHz input clock
+  localparam integer NDIV_TEST = 51;                  // ndiv; D=4*(ndiv-1)=200 -> 24 MHz out
+                                                       // 51 == 3 (mod 4) -> exact 50% duty achievable
   localparam integer M_GOLD    = NDIV_TEST - 1;       // MMD divisor    = ndiv-1  (user spec)
   localparam integer D_GOLD    = 4 * (NDIV_TEST - 1); // total = VCO / 4 / (ndiv-1) (netlist /4)
-  localparam integer PWSEL     = (NDIV_TEST + 5) / 2; // duty law: pwsel=(ndiv+5)/2 -> 50% (ndiv%4==3)
+  localparam integer PWSEL     = (NDIV_TEST + 5) / 2; // duty law: pwsel=(ndiv+5)/2 -> 50% = (51+5)/2 = 28
   localparam real    TOL       = 0.05;                // divide-ratio tolerance
   localparam real    DTOL      = 3.0;                 // duty tolerance [percent points]
-  localparam integer SETTLE    = 60   * TVCO;         // let a mode settle before measuring
-  localparam integer WIN       = 4000 * TVCO;         // measurement window
+  localparam real    SETTLE    = 4.0  * D_GOLD * TVCO; // settle >= a few output periods
+  localparam real    WIN       = 30.0 * D_GOLD * TVCO; // measure over ~30 output periods
 
   // ---- DUT I/O --------------------------------------------------------------
   reg         fromVCO;
@@ -97,7 +100,7 @@ module tb_LPBT_NDIV_TOP;
 
   // ---- VCO clock ------------------------------------------------------------
   initial fromVCO = 1'b0;
-  always #(TVCO/2) fromVCO = ~fromVCO;
+  always #(TVCO/2.0) fromVCO = ~fromVCO;
 
   // ---- edge measurement (period via posedge, high-time via posedge->negedge) ----
   always @(posedge OUT_NDIV) begin
@@ -163,6 +166,8 @@ module tb_LPBT_NDIV_TOP;
     `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
     #(WIN);
     $display("== NORM (ndiv_en=1,cal_en=0) : ndiv=%0d pwsel=%0d -> D=4*(ndiv-1)=%0d ==", NDIV_TEST, PWSEL, D_GOLD);
+    $display("  FREQ VCO = %0.3f GHz -> OUT_NDIV = %0.3f MHz (divide /%0d)",
+             1000.0/TVCO, 1.0e6/(D_GOLD*TVCO), D_GOLD);
     `CKQ("CLK2CNT static (cal_en=0)", I_CNT)  // CONFIRMED netlist
     `CKQ("TESTCLK low (en_test=0)",   I_TST)  // CONFIRMED netlist
     `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)

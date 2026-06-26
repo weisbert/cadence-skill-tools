@@ -42,9 +42,14 @@ duty (the +2.5 reload-tail offset is why).
 PHASE: CLK2DSM(SDMOUT) rising edge lags OUT_NDIV rising edge by a FIXED **8.5 VCO = 2.125 NDIVCKIN
 cycles** (1700ps), zero jitter, independent of ndiv (23/43/83 all 8.5 VCO) -- structural, set by
 the reload tail.
-DONE: `testbenches/tb_LPBT_NDIV_TOP.vams` now defaults ndiv=11, pwsel=(NDIV_TEST+5)/2, and HARD-
-checks OUT_NDIV divide (VCO/40) + OUT_NDIV duty (50%+/-3pp) unconditionally (no more +CHECK_NDIV
-gate / no CKWARN). Validated: default `bash run.sh` -> all PASS, `=== TB PASS ===`, FUNCTIONAL.
+DONE: `testbenches/tb_LPBT_NDIV_TOP.vams` defaults to the real operating point: **VCO=4.8 GHz**
+(TVCO=1000/4.8 ps, timescale 1ps/1fs), **ndiv=51 -> D=200 -> OUT_NDIV=24 MHz**, pwsel=(ndiv+5)/2=28
+(51==3 mod4 -> exact 50% duty). HARD-checks (unconditional, no +CHECK_NDIV / no CKWARN): CLK2CNT=
+VCO/4 (1.2 GHz), TESTCLK_300M=VCO/16 (300 MHz, matches cell name), OUT_NDIV/CLK2DSM=VCO/200,
+OUT_NDIV duty 50%+/-3pp; prints a FREQ line. SETTLE/WIN scale with D_GOLD. Validated: `bash run.sh`
+-> all PASS, FREQ "VCO=4.800 GHz -> OUT_NDIV=24.000 MHz", `=== TB PASS ===`.
+REPORT TOOL: `vh_ndiv_report.py` -> report/report.md (per-mode table + path map) + 4 genuine
+SimVision screenshots captured headless (Xvfb+PIL); zoom windows auto-scale to VCO freq + divide.
 
 **CORRECTION to an earlier claim in this section (do not trust the struck-through line below):**
 the user fixed the `nor4_svt_x2` model (added the 4th input `D`; `I281.D(reload1)` now connected;

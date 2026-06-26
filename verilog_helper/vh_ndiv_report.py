@@ -42,12 +42,13 @@ def run_sim(simdir):
 
 
 def parse_log(logpath):
-    """-> (rows, finish_ns). rows = [(mode,label,status,detail)]."""
-    rows, mode, finish = [], "?", None
+    """-> (rows, finish_ns, fvco_ghz, D). rows = [(mode,label,status,detail)]."""
+    rows, mode, finish, fvco, D = [], "?", None, None, None
     mre = re.compile(r"^==\s*(CAL|TEST|NORM)\b")
     cre = re.compile(r"^\s+(PASS|FAIL|WARN|INFO)\s+(.*)$")
-    fre = re.compile(r"\$finish.*?at time\s+([0-9.]+)\s*([num]?s)", re.I)
-    fre2 = re.compile(r"complete.*?at time\s+([0-9.]+)\s*([num]?s)", re.I)
+    fre = re.compile(r"(?:\$finish|complete).*?at time\s+([0-9.]+)\s*([fnum]?s)", re.I)
+    qre = re.compile(r"VCO\s*=\s*([0-9.]+)\s*GHz")
+    dre = re.compile(r"OUT_NDIV\s*=\s*VCO/4/\(ndiv-1\).*?VCO/([0-9]+)")
     for ln in open(logpath, errors="replace"):
         m = mre.search(ln)
         if m:
@@ -57,11 +58,15 @@ def parse_log(logpath):
             stat, rest = c.group(1), c.group(2).strip()
             label, _, detail = rest.partition(":")
             rows.append((mode, label.strip() or rest, stat, detail.strip()))
-        f = fre.search(ln) or fre2.search(ln)
+        q = qre.search(ln)
+        if q: fvco = float(q.group(1))
+        d = dre.search(ln)
+        if d: D = int(d.group(1))
+        f = fre.search(ln)
         if f:
             v = float(f.group(1)); u = (f.group(2) or "ns").lower()
-            finish = v * {"s": 1e9, "ms": 1e6, "us": 1e3, "ns": 1.0}.get(u, 1.0)
-    return rows, (finish or 2440.0)
+            finish = v * {"s": 1e9, "ms": 1e6, "us": 1e3, "ns": 1.0, "fs": 1e-6}.get(u, 1.0)
+    return rows, (finish or 2440.0), fvco, D
 
 
 # ---------------------------------------------------------------- SimVision capture
@@ -138,13 +143,23 @@ def capture(simdir, repdir, name, mn, mx, disp, env):
 
 
 # ---------------------------------------------------------------- report
-def windows(T):
-    """zoom windows (ns) per mode -- 80% into each third (settled), 64ns wide."""
+def windows(T, fvco, D):
+    """Per-mode zoom windows (ns), each ending near its mode's end (settled).
+    Widths scale to the signal shown: a few cycles of CLK2CNT(VCO/4) / TESTCLK(VCO/16)
+    / OUT_NDIV(VCO/D). Falls back to fixed widths if fvco/D weren't parsed."""
     third = T / 3.0
+    tv = (1.0 / fvco) if fvco else 0.2                 # VCO period [ns]
+    dd = D or 40
+    wcal  = max(8.0,  12 * 4  * tv)                    # ~12 CLK2CNT cycles
+    wtest = max(40.0, 1.6 * dd * tv)                   # ~1.6 OUT periods (TESTCLK is fast)
+    wnorm = max(60.0, 4.0 * dd * tv)                   # ~4 OUT periods
+    def win(k, w):
+        end = (k + 1) * third * 0.985                  # near mode end, settled
+        return "%gns" % max(0.0, end - w), "%gns" % end
     return [("overview", "0", "%gns" % T),
-            ("cal",  "%gns" % (0.80 * third),         "%gns" % (0.80 * third + 64)),
-            ("test", "%gns" % (third + 0.80 * third), "%gns" % (third + 0.80 * third + 64)),
-            ("norm", "%gns" % (2 * third + 0.78 * third), "%gns" % (2 * third + 0.78 * third + 64))]
+            ("cal",  *win(0, wcal)),
+            ("test", *win(1, wtest)),
+            ("norm", *win(2, wnorm))]
 
 
 def report_md(rows, T, pngs, fails):
@@ -186,7 +201,7 @@ def main():
     log = os.path.join(simdir, "xrun.log")
     if not args.no_run:
         log = run_sim(simdir)
-    rows, T = parse_log(log)
+    rows, T, fvco, D = parse_log(log)
     fails = sum(1 for _, _, s, _ in rows if s == "FAIL")
 
     print("[2/3] verification table")
@@ -198,7 +213,7 @@ def main():
     print("[3/3] capturing SimVision waveforms (headless)")
     env = sim_env(simdir)
     pngs = []
-    for name, mn, mx in windows(T):
+    for name, mn, mx in windows(T, fvco, D):
         png, ok = capture(simdir, repdir, name, mn, mx, args.display, env)
         print("  %-9s %s  %s" % (name, "%s..%s" % (mn, mx), "OK" if ok else "(layout only)"))
         pngs.append((name, png, ok))
