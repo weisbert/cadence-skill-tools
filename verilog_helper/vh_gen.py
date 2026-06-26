@@ -481,6 +481,17 @@ def main():
     args = ap.parse_args()
 
     files, mods, index, dups = vp.parse_files(args.src)
+    if dups:
+        # compiling two files that define the same module is never correct: xrun loads both
+        # and the raw twin can silently win (a converted leaf gets shadowed -> dead logic).
+        # Fail loud and actionable rather than build a silently-wrong sim.
+        msg = ["ERROR: duplicate module definition(s) in the source set -- xrun would compile",
+               "two definitions of the same module (the raw twin can silently shadow the",
+               "converted one). Re-run Extract A (it now keeps ONE file per module) or delete",
+               "the stray file:"]
+        for n, f2, f1 in dups:
+            msg += ["  %s:" % n, "    %s" % f1, "    %s" % f2]
+        sys.exit("\n".join(msg))
     g = vp.build_graph(mods, index)
 
     # external HDL env: explicit --ext-* > Stage-A manifest ext_env > remembered store
@@ -653,11 +664,6 @@ def main():
         out.append("EXTERNAL ENV baked into run.sh:  %s" % " ".join(ext_flags))
     for w in ext_warns:
         tb_warns.append(w)
-    if dups:
-        out.append("")
-        out.append("DUPLICATE module defs (first kept):")
-        for n, f2, f1 in dups:
-            out.append("  - %s: ignored %s" % (n, f2))
     if tb_warns:
         out.append("")
         out.append("TB WARNINGS:")

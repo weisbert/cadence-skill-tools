@@ -954,19 +954,33 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     os.makedirs(orig, exist_ok=True)
 
     def _gather_copy(src, module, ext):
+        # ONE export file per MODULE. A cell with BOTH a veriloga (.va) AND a verilogams
+        # (.vams) view on disk would otherwise land as two same-name modules in export/ ->
+        # xrun compiles both -> a duplicate def, and Stage B converts only the one the manifest
+        # records -> the RAW twin silently wins (this is what left LPBT_NDIV_TOP's div2_tspc
+        # dead after Convert B). If this module was already copied under either ext, keep it.
+        for e in (".vams", ".va"):
+            prior = os.path.join(export, module + e)
+            if os.path.exists(prior):
+                return prior
         dst = os.path.join(export, module + ext)
         shutil.copyfile(src, dst)
         shutil.copyfile(src, os.path.join(orig, module + ext))   # pristine, Stage B never touches
         return dst
 
-    # gather leaf .va bodies
+    # gather leaf .va bodies (one manifest entry per module -- a cell reached via several
+    # instances must not produce duplicate veriloga_leaves)
     gathered = []
+    gathered_names = set()
     for lf in leaves:
+        if lf["module"] in gathered_names:
+            continue
         ext = ".vams" if lf["src"].endswith(".vams") else ".va"
         dst = _gather_copy(lf["src"], lf["module"], ext)
         gathered.append({"module": lf["module"], "lib": lf["lib"],
                          "src": lf["src"], "gathered": os.path.relpath(dst, out_dir),
                          "forced_binding": lf["forced_binding"]})
+        gathered_names.add(lf["module"])
 
     # A gathered verilogams can itself be STRUCTURAL -- instantiating further cells
     # (e.g. a delay cell built from inverter/nor cells). The oa2verilog schematic
