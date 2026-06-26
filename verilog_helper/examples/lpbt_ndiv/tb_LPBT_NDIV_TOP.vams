@@ -171,6 +171,16 @@ module tb_LPBT_NDIV_TOP;
     $finish;
   end
 
+  // ---- waveform dump (opt-in: +define+WAVES) --------------------------------
+  // Cadence SimVision SHM. needs xrun -access +rwc (run.sh adds it when WAVES set).
+  // view with:  simvision ndiv.shm   (or  xrun ... -gui  for live)
+`ifdef WAVES
+  initial begin
+    $shm_open("ndiv.shm");
+    $shm_probe("AS");        // A=all signals, S=this scope + everything below
+  end
+`endif
+
   // safety timeout
   initial begin
     #(50_000_000);
