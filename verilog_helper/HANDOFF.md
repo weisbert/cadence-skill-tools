@@ -10,6 +10,22 @@ to this result). Expected/harmless red-zone warnings: `*W,CUVWSI` ×4 (div2 I7/I
 unconnected — CORRECT, converted div2 is supply-less/always-on) and `*W,LIBNOU` ×5 (only
 `L20_SVT_ana`'s INVD1 is used of the 6 `-v` libs).**
 
+**ROOT CAUSE of the OUT_NDIV "no edges" FOUND + FIXED IN SIM (2026-06-26, in-module $display probe
+on the real after-fix netlist):** it is a **TB `pwsel` (`d_ndiv_pw_sel`) stimulus bug**, not div2 /
+nor4 / the tool / the PLL loop. Chain: `OUT_NDIV = clk_to_PFD` (buffered) = `mmd_core.DFF_out.Q`,
+`D=E_pfd`. `E_pfd` is held at 1 because `E_b = nor(EOC_low, lock)` is stuck at 1: `lock=~clk_to_PFD`
+is a slave, and **`EOC_low` (end-of-count → PFD) never pulses**. `EOC_low_short = nor(nand12, d_low,
+B)` fires only at ONE counter state, and WHICH state is selected by `pwsel` (each `qNsel =
+mux(qN,qNb,pwsel[N])`). The TB hard-coded a GUESS `pwsel=6'b000010`, which decodes counter state
+`0000001` (q1=1 alone) — but with `ndiv=10` the modulus counter cycles `5→4→3→2→reload→5` and
+**never visits state 1** → EOC never fires → `clk_to_PFD` latches at 1 → OUT_NDIV stuck high.
+**FIX (proven):** set `pwsel` so the decoded state IS visited for that `ndiv`. `pwsel=6'b001010`
+(decodes state 5) → `clk_to_PFD` toggles, and `+define+CHECK_NDIV` → `OUT_NDIV = VCO/36 (measured
+VCO/36.00)`, `=== TB PASS ===` (strict, all green). OPEN: `pwsel` is a real chip input that must
+pair with `ndiv`; `001010` is a verified-valid value for ndiv=10, but the TB should use the chip's
+ACTUAL pwsel↔ndiv mapping (ask the designer). Once known: bake it into
+`testbenches/tb_LPBT_NDIV_TOP.vams` and promote OUT_NDIV/CLK2DSM from CKWARN to hard CKR.
+
 **CORRECTION to an earlier claim in this section (do not trust the struck-through line below):**
 the user fixed the `nor4_svt_x2` model (added the 4th input `D`; `I281.D(reload1)` now connected;
 red-zone `nor4_svt_x2` compiles 0/0) — but that fix did **NOT** make `OUT_NDIV` toggle. Under
