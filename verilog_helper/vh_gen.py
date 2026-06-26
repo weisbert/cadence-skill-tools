@@ -419,10 +419,12 @@ elif [ -f ext_libs.list ]; then
   EXT=(); while read -r f; do case "$f" in ''|\\#*) ;; -*) EXT+=($f) ;; +*) EXT+=("$f") ;; *) EXT+=(-v "$f") ;; esac; done < ext_libs.list
 fi
 
-rm -rf xcelium.d INCA_libs .simvision waves.shm xrun.log xrun.key
+rm -rf xcelium.d INCA_libs .simvision *.shm waves.shm xrun.log xrun.key
+# pass-through args ("$@"): e.g.  ./run.sh +define+CHECK_NDIV +define+WAVES
 xrun -64bit -ams -timescale 1s/1fs \\
   -amsvlog_ext .vams,.va \\
   ${EXT[@]+"${EXT[@]}"} \\
+  "$@" \\
   %s \\
   -top %s -access +rwc +libext+.v+.va+.vams \\
   -l xrun.log
