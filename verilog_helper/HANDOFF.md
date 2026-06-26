@@ -26,6 +26,20 @@ pair with `ndiv`; `001010` is a verified-valid value for ndiv=10, but the TB sho
 ACTUAL pwsel↔ndiv mapping (ask the designer). Once known: bake it into
 `testbenches/tb_LPBT_NDIV_TOP.vams` and promote OUT_NDIV/CLK2DSM from CKWARN to hard CKR.
 
+**OUT_NDIV DUTY-CYCLE LAW (derived from structure, confirmed by sweep 2026-06-26):** OUT_NDIV =
+`clk_to_PFD` reclocked on NDIVCKIN(=VCO/4); output period = `(ndiv-1)` NDIVCKIN cycles. `pwsel`
+sets which counter state fires EOC = the FALLING edge position; the 3 `reload` pulses hold it high
+a fixed ~3-cycle tail. Empirical fit (exact at every point):
+  low(NDIVCKIN)  = pwsel - 3
+  high           = (ndiv-1) - (pwsel-3) = ndiv+2 - pwsel
+  duty           = (ndiv+2 - pwsel) / (ndiv-1)
+  => 50% duty  <=>  **pwsel = (ndiv+5)/2**  (= ndiv/2 + 2.5, NOT ndiv/2)
+Exact 50% needs ODD ndiv (so (ndiv+5)/2 is integer). VERIFIED: ndiv=83 -> pwsel=44 -> duty 50.0%
+(high 41 / period 82); the whole sweep matched duty=(85-pwsel)/82 to the decimal. pwsel bit0 is
+unused (44 == 45). The user's first guess pwsel=ndiv/2 divides correctly but gives 60-89% duty
+(the +2.5 reload-tail offset is why). TODO offered: set TB pwsel=(ndiv+5)/2 and promote OUT_NDIV
+to a hard CKR + duty check.
+
 **CORRECTION to an earlier claim in this section (do not trust the struck-through line below):**
 the user fixed the `nor4_svt_x2` model (added the 4th input `D`; `I281.D(reload1)` now connected;
 red-zone `nor4_svt_x2` compiles 0/0) — but that fix did **NOT** make `OUT_NDIV` toggle. Under
