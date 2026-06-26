@@ -9,7 +9,7 @@
 ;   [Source Lib/Cell/View combos]   <- ddHiCreate*ComboField (from dgenGui.il)
 ;   [Select from Schematic] [Browse Library...]
 ;   config(expand.cfg) / cds.lib / captured netlist / Output folder
-;   checks.json / user testbench / Example TB (auto-discovered dropdown)
+;   checks.json / user testbench / Design TB (per-DUT, auto-discovered from testbenches/)
 ;   external -v lib  [Add -v lib] [Show env]      <- vh_env.py
 ;   xrun defines (Run)  <- forwarded to run.sh ("$@" -> e.g. +define+CHECK_NDIV)
 ;   [Extract A] [Convert B] [Generate C] [Run xrun] [Package D]   <- the CLIs
@@ -51,8 +51,13 @@
 ; Default folder for the Browse buttons + Output field (nil => resolve at open).
 (unless (boundp 'vh_browseDir)  (setq vh_browseDir nil))
 
-; Alist (label fullpath) of the example testbenches discovered under examples/.
-; Rebuilt on every vh_guiBuild so a newly-added example TB shows up on reopen.
+; Directory holding the per-DUT design testbenches (tb_<Cell>.vams) listed in the
+; "Design TB" dropdown. nil => <vh_dir>/testbenches. Point it at a shared/SVN path in
+; .cdsinit to share TBs across a team:  (setq vh_tbDir "/path/to/shared/verilog_tbs")
+(unless (boundp 'vh_tbDir)      (setq vh_tbDir nil))
+
+; Alist (label fullpath) of the design testbenches discovered under vh_tbDir.
+; Rebuilt on every vh_guiBuild so a newly-added tb_<Cell>.vams shows up on reopen.
 (unless (boundp 'vh_exTbMap)    (setq vh_exTbMap nil))
 
 ; --- async run state (Extract/Convert/Generate/Run/Package run in the BACKGROUND
@@ -145,24 +150,24 @@
       ((and (setq w (getShellEnvVar "WORK_ROOT2")) (not (equal w "")) (isDir w)) w)
       (t "."))))
 
-; Discover the example testbenches shipped with the tool: examples/<ex>/tb_*.vams.
-; Returns a list of (label fullpath) pairs, label = "<exdir>/<file>", so the GUI
-; can offer a grow-by-itself dropdown of ready-made TBs (the user picks one + an
-; export folder -> Generate C builds the test env, no CLI path-typing). A pure
-; on-disk scan -> any future examples/<x>/tb_*.vams appears automatically on reopen.
-(defun vh_exampleTBs ()
-  (let (exRoot out)
-    (setq exRoot (strcat (vh_dir) "examples"))
+; The directory holding per-DUT design testbenches. vh_tbDir, else <vh_dir>/testbenches.
+(defun vh_tbRoot ()
+  (if (and vh_tbDir (stringp vh_tbDir) (isDir vh_tbDir)) vh_tbDir
+    (strcat (vh_dir) "testbenches")))
+
+; Discover the per-DUT design testbenches under vh_tbRoot(): files named tb_<Cell>.vams.
+; Returns a list of (label fullpath) pairs (label = the bare filename), so the GUI offers
+; a grow-by-itself dropdown of the project's real DUT testbenches -- NOT the tool's own
+; synthetic regression fixtures (those live in examples/ and are intentionally excluded).
+; A pure on-disk scan -> any future tb_<Cell>.vams appears automatically on reopen.
+(defun vh_designTBs ()
+  (let (root out)
+    (setq root (vh_tbRoot))
     (setq out nil)
-    (when (isDir exRoot)
-      (foreach sub (getDirFiles exRoot)
-        (let (subPath)
-          (setq subPath (strcat exRoot "/" sub))
-          (when (and (nequal sub ".") (nequal sub "..") (isDir subPath))
-            (foreach f (getDirFiles subPath)
-              (when (pcreMatchp "^tb_.*\\.vams$" f)
-                (setq out (cons (list (strcat sub "/" f)
-                                      (strcat subPath "/" f)) out))))))))
+    (when (isDir root)
+      (foreach f (getDirFiles root)
+        (when (pcreMatchp "^tb_.*\\.vams$" f)
+          (setq out (cons (list f (strcat root "/" f)) out)))))
     (reverse out)))
 
 ; Read a whole text file into a string, preserving newlines (Ref nhCore.il
@@ -393,7 +398,7 @@
 ; export/ folder. Testbench precedence: explicit "user testbench" file > the
 ; "Example TB" dropdown > generated checks (--checks).
 (defun vh_genCB (form "g")
-  (let (out src sim checks tb exsel extb hit srcFiles args)
+  (let (out src sim checks tb exsel extb amtb hit srcFiles args)
     (cond
       ((null (setq out (vh_needOut form))) nil)
       (t
@@ -416,10 +421,21 @@
                        (boundp 'vh_exTbMap) vh_exTbMap)
               (setq hit (assoc exsel vh_exTbMap))
               (when hit (setq extb (cadr hit))))
+            ; auto-match: nothing explicit picked -> testbenches/tb_<DUT>.vams if it exists
+            (setq amtb "")
+            (when (and (equal tb "") (equal extb ""))
+              (let (cell cand)
+                (setq cell (vh_str form->vh_srcCell->value))
+                (unless (equal cell "")
+                  (setq cand (strcat (vh_tbRoot) "/tb_" cell ".vams"))
+                  (when (isFile cand)
+                    (setq amtb cand)
+                    (printf "[verilog-helper] auto-matched DUT %s -> %s\n" cell cand)))))
             (setq args (strcat "--src " (vh_q src) " --out " (vh_q sim)))
             (cond
               ((not (equal tb ""))     (setq args (strcat args " --tb " (vh_q tb))))
               ((not (equal extb ""))   (setq args (strcat args " --tb " (vh_q extb))))
+              ((not (equal amtb ""))   (setq args (strcat args " --tb " (vh_q amtb))))
               ((not (equal checks "")) (setq args (strcat args " --checks " (vh_q checks)))))
             (vh_runAsync form "Stage C" (vh_cliCmd "vh_gen.py" args) "cli")))))
     t))
@@ -903,11 +919,11 @@
     (setq fTb (hiCreateFileSelectorField ?name 'vh_tb ?mode 'existingFile
                 ?prompt "user testbench (optional)" ?value ""))
     (vh_cfgFileSel fTb "Choose a testbench" "Verilog (*.v *.vams *.va);;All Files (*)")
-    ; ----- ready-made example TBs (auto-discovered dropdown; grows with examples/) -----
-    (setq vh_exTbMap (vh_exampleTBs))
+    ; ----- per-DUT design TBs (auto-discovered from testbenches/; grows by itself) -----
+    (setq vh_exTbMap (vh_designTBs))
     (setq exChoices (cons "(none)" (foreach mapcar p vh_exTbMap (car p))))
     (setq fExTb (hiCreateCyclicField ?name 'vh_exTb
-                  ?prompt "Example TB (Stage C)" ?choices exChoices ?value "(none)"))
+                  ?prompt "Design TB (Stage C)" ?choices exChoices ?value "(none)"))
     (setq fBwrite (hiCreateCyclicField ?name 'vh_bwrite
                     ?prompt "Stage B: write candidate beside cell"
                     ?choices (list "yes" "no") ?value "yes"))

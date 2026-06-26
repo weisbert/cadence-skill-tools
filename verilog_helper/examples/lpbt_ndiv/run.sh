@@ -16,8 +16,9 @@ export PATH="$XCELIUM_HOME/tools/bin:$PATH"
 # probing needs read/write/connectivity access; only add it when WAVES is requested
 ACCESS=""; case " $* " in *"+define+WAVES"*) ACCESS="-access +rwc";; esac
 rm -rf xcelium.d INCA_libs .simvision *.shm *.history xr.log xrun.log 2>/dev/null || true
+# the real DUT testbench now lives in the shared testbenches/ library (one canonical copy)
 xrun -ams -amsvlog_ext .vams,.va $ACCESS "$@" \
-  tb_LPBT_NDIV_TOP.vams LPBT_NDIV_TOP_model.vams \
+  ../../testbenches/tb_LPBT_NDIV_TOP.vams LPBT_NDIV_TOP_model.vams \
   -top tb_LPBT_NDIV_TOP -l xr.log > /dev/null 2>&1
 grep -E "==|PASS|FAIL|WARN" xr.log || { echo "no verdict -- see xr.log"; tail -20 xr.log; }
 case " $* " in *"+define+WAVES"*) echo "-- waveform db: $(pwd)/ndiv.shm  (view:  simvision ndiv.shm &)";; esac
