@@ -1,5 +1,36 @@
 # verilog_helper — HANDOFF / design context
 
+## SESSION CLOSE 2026-06-26 — HEAD `a3634da`, all pushed + deployed-ready
+
+**Where we are (LPBT_NDIV is GREEN).** The div2 wreal-supply fix is validated end-to-end on the
+REAL netlist (local xcelium 18.03) AND confirmed on the red zone (xcelium 19.04): default
+`bash run.sh` → `=== TB PASS ===`, FUNCTIONAL. The user fixed the `nor4_svt_x2` model (added the
+4th input). The TB now runs at the real operating point and HARD-checks everything (details in §00):
+- VCO **4.8 GHz**, `ndiv=51`, `pwsel=28` → OUT_NDIV/CLK2DSM = **24 MHz**, OUT_NDIV **50% duty**.
+- CAL `CLK2CNT=VCO/4` (1.2 GHz), TEST `TESTCLK_300M=VCO/16` (300 MHz). All PASS.
+- 50%-duty law: `pwsel=(ndiv+5)/2` with `ndiv≡3 (mod4)`. SDMOUT lags OUT_NDIV a fixed 8.5 VCO.
+
+**Tools added this session:** `vh_ndiv_report.py` (per-mode PASS/FAIL table + path map + 4 genuine
+SimVision waveform screenshots, headless via Xvfb+PIL; red-zone usage in RED_ZONE.md).
+`vh_dump_debug.sh`/`vh_undump_debug.py` (air-gap text round-trip — how the real design got mirrored
+locally at `examples/lpbt_ndiv/_ref/` (gitignored): `real_dump_afterfix.txt` + `build_afterfix/`).
+
+**A report package was handed off** (tar with CONTEXT + table + sim results + 4 PNGs) for an external
+AI to write the verification report.
+
+**Open / next time (nothing blocking):**
+- To get *authoritative* (red-zone, real-model) waveform screenshots, deploy and run
+  `python3 vh_ndiv_report.py --sim .` in the red-zone sim dir. The local mirror uses 2 synthesized
+  stand-in cells (inv_lvt_x2 = copy of inv_lvt_x4; INVD1 = `assign ZN=~I`); on the red zone these
+  are the real PDK cells. Verdict + waveforms were confirmed identical local↔red for the divide path.
+- If the report needs more operating points, sweep `NDIV_TEST` (keep `ndiv≡3 mod4` for exact 50%);
+  `vh_ndiv_report.py` zoom windows auto-scale to VCO freq + divide.
+- The local `build_afterfix/sim2` has a duty/phase-instrumented TB copy; the *committed*
+  `testbenches/tb_LPBT_NDIV_TOP.vams` is the clean source of truth.
+
+---
+
+
 ## 00. VALIDATED END-TO-END ON THE REAL DESIGN (2026-06-26) ✅ — RED ZONE CONFIRMS LOCAL
 
 **CONFIRMED ON THE RED ZONE (2026-06-26 18:32, xcelium 19.04): default `bash run.sh` →
