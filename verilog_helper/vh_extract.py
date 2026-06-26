@@ -812,9 +812,11 @@ def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
                 todo.append((mas, sl, sv))
         if not todo:
             break
+        work = os.path.join(out_dir, "_work")        # intermediate per-sub-block netlists
+        os.makedirs(work, exist_ok=True)             # (merged into the struct; kept here for debug)
         for mas, mlib, mview in todo:
             descended.add(mas)
-            sub_v = os.path.join(out_dir, "_sub_%s.v" % re.sub(r"\W", "_", mas))
+            sub_v = os.path.join(work, "_sub_%s.v" % re.sub(r"\W", "_", mas))
             ok, msg = run_oa2verilog(mlib, mas, mview, cdslib, sub_v, env_sh=env_sh)
             if ok and os.path.isfile(sub_v):
                 combined += "\n" + open(sub_v, errors="replace").read()
@@ -945,13 +947,23 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     os.makedirs(out_dir, exist_ok=True)
     export = os.path.join(out_dir, "export")
     os.makedirs(export, exist_ok=True)
+    # PRISTINE originals are copied here too. export/ is the verification set (its leaf
+    # copies get OVERWRITTEN by Stage B's digital conversion); orig/ is never touched, so
+    # you always have the source and can diff orig/<cell> vs export/<cell>.
+    orig = os.path.join(out_dir, "orig")
+    os.makedirs(orig, exist_ok=True)
+
+    def _gather_copy(src, module, ext):
+        dst = os.path.join(export, module + ext)
+        shutil.copyfile(src, dst)
+        shutil.copyfile(src, os.path.join(orig, module + ext))   # pristine, Stage B never touches
+        return dst
 
     # gather leaf .va bodies
     gathered = []
     for lf in leaves:
         ext = ".vams" if lf["src"].endswith(".vams") else ".va"
-        dst = os.path.join(export, lf["module"] + ext)
-        shutil.copyfile(lf["src"], dst)
+        dst = _gather_copy(lf["src"], lf["module"], ext)
         gathered.append({"module": lf["module"], "lib": lf["lib"],
                          "src": lf["src"], "gathered": os.path.relpath(dst, out_dir),
                          "forced_binding": lf["forced_binding"]})
@@ -988,8 +1000,7 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
                 if not vpath:
                     continue                           # undefined -> Stage C stubs/-v's it
                 ext2 = ".vams" if vpath.endswith(".vams") else ".va"
-                dst = os.path.join(export, mas + ext2)
-                shutil.copyfile(vpath, dst)
+                dst = _gather_copy(vpath, mas, ext2)
                 newlf = {"module": mas, "lib": vlib, "src": vpath,
                          "gathered": os.path.relpath(dst, out_dir),
                          "forced_binding": False}
