@@ -1,52 +1,50 @@
-# LPBT_NDIV_TOP — testbench spec & office-confirmation checklist
+# LPBT_NDIV_TOP — testbench spec & confirmation status
 
-Captured 2026-06-25 from the user. **Take this to the circuit tomorrow** and fill the
-`?` / TODO rows; each maps to a `localparam` or a gated check in `tb_LPBT_NDIV_TOP.vams`,
-so confirming a value is a one-line edit, not a rewrite.
+Mode table **confirmed from the Stage-A netlist** (clock tree traced 2026-06-26 — see
+`_ref/NETLIST_NOTES.md`), except `M=ndiv−1` which is user spec.
 
-## Pinout (all logic; supplies don't-care in pure-digital flow)
+## Pinout (all logic; supplies are top ports, don't-care in pure-digital flow)
 - clock in: `fromVCO` (≈ **4.8–5 GHz**)
-- bus in: `ndiv[13:0]` (only `[7:0]` used; `[13:8]` NC), `pwsel[5:0]`
-- ctrl in: `ndiv_en`, `cal_en`, `en_test`, `lpbt_en` (**lpbt_en NC** — floating)
+- bus in: `ndiv[13:0]` (only `[7:0]` used → `mmd_8bit.d_n`; `[13:8]` NC), `pwsel[5:0]` (→ `d_ndiv_pw_sel`)
+- ctrl in: `ndiv_en`, `cal_en`, `en_test`, `lpbt_en` (**lpbt_en NC**)
 - out: `OUT_NDIV`, `CLK2DSM`, `CLK2CNT`, `TESTCLK_300M`
-- supply (dropped): VDD/VPP/VSS/VDD_VCO/VPP_VCO/VSS_VCO/psub
+- supply: VDD/VPP/VSS/VDD_VCO/VPP_VCO/VSS_VCO/psub (TB ties them; dropped from logic)
 
-## Divide / mode truth table   (✓ confirmed · ~ tentative · ? to-confirm)
+## Divide / mode truth table   (✓ netlist-confirmed · S = user spec)
 
 | signal | **CAL** `cal_en=1` | **TEST** `ndiv_en=1,cal_en=0,en_test=1` | **NORMAL** `ndiv_en=1,cal_en=0,en_test=0` |
 |---|---|---|---|
-| `OUT_NDIV`     | **disabled** ✓ | VCO/4/(ndiv−1) ? | **VCO / 4 / (ndiv[7:0]−1)** ~ |
-| `CLK2CNT`      | **VCO/4** ✓ | ? | VCO/4/(ndiv−1), = freq(CLK2DSM) ~ |
-| `CLK2DSM`      | ? | ? | VCO/4/(ndiv−1); **offset vs CLK2CNT = few clk (?)** |
-| `TESTCLK_300M` | ? | **VCO/16** ✓ | off ? |
+| `OUT_NDIV`     | **disabled** ✓ | `VCO/4/M` ✓ (M=ndiv−1, S) | `VCO/4/M` ✓ (M=ndiv−1, S) |
+| `CLK2DSM`      | quiet ✓ | `VCO/4/M` ✓ | `VCO/4/M` ✓ |
+| `CLK2CNT`      | **VCO/4** ✓ | static-high ✓ | static-high ✓ |
+| `TESTCLK_300M` | low ✓ | **VCO/16** ✓ | low ✓ |
 
-- `N` (MMD divisor) `= ndiv[7:0] − 1`; total divide `D = 4·(ndiv−1)` (the /4 is the
-  high-speed prescaler — same one that yields CLK2CNT=VCO/4 in cal and the VCO/16 test tap).
-- `pwsel[5:0]` = **duty-cycle** control, not N. `pwsel[0]` NC; `pwsel[1]` = smallest step
-  (2 clk). → don't-care for a period-ratio check (could add a duty check later).
+- Front-end: `fromVCO →div2→div2→ DIV4sig = VCO/4` (the /4 prescaler). `OUT_NDIV = NDIVCKIN/M`
+  where `NDIVCKIN = DIV4sig` (cal_en=0) → **`OUT_NDIV = VCO/4/M`**.
+- `CLK2CNT = nand(DIV4sig,cal_en)` → VCO/4 only in cal. `TESTCLK = DIV4sig→div4_tspc = VCO/16`
+  (en_test=1), else pdown-low. `cal_en=1` freezes `NDIVCKIN` → OUT_NDIV/CLK2DSM stop.
+- `pwsel` = duty-cycle (pwsel[0] NC, pwsel[1]=2clk step) → don't-care for period ratio.
+- **CAL `CLK2CNT=VCO/4` + TEST `TESTCLK=VCO/16` do NOT pass through mmd_core** → real HARD
+  checks that pass TODAY (before #28). OUT_NDIV/CLK2DSM go through mmd_8bit→mmd_core (hollow #28).
 
-## To confirm at the office tomorrow
-1. **`N = ndiv[7:0] − 1` exactly?** (user "if I remember right"). → `NDIV_TEST`/`D_GOLD` in TB.
-2. **`OUT_NDIV = VCO/4/(ndiv−1)` — is the /4 prescaler really in this path?** (vs OUT_NDIV = VCO/(ndiv−1)).
-3. **CLK2DSM ↔ CLK2CNT exact edge offset** in NORMAL ("a few clk" — how many VCO or prescaler cycles?).
-4. **CLK2DSM in CAL** — quiet, or VCO/4, or other?
-5. **OUT_NDIV / CLK2CNT in TEST** — still divide, or held?
-6. **TESTCLK_300M when en_test=0** — quiet?
-7. **Are CLK2CNT(cal)=VCO/4 and TESTCLK=VCO/16 truly front-end taps** (independent of mmd_core)?
-   This is the assumption that lets those two be *real* checks before #28 is fixed.
+## Still to confirm
+1. **`M = ndiv[7:0] − 1` exactly?** (the only non-netlist value → `NDIV_TEST`/`D_GOLD` in TB).
+2. **#28 — `pll_ndiv_mmd_core` view:** need `ls .../Hi1108_BT_LP_PLL_ANA/pll_ndiv_mmd_core/`
+   + each view's port list (or the symbol pin list). We must descend the view whose interface =
+   `{E_pfd,E_pfd_b,Nor,clk_to_PFD,clkb,divisor_b[2:0],lock,q1,q1b,q2,q2b,reload1/1b/2/2b/3/3b,
+   reload_pe,reload_TFF2_3_4,reload_TFF5_6_7}` — NOT the `{N_div,N_div_sel,SUB,...}` one we
+   currently descend. Until then OUT_NDIV/CLK2DSM are dead (smoke).
+3. **`CLK_PLL_NDIV_counter_div2_lvt`** (stubbed) — a -v / verilogams for FUNCTIONAL `out_pd`.
 
-## Two-step verification plan
-- **Step 1 — runs NOW (SMOKE + 2 real divides).** No `+define+CHECK_NDIV`.
-  Hard checks: `CLK2CNT=VCO/4` (cal), `OUT_NDIV` disabled (cal), `TESTCLK_300M=VCO/16` (test).
-  NORMAL `OUT_NDIV/CLK2DSM/CLK2CNT` = liveness **WARN only** (don't fail — they sit behind the
-  hollow mmd_core #28 + stubbed counter).
-- **Step 2 — after #28 + counter resolved.** Add `+define+CHECK_NDIV`: NORMAL becomes a hard
-  `OUT_NDIV = CLK2DSM = VCO/4/(ndiv−1)` period-ratio assert + CLK2DSM/CLK2CNT freq-match.
+## Two-step verification
+- **Step 1 — runs NOW (real checks).** No `+define+CHECK_NDIV`. HARD pass on CAL `CLK2CNT=VCO/4`
+  + OUT_NDIV/CLK2DSM/TESTCLK quiet, TEST `TESTCLK=VCO/16` + CLK2CNT static, NORM quiet checks.
+  OUT_NDIV/CLK2DSM divider = liveness **WARN** (hollow mmd_core).
+- **Step 2 — after #28 + counter.** Add `+define+CHECK_NDIV`: OUT_NDIV/CLK2DSM become hard
+  `VCO/4/(ndiv−1)` period-ratio asserts in TEST + NORMAL.
 
-## Wiring into the real flow (red zone)
+## Red-zone wiring
 ```
-vh_gen ... --tb examples/lpbt_ndiv/tb_LPBT_NDIV_TOP.vams --tb-top tb_LPBT_NDIV_TOP
-# run.sh -top=tb_LPBT_NDIV_TOP ; add +define+CHECK_NDIV only after #28 is fixed
+vh_gen ... --tb examples/lpbt_ndiv/tb_LPBT_NDIV_TOP.vams --tb-top tb_LPBT_NDIV_TOP   # NO model file
+# run.sh -top=tb_LPBT_NDIV_TOP ; add +define+CHECK_NDIV only after #28 fixed
 ```
-The TB instantiates `LPBT_NDIV_TOP` by the exact port names above, so it drops onto the real
-Stage-A struct. `LPBT_NDIV_TOP_model.vams` is the LOCAL good-model only — do **not** ship it.

@@ -5,6 +5,8 @@ examples/*/build*/
 veriloga_wreal.va
 # per-DUT generated outputs (vh_dut)
 _vh/
+# proprietary real-design netlists kept locally for reference (never committed)
+_ref/
 __pycache__/
 *.pyc
 xcelium.d/

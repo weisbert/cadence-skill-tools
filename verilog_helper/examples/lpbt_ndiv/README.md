@@ -13,20 +13,21 @@ list of facts still to confirm at the circuit.
   spec so the TB can be exercised end-to-end here.
 - `run.sh` — local xrun wrapper (see header for `+define` knobs).
 
-## What's checked
+## What's checked  (mode behaviors confirmed from the Stage-A netlist — see `_ref/`)
 | mode | check | status |
 |---|---|---|
-| CAL `cal_en=1`   | `CLK2CNT = VCO/4`; `OUT_NDIV` disabled | **hard, real** (front-end taps, no mmd_core) |
-| TEST `en_test=1` | `TESTCLK_300M = VCO/16`                 | **hard, real** (front-end tap, no mmd_core) |
-| NORMAL           | `OUT_NDIV = CLK2DSM = VCO/4/(ndiv−1)`   | hard only with `+define+CHECK_NDIV` (post-#28); else liveness WARN |
+| CAL `cal_en=1`   | `CLK2CNT=VCO/4`; OUT_NDIV/CLK2DSM/TESTCLK quiet | **hard, real** (front-end tap, no mmd_core) |
+| TEST `en_test=1` | `TESTCLK_300M=VCO/16`; CLK2CNT static            | **hard, real** (front-end tap, no mmd_core) |
+| TEST + NORMAL    | `OUT_NDIV = CLK2DSM = VCO/4/(ndiv−1)`           | hard only with `+define+CHECK_NDIV` (post-#28); else liveness WARN |
 
-The two front-end-tap checks are why this beats a pure smoke TB: they give **real divide
-verification today**, before mmd_core (#28) and the stubbed counter are resolved.
+The front-end-tap checks (VCO/4, VCO/16) are why this beats a pure smoke TB: they give
+**real divide verification today**, before mmd_core (#28) and the stubbed counter are resolved.
+Quiet-checks assert the outputs that should be idle in each mode really are.
 
 ## Verified locally (xrun 18.03, this box)
 - good model → `=== TB PASS ===`; with `+define+CHECK_NDIV` → all incl. N pass.
 - `+define+BREAK_TESTCLK` → FAIL on TESTCLK (VCO/8 vs /16); `+define+BREAK_NDIV` → FAIL on
-  OUT_NDIV/CLK2DSM (VCO/56 vs /36) — the checks have teeth.
+  OUT_NDIV/CLK2DSM in both TEST+NORMAL (VCO/56 vs /36, 4 fails) — the checks have teeth.
 - `+define+HOLLOW` (mimics today's dead mmd_core) → `=== TB PASS ===` via CAL+TEST, NORMAL = WARN.
 
 ## Red zone

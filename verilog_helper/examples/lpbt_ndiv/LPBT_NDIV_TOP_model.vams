@@ -79,8 +79,8 @@ module LPBT_NDIV_TOP (
   always @(posedge pre) dsm_dly <= {dsm_dly[1:0], outn_r};
   wire outn_off = dsm_dly[2];                 // outn_r delayed 3 prescaler cycles
 
-  wire norm = ndiv_en & ~cal_en;
-  assign OUT_NDIV = norm   ? outn_r   : 1'b0;          // disabled when cal_en=1
-  assign CLK2DSM  = norm   ? outn_off : 1'b0;          // same freq as CLK2CNT, offset
-  assign CLK2CNT  = cal_en ? pre      : (norm ? outn_r : 1'b0);  // VCO/4 in cal, else VCO/D
+  wire norm = ndiv_en & ~cal_en;          // "cal_en=0 & powered" = NORMAL or TEST
+  assign OUT_NDIV = norm   ? outn_r   : 1'b0;   // VCO/4M when cal_en=0; disabled in cal
+  assign CLK2DSM  = norm   ? outn_off : 1'b0;   // VCO/4M when cal_en=0; quiet in cal (mmd frozen)
+  assign CLK2CNT  = cal_en ? pre      : 1'b1;   // VCO/4 in CAL; static-high otherwise (real nand)
 endmodule

@@ -148,18 +148,23 @@ Remaining, in priority order:
     "elaborates but mmd_core does nothing".
   - **FUNCTIONAL run** (vs SMOKE): resolve `CLK_PLL_NDIV_counter_div2_lvt` (it's stubbed;
     its `library_binding` / a `-v` or verilogams is needed).
-  - **Real testbench** (DONE 2026-06-25 — `examples/lpbt_ndiv/`): period-ratio TB
-    `tb_LPBT_NDIV_TOP.vams` drives `fromVCO`+`ndiv`+`pwsel`+enables per MODE. Confirmed mode
-    facts from the user: CAL `cal_en=1`→`CLK2CNT=VCO/4` + `OUT_NDIV` disabled; TEST `en_test=1`
-    →`TESTCLK_300M=VCO/16`; NORMAL→`OUT_NDIV=CLK2DSM=VCO/4/(ndiv[7:0]−1)` (N=ndiv−1, /4
-    prescaler; TENTATIVE, user reconfirms @office). `pwsel`=duty-cycle only (pwsel[0] NC),
-    `lpbt_en` NC. The two CAL/TEST divides are FRONT-END TAPS independent of mmd_core → **real
-    hard checks that pass TODAY** (verified via `+define+HOLLOW` model); the N check is gated
-    behind `+define+CHECK_NDIV` (smoke→WARN until #28+counter). TB MECHANICS verified on a local
-    behavioral good-model (xrun 18.03): good→PASS, `+CHECK_NDIV`→full PASS, `BREAK_TESTCLK`/
-    `BREAK_NDIV`→FAIL (teeth), `HOLLOW`→PASS via CAL+TEST. Spec+office checklist in
-    `examples/lpbt_ndiv/SPEC_CHECKLIST.md`. Red zone: `vh_gen --tb tb_LPBT_NDIV_TOP.vams
-    --tb-top tb_LPBT_NDIV_TOP` (the model file is local-only, never shipped).
+  - **Real testbench** (DONE 2026-06-26 — `examples/lpbt_ndiv/`): period-ratio TB
+    `tb_LPBT_NDIV_TOP.vams` drives `fromVCO`+`ndiv`+`pwsel`+enables per MODE. **Mode table
+    CONFIRMED FROM THE REAL STAGE-A NETLIST** (clock tree traced from `LPBT_NDIV_TOP_struct.vams`,
+    notes in gitignored `_ref/NETLIST_NOTES.md`): front-end `fromVCO→div2→div2→DIV4sig=VCO/4`
+    (the /4 prescaler); CAL `cal_en=1`→`CLK2CNT=VCO/4` + OUT_NDIV/CLK2DSM frozen (NDIVCKIN
+    stops) + TESTCLK low; TEST `en_test=1`→`TESTCLK_300M=VCO/16` (DIV4sig→div4_tspc); NORMAL/TEST
+    →`OUT_NDIV=CLK2DSM=VCO/4/M`, `M=ndiv[7:0]−1` (only this is user spec, not netlist). `CLK2CNT
+    =nand(DIV4sig,cal_en)` so it's VCO/4 ONLY in cal, static-high else (corrected the user's
+    "CLK2DSM/CLK2CNT same-freq" recollection — they're active in different modes). `pwsel`=duty
+    (pwsel[0] NC), `lpbt_en` NC. **TB port match to the real struct = exact** (18 ports incl.
+    supplies, named conns → no CUVPOM). CAL `VCO/4` + TEST `VCO/16` are FRONT-END TAPS that do
+    NOT pass through mmd_core → **real HARD checks that pass TODAY**; OUT_NDIV/CLK2DSM go through
+    mmd_8bit→mmd_core (hollow #28) → gated behind `+define+CHECK_NDIV` (smoke→WARN). Verified
+    locally (xrun 18.03) vs a behavioral good-model `LPBT_NDIV_TOP_model.vams` (LOCAL-ONLY,
+    never shipped): good→PASS, `+CHECK_NDIV`→full PASS, `BREAK_TESTCLK`/`BREAK_NDIV`→FAIL (teeth),
+    `+define+HOLLOW`(dead mmd_core)→PASS via CAL+TEST. Red zone: `vh_gen --tb
+    examples/lpbt_ndiv/tb_LPBT_NDIV_TOP.vams --tb-top tb_LPBT_NDIV_TOP` (NO model file).
   - **Generality gap**: a genuine **functional** wreal↔logic boundary (not supply) is
     diagnosed by vh_diag but NOT auto-fixed (would need generated connect modules — not
     built). All decisions/details in the project memory

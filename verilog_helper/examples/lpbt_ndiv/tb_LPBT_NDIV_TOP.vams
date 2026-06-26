@@ -2,24 +2,28 @@
 // -----------------------------------------------------------------------------
 // tb_LPBT_NDIV_TOP.vams -- real testbench for the LPBT_NDIV_TOP feedback divider.
 //
-// Strategy = "period-ratio" check: drive fromVCO as a square clock, set the
-// divide word + the 3 live enables (lpbt_en is NC), and for each MODE measure
-// period(out)/period(fromVCO) and compare to the expected divide.
+// Strategy = "period-ratio" check: drive fromVCO as a square clock, set the divide
+// word + the live enables (lpbt_en NC), and for each MODE measure
+// period(out)/period(fromVCO) and assert the expected divide, plus assert that the
+// outputs which should be quiet in that mode have no edges.
 //
-// CONFIRMED divides (do NOT pass through the hollow mmd_core #28 -> real checks
-// that can pass on the red zone NOW):
-//     CAL  cal_en=1                   : CLK2CNT = VCO/4   ; OUT_NDIV disabled
-//     TEST ndiv_en=1,cal_en=0,en_test : TESTCLK_300M = VCO/16
-// TENTATIVE divide (needs #28 mmd_core view fixed + counter resolved; formula
-// flagged "if I remember right" -> kept as localparams, easy to retune):
-//     NORM ndiv_en=1,cal_en=0         : OUT_NDIV = CLK2DSM = VCO / 4 / (ndiv-1)
+// MODE behaviors below are CONFIRMED FROM THE STAGE-A NETLIST (clock tree traced
+// 2026-06-26), not guessed:
+//   front-end : fromVCO -div2(I7)- -div2(I9)- DIV4sig = VCO/4   (the /4 prescaler)
+//   CAL  cal_en=1 : CLK2CNT=nand(DIV4sig,cal_en)=VCO/4 ; NDIVCKIN=nor(DIV4sig,cal_en)
+//                   frozen -> OUT_NDIV/CLK2DSM quiet ; TESTCLK pulled low (en_test=0)
+//   TEST en_test=1: DIV4sig -div4_tspc- = VCO/16 -> TESTCLK_300M ; CLK2CNT static-high
+//                   OUT_NDIV=CLK2DSM=VCO/4/M (divider still runs, cal_en=0)
+//   NORM cal_en=0 : OUT_NDIV=CLK2DSM=VCO/4/M ; CLK2CNT static-high ; TESTCLK low
+// The only NON-netlist assumption is M = ndiv[7:0]-1 (user spec) -> localparam.
 //
-// Gate the mmd-core-dependent check with +define+CHECK_NDIV. Without it the NORM
-// mode only checks liveness (SMOKE) -- which is all the real design can do until
-// #28 + the counter are resolved.
-//
-// TODO(office, 2026-06-25): CLK2DSM<->CLK2CNT exact edge offset; CLK2DSM in CAL;
-// TESTCLK/CLK2CNT in the other modes; pwsel duty-cycle effect. Marked below.
+// OUT_NDIV/CLK2DSM run through mmd_8bit->mmd_core, which is hollow today (#28: the
+// mmd_core view we descend has interface {N_div,N_div_sel,SUB,clk,out_dsm,out_pd,
+// rstn} but mmd_8bit instantiates a core with {E_pfd,Nor,q1,q2,divisor_b,clk_to_PFD,
+// reload...} -> clk_to_PFD undriven). So gate the divider check behind
+// +define+CHECK_NDIV; without it NORM/TEST OUT_NDIV/CLK2DSM are liveness WARN only.
+// The CAL/TEST front-end taps (VCO/4, VCO/16) do NOT touch mmd_core -> they are real
+// HARD checks that pass on the red zone TODAY.
 // -----------------------------------------------------------------------------
 
 // measurement slots: rising-edge count + running-average period (via $realtime)
@@ -36,7 +40,7 @@
 
 `define CKQ(label, i) \
   if (ed[i] > 0) begin $display("  FAIL %0s: expected quiet, saw %0d edges", label, ed[i]); fails = fails + 1; end \
-  else $display("  PASS %0s: quiet (disabled)", label);
+  else $display("  PASS %0s: quiet", label);
 
 // soft report (does NOT fail the TB): OUT_NDIV/CLK2DSM depend on the hollow
 // mmd_core(#28)+stubbed counter, so they may not toggle yet -- expected.
@@ -51,8 +55,8 @@ module tb_LPBT_NDIV_TOP;
   // ---- knobs ----------------------------------------------------------------
   localparam integer TVCO      = 200;                 // VCO period [ps] (=5GHz; 4.8G also OK)
   localparam integer NDIV_TEST = 10;                  // divide word ndiv[7:0]
-  localparam integer M_GOLD    = NDIV_TEST - 1;       // MMD divisor    = ndiv-1
-  localparam integer D_GOLD    = 4 * (NDIV_TEST - 1); // total = VCO / 4 / (ndiv-1)
+  localparam integer M_GOLD    = NDIV_TEST - 1;       // MMD divisor    = ndiv-1  (user spec)
+  localparam integer D_GOLD    = 4 * (NDIV_TEST - 1); // total = VCO / 4 / (ndiv-1) (netlist /4)
   localparam real    TOL       = 0.05;                // ratio tolerance
   localparam integer SETTLE    = 60   * TVCO;         // let a mode settle before measuring
   localparam integer WIN       = 4000 * TVCO;         // measurement window
@@ -66,7 +70,7 @@ module tb_LPBT_NDIV_TOP;
   reg         VDD, VPP, VSS, VDD_VCO, VPP_VCO, VSS_VCO, psub;
 
   integer fails;
-  real    avgp, ratio, pdsm, pcnt;
+  real    avgp, ratio;
 
   // ---- measurement state ----------------------------------------------------
   real    lr [0:3];      // last rising-edge time
@@ -123,9 +127,11 @@ module tb_LPBT_NDIV_TOP;
     #(SETTLE);
     `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
     #(WIN);
-    $display("== CAL  (cal_en=1) ==");
-    `CKR("CLK2CNT = VCO/4", I_CNT, 4)            // CONFIRMED, no mmd_core dependence
-    `CKQ("OUT_NDIV disabled", I_OUT)             // CONFIRMED
+    $display("== CAL  (cal_en=1, ndiv_en=1) ==");
+    `CKR("CLK2CNT = VCO/4", I_CNT, 4)         // CONFIRMED netlist: nand(DIV4sig,cal_en), front-end tap
+    `CKQ("OUT_NDIV disabled", I_OUT)          // CONFIRMED netlist: NDIVCKIN frozen by nor(DIV4sig,cal_en)
+    `CKQ("CLK2DSM quiet (mmd frozen)", I_DSM) // CONFIRMED netlist
+    `CKQ("TESTCLK quiet (en_test=0)", I_TST)  // CONFIRMED netlist: pdown on enb_test
 
     // ===================== MODE: TEST (en_test=1) =====================
     cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b1;
@@ -133,7 +139,15 @@ module tb_LPBT_NDIV_TOP;
     `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
     #(WIN);
     $display("== TEST (ndiv_en=1,cal_en=0,en_test=1) ==");
-    `CKR("TESTCLK_300M = VCO/16", I_TST, 16)     // CONFIRMED, no mmd_core dependence
+    `CKR("TESTCLK_300M = VCO/16", I_TST, 16)  // CONFIRMED netlist: DIV4sig->div4_tspc, front-end tap
+    `CKQ("CLK2CNT static (cal_en=0)", I_CNT)  // CONFIRMED netlist: nand(DIV4sig,0)=1
+`ifdef CHECK_NDIV
+    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)   // needs #28; M=ndiv-1 is spec
+    `CKR("CLK2DSM = VCO/4/(ndiv-1)",  I_DSM, D_GOLD)
+`else
+    `CKWARN("OUT_NDIV", I_OUT)
+    `CKWARN("CLK2DSM",  I_DSM)
+`endif
 
     // ===================== MODE: NORMAL divide =====================
     cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b0;
@@ -141,24 +155,14 @@ module tb_LPBT_NDIV_TOP;
     `RST(I_CNT) `RST(I_OUT) `RST(I_TST) `RST(I_DSM)
     #(WIN);
     $display("== NORM (ndiv_en=1,cal_en=0) : ndiv=%0d -> D=4*(ndiv-1)=%0d ==", NDIV_TEST, D_GOLD);
+    `CKQ("CLK2CNT static (cal_en=0)", I_CNT)  // CONFIRMED netlist
+    `CKQ("TESTCLK low (en_test=0)",   I_TST)  // CONFIRMED netlist
 `ifdef CHECK_NDIV
-    // post-#28 functional N check (TENTATIVE formula -> retune localparams if needed)
-    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)
+    `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)   // needs #28; M=ndiv-1 is spec
     `CKR("CLK2DSM = VCO/4/(ndiv-1)",  I_DSM, D_GOLD)
-    // CLK2DSM and CLK2CNT must be the SAME frequency in NORMAL (offset TBD@office)
-    pdsm = (pn[I_DSM] > 0) ? (ps[I_DSM] / pn[I_DSM]) : 0.0;
-    pcnt = (pn[I_CNT] > 0) ? (ps[I_CNT] / pn[I_CNT]) : 0.0;
-    if (pn[I_DSM] == 0 || pn[I_CNT] == 0) begin
-      $display("  FAIL CLK2DSM/CLK2CNT freq match: a signal had no edges"); fails = fails + 1;
-    end else if (((pdsm/pcnt) > 1.0 + TOL) || ((pdsm/pcnt) < 1.0 - TOL)) begin
-      $display("  FAIL CLK2DSM/CLK2CNT freq match: periods %0.1f vs %0.1f", pdsm, pcnt); fails = fails + 1;
-    end else
-      $display("  PASS CLK2DSM/CLK2CNT same freq (periods %0.1f / %0.1f) -- edge offset: TODO confirm @office", pdsm, pcnt);
 `else
-    // SMOKE (the real design TODAY): only report liveness, do not fail
     `CKWARN("OUT_NDIV", I_OUT)
     `CKWARN("CLK2DSM",  I_DSM)
-    `CKWARN("CLK2CNT",  I_CNT)
 `endif
 
     // ---- verdict ----
