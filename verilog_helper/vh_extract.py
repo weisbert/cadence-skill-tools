@@ -174,15 +174,19 @@ def _binding_kind(view):
 
 
 def config_bindings(cfg):
-    """Derive the per-cell descend/leaf decision from the config's cell bindings (matched by
-    cell NAME; the binding's lib may differ from where we find the cell). config wins over
-    the behavioral heuristic. Returns (forced_va, forced_sch, nested):
+    """Derive the per-cell descend/leaf decision from the config's cell bindings. config is
+    AUTHORITATIVE (the designer states lib+view per cell) and WINS over the behavioral
+    heuristic. Returns (forced_va, forced_sch, nested, bound):
       forced_va  = cells the config binds to a behavioral view  -> force LEAF (gather)
       forced_sch = cells bound to a schematic-like OR nested config view -> force DESCEND
-      nested     = {cell: configview} for the manifest/warnings."""
-    by_name = {}
-    for (_lb, c), v in cfg.get("cell_bindings", {}).items():
+      nested     = {cell: configview} for the manifest/warnings.
+      bound      = {cell: (lib, view)} -- the EXACT (library, view) the config binds, so the
+                   resolver descends/gathers THAT one and never name-searches across libs
+                   (kills the cross-library same-name collision, e.g. two pll_ndiv_mmd_core)."""
+    by_name, bound = {}, {}
+    for (lb, c), v in cfg.get("cell_bindings", {}).items():
         by_name[c] = v
+        bound[c] = (lb, v)        # KEEP the lib the config specified (it was discarded before)
     forced_va, forced_sch, nested = set(), set(), {}
     for c, v in by_name.items():
         k = _binding_kind(v)
@@ -193,7 +197,23 @@ def config_bindings(cfg):
         elif k == "nested":
             nested[c] = v
             forced_sch.add(c)        # a nested-config sub-block must be DUG, not used as a leaf
-    return forced_va, forced_sch, nested
+    return forced_va, forced_sch, nested, bound
+
+
+def _lib_pref(cfg, design_lib, libs):
+    """Authoritative library search ORDER for resolving a cell that may exist in several
+    libs (the cross-lib same-name case): the config's liblist first (designer-specified),
+    then the design's own lib, then the rest. Names absent from cds.lib are skipped."""
+    order = []
+    for L in (cfg or {}).get("liblist", []) or []:
+        if L in libs and L not in order:
+            order.append(L)
+    if design_lib in libs and design_lib not in order:
+        order.append(design_lib)
+    for L in libs:
+        if L not in order:
+            order.append(L)
+    return order
 
 
 def resolve_nested_configs(cfg, libs, warnings, _depth=0):
@@ -575,12 +595,12 @@ def strip_instances(text, drop_masters):
 VA_VIEW_DIRS = ("veriloga", "verilogams", "ahdl")
 
 
-def find_veriloga(cell, libs, prefer_lib=None):
+def find_veriloga(cell, libs, prefer_lib=None, liborder=None):
     """Locate a cell's behavioral source: <libpath>/<cell>/<view>/*.va|*.vams for
-    view in veriloga / verilogams / ahdl. Search prefer_lib first, then all libs.
-    Returns (libname, abspath) or (None, None)."""
-    order = ([prefer_lib] if prefer_lib in libs else []) + \
-            [L for L in libs if L != prefer_lib]
+    view in veriloga / verilogams / ahdl. Search `liborder` when given (config liblist +
+    design lib), else prefer_lib first then all libs. Returns (libname, abspath) or (None, None)."""
+    order = [L for L in (liborder or []) if L in libs] or \
+            (([prefer_lib] if prefer_lib in libs else []) + [L for L in libs if L != prefer_lib])
     for L in order:
         cdir = os.path.join(libs[L], cell)
         for vname in VA_VIEW_DIRS:
@@ -622,12 +642,14 @@ def _schem_view_order(viewlist):
     return order
 
 
-def find_schematic_view(cell, libs, prefer_lib=None, order=None):
-    """Locate a cell's schematic-like view: (lib, viewname) or (None, None)."""
+def find_schematic_view(cell, libs, prefer_lib=None, order=None, liborder=None):
+    """Locate a cell's schematic-like view: (lib, viewname) or (None, None). Search
+    `liborder` when given (config liblist + design lib), else prefer_lib then all libs."""
     names = order or list(SCHEM_VIEW_DIRS)
-    liborder = ([prefer_lib] if prefer_lib in libs else []) + \
-               [L for L in libs if L != prefer_lib]
-    for L in liborder:
+    libs_order = [L for L in (liborder or []) if L in libs] or \
+                 (([prefer_lib] if prefer_lib in libs else []) +
+                  [L for L in libs if L != prefer_lib])
+    for L in libs_order:
         for v in names:
             vdir = os.path.join(libs[L], cell, v)
             if os.path.isdir(vdir) and os.listdir(vdir):
@@ -697,7 +719,7 @@ def dedup_netlist(raw):
 
 def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
                      warnings, viewlist=None, stoplist=None,
-                     forced_va=None, forced_sch=None):
+                     forced_va=None, forced_sch=None, bound=None, liborder=None):
     """Recursively descend hierarchy sub-blocks that the top oa2verilog run did NOT
     follow (their schematic is a cmos_sch view, or they sit under a nested config).
 
@@ -711,6 +733,7 @@ def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
     skip = PIN_CELLS | STIMULUS_CELLS | NOCONN_CELLS | DEVICE_DROP | PASSIVE_CELLS
     forced_va = forced_va or set()
     forced_sch = forced_sch or set()
+    bound = bound or {}
     combined = raw
     descended = {top_cell}
     for _ in range(64):                        # depth guard
@@ -733,8 +756,15 @@ def expand_hierarchy(raw, top_cell, libs, ext_index, cdslib, env_sh, out_dir,
             if mas not in forced_sch and verilogams_is_behavioral(mas, libs, ext_index):
                 continue
             # structural verilogams or no verilogams -> descend the schematic (it references
-            # the current in-design cells, not the verilogams' possibly-stale netlist)
-            sl, sv = find_schematic_view(mas, libs, order=schem_order)
+            # the current in-design cells, not the verilogams' possibly-stale netlist).
+            # config is AUTHORITATIVE: if it binds this cell to a (lib, schematic-view),
+            # descend EXACTLY that -- never name-search across libs (the cross-lib pick).
+            b = bound.get(mas)
+            if (b and b[0] in libs and _binding_kind(b[1]) == "descend"
+                    and os.path.isdir(os.path.join(libs[b[0]], mas, b[1]))):
+                sl, sv = b
+            else:
+                sl, sv = find_schematic_view(mas, libs, liborder=liborder, order=schem_order)
             if sv:
                 todo.append((mas, sl, sv))
         if not todo:
@@ -772,7 +802,8 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     # config-driven bindings WIN over the behavioral heuristic (the user's rule: config
     # defines verilogams/veriloga = terminal). forced_va = forced LEAF; forced_sch = forced
     # DESCEND (incl. nested-config sub-blocks, merged earlier by resolve_nested_configs).
-    forced_va, forced_sch, nested_cfg = config_bindings(cfg)
+    forced_va, forced_sch, nested_cfg, cfg_bound = config_bindings(cfg)
+    liborder = _lib_pref(cfg, lib, libs)   # authoritative lib search order (config liblist + design lib)
 
     passive_report = []   # (module, inst, master, action) from short_passives
 
@@ -820,9 +851,12 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         # forced-descend cell never gathers its verilogams. With no binding, the BEHAVIORAL
         # heuristic decides (behavioral verilogams = leaf; structural verilogams + schematic
         # = descend; no schematic = leaf).
-        vlib, vpath = find_veriloga(nm, libs, prefer_lib=lib)
+        # config-bound leaf -> gather from the EXACT lib the config names; else lib order
+        _b = cfg_bound.get(nm)
+        _leaf_order = ([_b[0]] + liborder) if (_b and _b[0] in libs) else liborder
+        vlib, vpath = find_veriloga(nm, libs, liborder=_leaf_order)
         beh = verilogams_is_behavioral(nm, libs, ext_index) if vpath else None
-        has_sch = bool(find_schematic_view(nm, libs)[1])
+        has_sch = bool(find_schematic_view(nm, libs, liborder=liborder)[1])
         make_leaf = vpath and not forced_descend and (forced or beh or not has_sch)
         if make_leaf:
             classes[nm] = "veriloga"
@@ -1179,7 +1213,7 @@ def main():
     # fold its bindings in (verified: nested configs are stored as named refs, not flattened).
     if cfg:
         resolve_nested_configs(cfg, libs, warnings)
-    cfg_forced_va, cfg_forced_sch, _cfg_nested = config_bindings(cfg)
+    cfg_forced_va, cfg_forced_sch, _cfg_nested, cfg_bound = config_bindings(cfg)
 
     # remembered external HDL env (+ per-run --ext-* overrides)
     env = {k: [] for k in ("lib_files", "lib_dirs", "inc_dirs")} if args.ext_clear \
@@ -1206,7 +1240,8 @@ def main():
         raw = expand_hierarchy(raw, cell, libs, ext_index, cdslib, args.env_sh,
                                args.out, warnings, viewlist=cfg.get("viewlist"),
                                stoplist=cfg.get("stoplist"),
-                               forced_va=cfg_forced_va, forced_sch=cfg_forced_sch)
+                               forced_va=cfg_forced_va, forced_sch=cfg_forced_sch,
+                               bound=cfg_bound, liborder=_lib_pref(cfg, lib, libs))
 
     manifest, clean = extract(lib, cell, view, libs, raw, args.out, cfg=cfg,
                               warnings=warnings, env=env, ext_index=ext_index,
