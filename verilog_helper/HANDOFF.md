@@ -1,5 +1,40 @@
 # verilog_helper — HANDOFF / design context
 
+## 0a. RESUME HERE (2026-06-26 late) — HEAD = `582e6ca`, all pushed + DEPLOYED to red zone
+
+**State: the real NDIV elaborates clean & FUNCTIONAL, but the clock is still DEAD because
+`div2_tspc` in `export/` is STILL RAW — Stage B (Convert B) did not run/take this round.**
+The code is proven correct: running `vh_convert.py` on the EXACT real `pll_ndiv_div2_tspc.vams`
+(verbatim in `examples/lpbt_ndiv/_ref/real_dump.txt`, gitignored) → `CONVERTED`,
+`power_on = (1'b1)&&(1'b1)`. So this is a PROCESS gap, not a code bug.
+
+**NEXT STEP (next session):** make sure Stage B actually runs in the GUI pipeline:
+**Extract A → Convert B → Generate C → Run** (the user likely skipped B, or it didn't overwrite
+export/). Verify after B: `grep power_on <build>/export/pll_ndiv_div2_tspc.vams` must show
+`(1'b1)&&(1'b1)`, not `(VDD-VSS)`. Then expect CAL `CLK2CNT=VCO/4` + TEST `TESTCLK=VCO/16` HARD
+PASS. Consider a UX fix: have **Generate C auto-run Convert B** (or warn) when export/ still has
+an unconverted wreal-monitor leaf — converting is REQUIRED for correctness here, not optional.
+
+**Full real design is captured** (the user dumped it via `vh_dump_debug.sh`, VERSION 582e6ca):
+the 25 leaf cells + struct + TB are in the conversation transcript; key analysis + div2 verbatim
+in `examples/lpbt_ndiv/_ref/real_dump.txt`. Findings:
+- **Only `div2_tspc` is the problem**: it is the ONLY wreal-supply cell, and its supplies are
+  UNCONNECTED at the instances (`I7 (.CLK(fromVCO),.Q(net058))`) → wreal floats to 0 → gate
+  false → dead. Convert it → clean /2.
+- **Every std cell (inv/nand/nor/tff/dff/mux/delay/pdown/power_sw) also power-gates** on
+  `(VDD-VSS)>=k`, BUT with LOGIC supplies (no wreal) that ARE connected → `(1-0)>=k=1` → they
+  work. NOT a problem; do NOT touch them.
+- **2nd worklib `div2_tspc` def** = a `-v` lib twin: run.sh passes `-v ideal_model.vams` (+ 5
+  more Common_verilog libs); `ideal_model.vams` likely also defines `pll_ndiv_div2_tspc`. The
+  instances bind export's (raw) div2, so the twin is harmless noise — but TO CONFIRM, ask the
+  user: `grep -l pll_ndiv_div2_tspc <Common_verilog>/ideal_model.vams`. (vh_gen dedups within
+  --src only, not vs -v libs; a cross-`-v` dedup/warn could be a follow-up.)
+- mmd_core interface now matches mmd_8bit (#28 fixed) → mmd path should run once NDIVCKIN
+  toggles. `nor4_svt_x2 I281` drops pin `D` → may perturb the EXACT N (watch under +CHECK_NDIV).
+- Externals: lone resolved `-v` = `INVD1_COT_H462SDB_L20P108_SVT_ana` (power_en_b=INVD1(ndiv_en)).
+- Air-gap debug round-trip is now scripted: `vh_dump_debug.sh` (red zone, files→one .txt into
+  the build dir, minimal repro set) + `vh_undump_debug.py` (here, .txt→files). Both DEPLOYED.
+
 ## 0b. SESSION HANDOFF (2026-06-26)  — HEAD = `0c3f48f`+, all pushed
 
 **ROOT CAUSE FOUND + FIXED (real run, red zone xcelium 19.04): the whole NDIV clock tree was
