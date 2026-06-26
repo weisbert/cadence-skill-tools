@@ -1,5 +1,55 @@
 # verilog_helper — HANDOFF / design context
 
+## 0b. SESSION HANDOFF (2026-06-26)  — HEAD = `8dfd219`, all pushed
+
+**NEXT FOCUS (resume here after compact): the NDIV *AMS testbench*.** The real design
+`Hi1108_BT_LP_PLL_ANA.LPBT_NDIV_TOP` now extracts CLEAN and ELABORATES (mmd_core fixed, counter
+no longer stubbed, only benign warnings). The hand-written real TB exists and is verified
+locally. Immediate steps:
+1. **Wire the real TB**: Generate C with `--tb examples/lpbt_ndiv/tb_LPBT_NDIV_TOP.vams`
+   (GUI: set the "user testbench" field — the top auto-detects now; or CLI). Run WITHOUT
+   `+CHECK_NDIV` first → expect CAL `CLK2CNT=VCO/4` + TEST `TESTCLK=VCO/16` **HARD PASS**, and
+   `OUT_NDIV/CLK2DSM` now **LIVE** (mmd_core is connected after the #28 fix).
+2. Then `+define+CHECK_NDIV` → functional N check `OUT_NDIV = VCO/4/(ndiv[7:0]−1)`. Watch the
+   `pll_ndiv_nor4_svt_x2` `D`-drop (could perturb the exact N) + `M=ndiv−1` is user spec.
+3. GUI default [Run] = generic smoke (extraction-completeness, top=`tb`); the real TB is a
+   SEPARATE functional run. GUI has no `+CHECK_NDIV` toggle → that check is CLI (or add a
+   `VH_DEFINES` passthrough to run.sh — offered, not built).
+TB design (all CONFIRMED from the real struct's clock tree): front-end `fromVCO→div2→div2 =
+VCO/4` prescaler; CAL `cal_en=1`→`CLK2CNT=VCO/4`, OUT_NDIV/CLK2DSM/TESTCLK quiet; TEST
+`en_test=1`→`TESTCLK=VCO/16`; NORM→`OUT_NDIV=CLK2DSM=VCO/4/M`, `M=ndiv−1`. `pwsel`=duty (NC bit0),
+`lpbt_en` NC. Spec in `examples/lpbt_ndiv/SPEC_CHECKLIST.md`; netlist notes in gitignored
+`examples/lpbt_ndiv/_ref/`.
+
+**This session's commits (all real-design-driven, each cloned+verified locally first):**
+- `1b05f23` LPBT TB netlist-exact (period-ratio; CAL/TEST taps are real checks pre-#28).
+- `e8f3223` vh_diag **SUSPECTED WRONG-VIEW** section (reads manifest reconciled_ports + per-lib views).
+- `b903ad6` **#28 SOLVED = cross-LIBRARY collision**: `pll_ndiv_mmd_core` exists in BT_LP (design)
+  AND `Hi1107c_GNSS_PLL_ANA`; Stage A grabbed GNSS. Fix: descend/gather by config-bound
+  `(lib,view)` + `_lib_pref` (config liblist → design lib → rest). `config_bindings` now keeps the
+  lib (was discarded). Works even w/o config (design lib preferred).
+- `10836da` reconcile flags **FUNCTIONAL pin drops** loudly (real: `div2_tspc.en`, `nor4.D` = your
+  model/symbol mismatch, tool can't invent the logic).
+- `beaeb87` `vh_gen` **auto-detects the --tb top module** (GUI passes no --tb-top) → real TB runs from GUI.
+- `ae13ccd` a **config view in --view redirects** to its design schematic + adopts its expand.cfg
+  (oa2verilog can't open a config cellview → OAVLG-1007). `--view` is only the top-netlist view.
+- `9da84e5` export layout: **`orig/`** (pristine copies, diff vs export/) + **`_work/`** (the `_sub_*.v`
+  descend intermediates, out of the build root).
+- `8dfd219` Stage B converts a **wreal supply/enable MONITOR → logic** (WuR_XO_output_driver:
+  `OUT=(supplies_ok&&en_high)?IN:0` with wreal `en` → CUNDCM; → `OUT=en?IN:0`). Fixture
+  `examples/wreal_monitor/`.
+
+**SIDE THREAD — WuR_DIG_REFBUF_TOP_H1 (paused):** extracts clean now (config-view fix). Was
+blocked on the wreal `en` CUNDCM → Stage B monitor conversion (8dfd219) is the fix. **WuR NEXT:**
+run Convert B → Generate C → Run, confirm CUNDCM gone; check `manifest_B.txt` for any other
+FLAGGED wreal cells on the XO path (wreal used as a value → not auto-converted, needs your semantics).
+
+**Process (locked, followed all session):** observe via vh_diag → CLONE the failure in a LOCAL
+fixture against local xrun (18.03) → fix+verify there → red zone = final check only. Regression =
+9 examples + 3 duts (scratchpad `regress.sh`, drives Stage A/B/C+xrun). Solo repo → commit+push when done.
+
+---
+
 ## 0. STATUS (2026-06-25)
 
 **The whole pipeline AND the GUI are built, verified, and pushed.** Stages:
