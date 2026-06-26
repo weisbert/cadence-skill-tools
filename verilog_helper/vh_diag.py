@@ -364,6 +364,53 @@ def main():
             for L, vw in cell_views(mas, libs):
                 p("    on-disk views in '%s': %s" % (L, ", ".join(vw)))
 
+    # ---- RECONCILED / SUSPECTED WRONG-VIEW ------------------------------------------
+    # Stage A's reconcile_ports drops instance connections to ports the descended view
+    # lacks (so the netlist still elaborates -- which is why mmd_core looks "clean" above:
+    # post-reconcile it only connects ports its view HAS). But if the ONLY surviving
+    # connections are power/clk, the cell's real I/O was dropped -> it is HOLLOW (its ports
+    # float -> *W,CUVWSP/CUVWSI), meaning the WRONG VIEW was descended. The DROPPED ports
+    # ARE the interface the parent wanted, so this section prints exactly what is needed to
+    # pick the right view (the descended interface, the intended interface, and the on-disk
+    # view list) -- no manual `ls`, straight from manifest_A.reconciled_ports.
+    def _is_pwr_clk(q):
+        return bool(vx.SUPPLY_RE.match(q)) or "clk" in q.lower() or "clock" in q.lower()
+    recon = manA.get("reconciled_ports", []) or []
+    rg = {}                       # master -> {"dropped": set, "insts": set((host,inst))}
+    for e in recon:
+        g = rg.setdefault(e["master"], {"dropped": set(), "insts": set()})
+        g["dropped"].add(e["dropped_port"])
+        g["insts"].add((e["module"], e["inst"]))
+    p("\n## RECONCILED / SUSPECTED WRONG-VIEW  (Stage A dropped connections the descended view lacks)")
+    if not rg:
+        p("  (none -- nothing was reconciled)")
+    for mas in sorted(rg):
+        info = rg[mas]
+        tgt = index.get(mas)
+        desc_ports = list(tgt["ports"]) if tgt else []
+        surviving = set()         # how the parent now connects it (post-reconcile)
+        for host, inst in info["insts"]:
+            h = index.get(host)
+            for it in (h["instances"] if h else []):
+                if it["inst"] == inst and it["master"] == mas:
+                    surviving |= set((it.get("conns") or {}).get("named") or {})
+        func_surv = [q for q in surviving if not _is_pwr_clk(q)]
+        dropped = sorted(info["dropped"])
+        sig_dropped = [d for d in dropped if not _is_pwr_clk(d)]
+        wrong = (not func_surv) and bool(sig_dropped)
+        p("  master '%s'  (%d port(s) dropped on %d instance(s))%s"
+          % (mas, len(dropped), len(info["insts"]),
+             "   <<< SUSPECTED WRONG VIEW (hollow: real I/O dropped)" if wrong else ""))
+        p("    descended interface (%d): %s" % (len(desc_ports), ", ".join(desc_ports) or "(none)"))
+        p("    parent still connects   : %s" % (", ".join(sorted(surviving)) or "(none)"))
+        p("    DROPPED (parent wanted, this view lacks): %s" % ", ".join(dropped))
+        if libs:
+            for Lname, vw in cell_views(mas, libs):
+                p("    on-disk views in '%s': %s" % (Lname, ", ".join(vw)))
+        if wrong:
+            p("    -> descend the view whose ports match the DROPPED set above, not the current one"
+              " (need each candidate view's interface; Stage A will oa2verilog them to match).")
+
     # ---- duplicate defs -------------------------------------------------------------
     if dup:
         p("\n## DUPLICATE MODULE DEFINITIONS  (same name in >1 file -> xrun may error)")
