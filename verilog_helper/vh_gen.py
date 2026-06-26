@@ -558,6 +558,21 @@ def main():
             shutil.copyfile(args.tb, tb_path)
         tb_path = os.path.abspath(tb_path)
         sim_top = args.tb_top
+        # The GUI passes --tb but NOT --tb-top (defaults to 'tb'). If the TB file has no
+        # module named 'tb', auto-detect its top so ANY user TB works from the GUI without a
+        # tb-top field. Scan with a plain regex (NOT vp.parse_text: a TB module is portless,
+        # `module tb_foo;`, which the port-requiring parser skips). Top = a module not
+        # instantiated by a sibling in the same file (else the last module defined).
+        tb_txt = open(tb_path, errors='replace').read()
+        tb_names = re.findall(r'\bmodule\s+(\w+)', tb_txt)
+        if sim_top == 'tb' and 'tb' not in tb_names and tb_names:
+            def _instantiated(nm):
+                return re.search(r'\b' + re.escape(nm) + r'\s+\\?\w+\s*(?:\[[^\]]*\]\s*)?\(',
+                                 tb_txt) is not None
+            tops = [n for n in tb_names if not _instantiated(n)] or tb_names
+            sim_top = tops[-1]
+            print("note: --tb-top not given and no module 'tb' in %s -> auto-detected top '%s'"
+                  % (os.path.basename(tb_path), sim_top))
         tb_warns = []
         user_tb = True
     else:
