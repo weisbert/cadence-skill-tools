@@ -216,6 +216,35 @@ def _lib_pref(cfg, design_lib, libs):
     return order
 
 
+def resolve_config_view(lib, cell, view, libs, cfg, warnings):
+    """If the selected --view is a CONFIG view (its on-disk dir holds an expand.cfg, e.g.
+    `config` / `config_ams`), redirect it. oa2verilog CANNOT netlist a config cellview (it has
+    no -config; trying gives `OAVLG-1007 ... follower file for design does not exist`). A
+    config's job is the per-cell BINDINGS, which live in its expand.cfg -- so we netlist the
+    DESIGN view the config names (the schematic, for the top connectivity) and apply that
+    expand.cfg as the config. The designer's hierarchy is fully honored; oa2verilog just never
+    touches the config view. Returns (netlist_view, cfg) -- cfg adopted from the config view's
+    expand.cfg when no explicit --config was given.
+
+    KEY: --view is ONLY the top-netlist view (schematic); per-cell view selection comes from the
+    config bindings. A config view in the --view slot is a UI conflation, fixed here."""
+    if lib not in libs:
+        return view, cfg
+    vdir = os.path.join(libs[lib], cell, view)
+    vcfg = os.path.join(vdir, "expand.cfg")
+    if not (os.path.isdir(vdir) and os.path.isfile(vcfg)):
+        return view, cfg                 # a normal schematic-like view -> netlist it as-is
+    vc = parse_expandcfg(vcfg)
+    if not cfg:
+        cfg = vc                         # no explicit --config -> adopt the config view's bindings
+    dview = (cfg.get("design") or vc.get("design") or (None, None, "schematic"))[2]
+    warnings.append("view '%s' is a CONFIG (has expand.cfg) -> netlisting its design view '%s' + "
+                    "applying the config bindings; oa2verilog cannot open a config view directly "
+                    "(OAVLG-1007). --view is only the top-netlist view; sub-cell views come from "
+                    "the config." % (view, dview))
+    return dview, cfg
+
+
 def resolve_nested_configs(cfg, libs, warnings, _depth=0):
     """A cell bound to a ':config' view is a NESTED config. Verified live (hdbSaveAs
     round-trip): Cadence stores it as a named reference -- the child's per-cell bindings
@@ -1222,6 +1251,11 @@ def main():
     if lib not in libs:
         warnings.append("design lib '%s' not in cds.lib (%s); leaf lookup may miss it"
                         % (lib, cdslib))
+
+    # the --view field may be a CONFIG view (config_ams/config/...): netlist its design
+    # schematic + adopt its expand.cfg, instead of feeding the config to oa2verilog (which
+    # can't open it -> OAVLG-1007). No-op for a normal schematic-like view.
+    view, cfg = resolve_config_view(lib, cell, view, libs, cfg, warnings)
 
     # nested config_ams: a cell bound to a :config view -> recurse into the child config and
     # fold its bindings in (verified: nested configs are stored as named refs, not flattened).
