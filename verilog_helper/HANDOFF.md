@@ -1,6 +1,60 @@
 # verilog_helper — HANDOFF / design context
 
-## 0a. RESUME HERE (2026-06-26 late) — HEAD = `582e6ca`, all pushed + DEPLOYED to red zone
+## 00. VALIDATED END-TO-END ON THE REAL DESIGN (2026-06-26, local xcelium 18.03) ✅
+
+**The full pipeline (A-output → Convert B → Generate C → xrun) was run locally on the REAL
+LPBT_NDIV netlist and the div2 fix is PROVEN. Canonical verdict (no defines): `=== TB PASS ===`,
+RUN-KIND FUNCTIONAL (all externals resolved, zero stubs).**
+
+How it was reproduced off-site (recipe, repeatable):
+1. The real build was dumped on the red zone with `vh_dump_debug.sh` → one .txt (28 files: 25
+   leaves + struct + sim glue). That .txt is in the session transcript; reconstruct with
+   `python3 vh_undump_debug.py <dump.txt> <build>` → `<build>/export/` + `<build>/sim/`.
+2. Two cells the *minimal* dump omitted were supplied locally (both trivial inverters):
+   `pll_ndiv_inv_lvt_x2` = copy of `inv_lvt_x4` renamed (a design leaf Stage A would have
+   gathered); `INVD1_COT_H462SDB_L20P108_SVT_ana` = `assign ZN=~I` in a local `-v` lib
+   (`ext_libs/ideal_model.vams`), mirroring Common_verilog/. Then design = 32 modules, 100
+   instances, FULLY resolved.
+3. Synthesized a `manifest_A.json` (each `export/*.vams` leaf: src=gathered=itself) so Convert B
+   overwrites in place exactly like the GUI pipeline, then ran B → C → `bash sim/run.sh`.
+
+Results (XCELIUM1803):
+- **Stage B**: `pll_ndiv_div2_tspc` → CONVERTED, `power_on = (1'b1)&&(1'b1)`. All 24 std cells →
+  DIGITAL (logic supplies, no wreal → correctly left untouched). Exactly right.
+- **Stage C**: FUNCTIONAL — `INVD1` resolved via `-v`, **zero auto-stubs**.
+- **xrun, default (no `+define+CHECK_NDIV`) → `=== TB PASS ===`:**
+  - CAL `CLK2CNT = VCO/4` **HARD PASS** (was "no edges" before the div2 fix).
+  - TEST `TESTCLK_300M = VCO/16` **HARD PASS** (was "no edges" before).
+  - `CLK2DSM` **LIVE, 111 edges**; under `+define+CHECK_NDIV` it measures **VCO/36 exactly**
+    (ndiv=10 → VCO/4/9) → the mmd divider core works.
+  - `OUT_NDIV` soft **WARN** (not toggling) — the only remaining gap.
+
+**The lone remaining gap (`OUT_NDIV` no edges) is NOT div2 and NOT the converter.** OUT_NDIV taps
+the mmd `clk_to_PFD` output = `mmd_core.DFF_out` with `.D(E_pfd) .Q(clk_to_PFD) .clk(clk)`. E_pfd
+is built via `E_pfd_b = nor4_svt_x2 I281(.A(E_b),.B(reload3),.C(reload2), <BLANK>)`. The model
+`pll_ndiv_nor4_svt_x2(Y,A,B,C,…)` is only **3-input** (`Y = ~(A|B|C)`), and the instance's **4th
+input pin is DROPPED** — struct line ~253 is a literal blank inside the port map (the ONLY
+dropped pin in the entire netlist, and it sits squarely in OUT_NDIV's enable path). This is a
+**cell-model / oa2verilog extraction-fidelity defect on the user's side**: the `nor4_svt_x2`
+verilogams model needs its 4th input `D` (`Y = ~(A|B|C|D)`) so the symbol's 4th pin stops being
+dropped. The TB already classifies OUT_NDIV/CLK2DSM as soft WARN (front-end VCO/4 & VCO/16 are
+the HARD checks), so the run PASSES today; fixing the nor4 model is what will let
+`+define+CHECK_NDIV` go fully green on OUT_NDIV.
+
+Caveat noted for whoever continues: hierarchical `always @(dut.<net>)` probes INTO the AMS DUT
+proved unreliable (connect-boundary; `dut.CLK2DSM` showed 1 toggle while the TB's own top-level
+`CLK2DSM` wire correctly saw 111). Trust TB-port-level measurements, not deep hier probes, in
+`-ams`.
+
+**NEXT:** (a) On the red zone, run the SAME thing the GUI does — Extract A → Convert B → Generate
+C → Run — and confirm `=== TB PASS ===` (default). The earlier red-zone DEAD result was the
+Convert-B-not-run process gap (see §0a), now closed by validation here. (b) To close OUT_NDIV,
+fix the `nor4_svt_x2` cell model's missing 4th input. (c) Optional UX: have Generate C auto-run
+Convert B (or warn) when `export/` still holds an unconverted wreal-monitor leaf.
+
+---
+
+## 0a. (SUPERSEDED by §00 — kept for history) RESUME HERE (2026-06-26 late) — HEAD = `582e6ca`, all pushed + DEPLOYED to red zone
 
 **State: the real NDIV elaborates clean & FUNCTIONAL, but the clock is still DEAD because
 `div2_tspc` in `export/` is STILL RAW — Stage B (Convert B) did not run/take this round.**
