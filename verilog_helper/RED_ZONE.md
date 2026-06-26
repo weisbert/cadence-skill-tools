@@ -106,6 +106,28 @@ xrun-bin: /software/cadence/xcelium/19.04.001/tools/bin/xrun
 - Work area: `/data/RFIC3/Hi1108V100_Pilot_C1Xplus/w84368867/workarea`,
   lib `sim_1108_yusheg`.
 
+## Verification report + waveform screenshots (`vh_ndiv_report.py`)
+
+For a presentation-ready summary (what was checked, PASS/FAIL, and genuine SimVision
+waveform screenshots) run, from the generated sim dir (the one with `run.sh`):
+
+```
+python3 <skill_tools>/verilog_helper/vh_ndiv_report.py --sim .
+```
+
+It (1) runs `bash run.sh +define+WAVES` (xrun + `ndiv.shm`), (2) prints + writes a
+per-mode check table to `report/report.md`, and (3) captures real **SimVision**
+screenshots **headless** (own Xvfb display — no GUI session needed): `wave_overview`
+(CAL/TEST/NORM mode bands), `wave_cal` (CLK2CNT=VCO/4), `wave_test` (TESTCLK=VCO/16),
+`wave_norm` (OUT_NDIV + CLK2DSM, 50% duty + phase). Pure stdlib + the Cadence tools
+already on the box.
+
+Screenshot deps degrade gracefully: needs `simvision` (always present) plus EITHER
+`Xvfb` (headless) OR a live `$DISPLAY` (interactive session), plus python `PIL`
+(else ImageMagick `import`). If none are available it still writes `report.md` +
+`report/layout_*.tcl`, and you capture by hand:
+`simvision ndiv.shm -input report/layout_norm.tcl` then screenshot.
+
 ## Troubleshooting
 
 | symptom | fix |
