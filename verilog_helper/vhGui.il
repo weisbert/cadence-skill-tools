@@ -9,9 +9,10 @@
 ;   [Source Lib/Cell/View combos]   <- ddHiCreate*ComboField (from dgenGui.il)
 ;   [Select from Schematic] [Browse Library...]
 ;   config(expand.cfg) / cds.lib / captured netlist / Output folder
-;   checks.json / user testbench
+;   checks.json / user testbench / Example TB (auto-discovered dropdown)
 ;   external -v lib  [Add -v lib] [Show env]      <- vh_env.py
-;   [Extract A] [Convert B] [Generate C] [Package D]   <- the four CLIs
+;   xrun defines (Run)  <- forwarded to run.sh ("$@" -> e.g. +define+CHECK_NDIV)
+;   [Extract A] [Convert B] [Generate C] [Run xrun] [Package D]   <- the CLIs
 ;   Status
 ;
 ; Each action button builds an argv string and runs the matching CLI through
@@ -49,6 +50,10 @@
 
 ; Default folder for the Browse buttons + Output field (nil => resolve at open).
 (unless (boundp 'vh_browseDir)  (setq vh_browseDir nil))
+
+; Alist (label fullpath) of the example testbenches discovered under examples/.
+; Rebuilt on every vh_guiBuild so a newly-added example TB shows up on reopen.
+(unless (boundp 'vh_exTbMap)    (setq vh_exTbMap nil))
 
 ; --- async run state (Extract/Convert/Generate/Run/Package run in the BACKGROUND
 ; so Virtuoso stays responsive; a poll timer updates the Status line with elapsed
@@ -139,6 +144,26 @@
       ((and vh_browseDir (isDir vh_browseDir)) vh_browseDir)
       ((and (setq w (getShellEnvVar "WORK_ROOT2")) (not (equal w "")) (isDir w)) w)
       (t "."))))
+
+; Discover the example testbenches shipped with the tool: examples/<ex>/tb_*.vams.
+; Returns a list of (label fullpath) pairs, label = "<exdir>/<file>", so the GUI
+; can offer a grow-by-itself dropdown of ready-made TBs (the user picks one + an
+; export folder -> Generate C builds the test env, no CLI path-typing). A pure
+; on-disk scan -> any future examples/<x>/tb_*.vams appears automatically on reopen.
+(defun vh_exampleTBs ()
+  (let (exRoot out)
+    (setq exRoot (strcat (vh_dir) "examples"))
+    (setq out nil)
+    (when (isDir exRoot)
+      (foreach sub (getDirFiles exRoot)
+        (let (subPath)
+          (setq subPath (strcat exRoot "/" sub))
+          (when (and (nequal sub ".") (nequal sub "..") (isDir subPath))
+            (foreach f (getDirFiles subPath)
+              (when (pcreMatchp "^tb_.*\\.vams$" f)
+                (setq out (cons (list (strcat sub "/" f)
+                                      (strcat subPath "/" f)) out))))))))
+    (reverse out)))
 
 ; Read a whole text file into a string, preserving newlines (Ref nhCore.il
 ; nh_readFile: gets keeps the newline so concatenation rebuilds the file).
@@ -362,24 +387,39 @@
             (vh_runAsync form "Stage B" (vh_cliCmd "vh_convert.py" args) "cli")))))
     t))
 
-; Stage C (vh_gen.py): TB + wreal stubs + run.sh from <out>/export (the gathered
-; sources). A user testbench (--tb) wins over generated checks (--checks).
+; Stage C (vh_gen.py): TB + wreal stubs + run.sh from the gathered sources, built
+; into <out>/sim. Source = <out>/export (the normal extract layout); if that does
+; not exist, fall back to <out> itself so the user can point Output straight at an
+; export/ folder. Testbench precedence: explicit "user testbench" file > the
+; "Example TB" dropdown > generated checks (--checks).
 (defun vh_genCB (form "g")
-  (let (out src sim checks tb args)
+  (let (out src sim checks tb exsel extb hit srcFiles args)
     (cond
       ((null (setq out (vh_needOut form))) nil)
       (t
         (setq src (strcat out "/export"))
+        (unless (isDir src) (setq src out))      ; allow pointing Output AT an export/ dir
         (setq sim (strcat out "/sim"))
+        (setq srcFiles
+          (and (isDir src) (setof f (getDirFiles src) (pcreMatchp "\\.(v|va|vams)$" f))))
         (cond
-          ((not (isDir src))
-            (vh_setStatus form "no export/ -- run Extract (A) first"))
+          ((null srcFiles)
+            (vh_setStatus form
+              "no netlist -- run Extract (A), or point Output at the extract folder (has export/)"))
           (t
             (setq checks (vh_str form->vh_checks->value))
             (setq tb     (vh_str form->vh_tb->value))
+            ; resolve the Example TB dropdown label -> full path via vh_exTbMap
+            (setq exsel (vh_str form->vh_exTb->value))
+            (setq extb "")
+            (when (and (nequal exsel "") (nequal exsel "(none)")
+                       (boundp 'vh_exTbMap) vh_exTbMap)
+              (setq hit (assoc exsel vh_exTbMap))
+              (when hit (setq extb (cadr hit))))
             (setq args (strcat "--src " (vh_q src) " --out " (vh_q sim)))
             (cond
-              ((not (equal tb "")) (setq args (strcat args " --tb " (vh_q tb))))
+              ((not (equal tb ""))     (setq args (strcat args " --tb " (vh_q tb))))
+              ((not (equal extb ""))   (setq args (strcat args " --tb " (vh_q extb))))
               ((not (equal checks "")) (setq args (strcat args " --checks " (vh_q checks)))))
             (vh_runAsync form "Stage C" (vh_cliCmd "vh_gen.py" args) "cli")))))
     t))
@@ -406,7 +446,7 @@
 ; wreal exits 0 even with benign spectre-license warnings, so the "=== TB PASS"
 ; marker in the log -- not the exit code -- is the real verdict.
 (defun vh_runCB (form "g")
-  (let (out runsh)
+  (let (out runsh defs cmd)
     (cond
       ((null (setq out (vh_needOut form))) nil)
       (t
@@ -415,8 +455,13 @@
           ((not (isFile runsh))
             (vh_setStatus form "no sim/run.sh -- run Generate (C) first"))
           (t
+            ; optional defines (e.g. "+define+CHECK_NDIV +define+WAVES") -> run.sh
+            ; forwards "$@" to xrun. Blank = the generic completeness smoke run.
+            (setq defs (vh_str form->vh_defs->value))
+            (setq cmd (strcat "bash " (vh_q runsh)
+                              (if (equal defs "") "" (strcat " " defs))))
             ; async (xrun can take seconds-minutes); verdict via RUN-KIND/PASS-FAIL
-            (vh_runAsync form "Run" (strcat "bash " (vh_q runsh)) "run")))))
+            (vh_runAsync form "Run" cmd "run")))))
     t))
 
 ; [Diagnose]: one-shot vh_diag.py over <out> -- cross-checks every instance vs its
@@ -822,8 +867,8 @@
 
 (defun vh_guiBuild ()
   (let (fLib fCell fView fSel fBrowse fScan
-        fCfg fCds fNet fOut fChecks fTb fBwrite fExtLibs fDiag
-        fA fB fC fRun fD fStatus
+        fCfg fCds fNet fOut fChecks fTb fExTb fBwrite fExtLibs fDiag fDefs
+        fA fB fC fRun fD fStatus exChoices
         form fieldW promptW rowH sizePt btnH preDir)
     (setq rowH 28) (setq fieldW 380) (setq promptW 155)
     (setq sizePt (list fieldW rowH)) (setq btnH rowH)
@@ -858,6 +903,11 @@
     (setq fTb (hiCreateFileSelectorField ?name 'vh_tb ?mode 'existingFile
                 ?prompt "user testbench (optional)" ?value ""))
     (vh_cfgFileSel fTb "Choose a testbench" "Verilog (*.v *.vams *.va);;All Files (*)")
+    ; ----- ready-made example TBs (auto-discovered dropdown; grows with examples/) -----
+    (setq vh_exTbMap (vh_exampleTBs))
+    (setq exChoices (cons "(none)" (foreach mapcar p vh_exTbMap (car p))))
+    (setq fExTb (hiCreateCyclicField ?name 'vh_exTb
+                  ?prompt "Example TB (Stage C)" ?choices exChoices ?value "(none)"))
     (setq fBwrite (hiCreateCyclicField ?name 'vh_bwrite
                     ?prompt "Stage B: write candidate beside cell"
                     ?choices (list "yes" "no") ?value "yes"))
@@ -876,6 +926,9 @@
                ?callback "(vh_genCB (vh_curForm))"))
     (setq fRun (hiCreateButton ?name 'vh_btnRun ?buttonText "Run xrun"
                  ?callback "(vh_runCB (vh_curForm))"))
+    ; optional xrun defines forwarded to run.sh (blank = generic completeness smoke)
+    (setq fDefs (hiCreateStringField ?name 'vh_defs
+                  ?prompt "xrun defines (Run, e.g. +define+CHECK_NDIV)" ?value ""))
     (setq fD (hiCreateButton ?name 'vh_btnD ?buttonText "Package D"
                ?callback "(vh_packageCB (vh_curForm))"))
     (setq fStatus (hiCreateStringField ?name 'vh_status ?prompt "Status"
@@ -898,15 +951,17 @@
         (list fOut    (list 0 208)  sizePt promptW)
         (list fChecks (list 0 236)  sizePt promptW)
         (list fTb     (list 0 264)  sizePt promptW)
-        (list fBwrite (list 0 292)  (list 340 rowH) 255)
-        (list fExtLibs (list 0 330) (list 180 btnH) 0)
-        (list fDiag   (list 190 330) (list 110 btnH) 0)
-        (list fA      (list 0 392)   (list 102 btnH) 0)
-        (list fB      (list 105 392) (list 102 btnH) 0)
-        (list fC      (list 210 392) (list 102 btnH) 0)
-        (list fRun    (list 315 392) (list 102 btnH) 0)
-        (list fD      (list 420 392) (list 102 btnH) 0)
-        (list fStatus (list 0 428)  (list 525 rowH) 60))
+        (list fExTb   (list 0 292)  (list 340 rowH) 255)
+        (list fBwrite (list 0 320)  (list 340 rowH) 255)
+        (list fExtLibs (list 0 358) (list 180 btnH) 0)
+        (list fDiag   (list 190 358) (list 110 btnH) 0)
+        (list fDefs   (list 0 396)  sizePt promptW)
+        (list fA      (list 0 432)   (list 102 btnH) 0)
+        (list fB      (list 105 432) (list 102 btnH) 0)
+        (list fC      (list 210 432) (list 102 btnH) 0)
+        (list fRun    (list 315 432) (list 102 btnH) 0)
+        (list fD      (list 420 432) (list 102 btnH) 0)
+        (list fStatus (list 0 468)  (list 525 rowH) 60))
       ?callback (list "(progn (vh_closeCleanupCB vh_form) t)"
                       "(progn (vh_closeCleanupCB vh_form) t)")
       ?buttonLayout 'Close))
@@ -915,7 +970,7 @@
     (errset (ddHiLinkFields form->vh_srcLib form->vh_srcCell form->vh_srcView) t)
     ; hiSetFormSize AFTER instantiate (retracts the outer scrollbar -- Ref
     ; nhGui.il / form_mlt_wheel_propagation memory).
-    (errset (hiSetFormSize form (list 560 530)) t)
+    (errset (hiSetFormSize form (list 560 575)) t)
     form))
 
 ; Open (build + display) the Verilog Helper form.
