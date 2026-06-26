@@ -1,10 +1,31 @@
 # verilog_helper — HANDOFF / design context
 
-## 00. VALIDATED END-TO-END ON THE REAL DESIGN (2026-06-26, local xcelium 18.03) ✅
+## 00. VALIDATED END-TO-END ON THE REAL DESIGN (2026-06-26) ✅ — RED ZONE CONFIRMS LOCAL
+
+**CONFIRMED ON THE RED ZONE (2026-06-26 18:32, xcelium 19.04): default `bash run.sh` →
+`=== TB PASS ===`, FUNCTIONAL, 0 errors — BIT-FOR-BIT the same verdict, the same WARNs, and the
+same `CLK2DSM live (111 edges)` as the local xcelium-18.03 repro. The local mirror is faithful
+(xcelium 18.03 vs 19.04 and the local `INVD1` stub vs the real `ideal_model` make no difference
+to this result). Expected/harmless red-zone warnings: `*W,CUVWSI` ×4 (div2 I7/I9 VDD/VPP/VSS
+unconnected — CORRECT, converted div2 is supply-less/always-on) and `*W,LIBNOU` ×5 (only
+`L20_SVT_ana`'s INVD1 is used of the 6 `-v` libs).**
+
+**CORRECTION to an earlier claim in this section (do not trust the struck-through line below):**
+the user fixed the `nor4_svt_x2` model (added the 4th input `D`; `I281.D(reload1)` now connected;
+red-zone `nor4_svt_x2` compiles 0/0) — but that fix did **NOT** make `OUT_NDIV` toggle. Under
+`+define+CHECK_NDIV`, `OUT_NDIV` is STILL "no edges" on BOTH the red zone (WARN) and locally
+(2 FAIL). So `OUT_NDIV`'s deadness is **not** the nor4 dropped pin: it is the mmd `clk_to_PFD`
+(PFD-feedback DFF `DFF_out`) simply not running under a *standalone divider* stimulus with no real
+PLL loop / reset sequence. The TB already classifies OUT_NDIV/CLK2DSM as soft WARN, which is why
+the default run PASSES. Making OUT_NDIV a HARD pass is a separate effort (drive the PFD/reload
+loop or change the stimulus) — it is NOT a div2, nor4, or verilog_helper issue.
 
 **The full pipeline (A-output → Convert B → Generate C → xrun) was run locally on the REAL
 LPBT_NDIV netlist and the div2 fix is PROVEN. Canonical verdict (no defines): `=== TB PASS ===`,
-RUN-KIND FUNCTIONAL (all externals resolved, zero stubs).**
+RUN-KIND FUNCTIONAL (all externals resolved, zero stubs).** After-fix design saved local-only at
+`examples/lpbt_ndiv/_ref/real_dump_afterfix.txt` (+ reconstructed `build_afterfix/`).
+
+~~fixing the nor4 model is what will let `+define+CHECK_NDIV` go fully green on OUT_NDIV~~ ← WRONG, see correction above.
 
 How it was reproduced off-site (recipe, repeatable):
 1. The real build was dumped on the red zone with `vh_dump_debug.sh` → one .txt (28 files: 25
@@ -38,8 +59,10 @@ dropped pin in the entire netlist, and it sits squarely in OUT_NDIV's enable pat
 **cell-model / oa2verilog extraction-fidelity defect on the user's side**: the `nor4_svt_x2`
 verilogams model needs its 4th input `D` (`Y = ~(A|B|C|D)`) so the symbol's 4th pin stops being
 dropped. The TB already classifies OUT_NDIV/CLK2DSM as soft WARN (front-end VCO/4 & VCO/16 are
-the HARD checks), so the run PASSES today; fixing the nor4 model is what will let
-`+define+CHECK_NDIV` go fully green on OUT_NDIV.
+the HARD checks), so the run PASSES today. [SUPERSEDED: I originally guessed fixing the nor4
+model would make `+define+CHECK_NDIV` green on OUT_NDIV — it did NOT; see the CORRECTION at the
+top of §00. The dropped pin was a real model defect worth fixing, but it is not why OUT_NDIV is
+quiet.]
 
 Caveat noted for whoever continues: hierarchical `always @(dut.<net>)` probes INTO the AMS DUT
 proved unreliable (connect-boundary; `dut.CLK2DSM` showed 1 toggle while the TB's own top-level
