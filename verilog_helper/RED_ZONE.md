@@ -128,6 +128,27 @@ Screenshot deps degrade gracefully: needs `simvision` (always present) plus EITH
 `report/layout_*.tcl`, and you capture by hand:
 `simvision ndiv.shm -input report/layout_norm.tcl` then screenshot.
 
+## Collect the external libs into the build (`vh_collect_ext.py`)
+
+To get a **self-contained snapshot** — one folder with every Verilog the design needs,
+local cells *and* the external `-v` PDK models actually used — run this on the red zone
+(the external files live only here) after `ext_libs.list` points at the real paths:
+
+```
+python3 <skill_tools>/verilog_helper/vh_collect_ext.py --sim .            # copy into ../export
+python3 <skill_tools>/verilog_helper/vh_collect_ext.py --sim . --rewrite  # + repoint the run at the copies
+```
+
+It resolves the external list with the **same precedence run.sh uses** (`$VH_EXT_LIBS`
+→ `ext_libs.list` → the baked `EXT=(…)` in run.sh), copies each `-v` file (and `-y` /
+`+incdir+` dir) into `--dest` (default: the sibling `export/`, else `<sim>/ext_collected`),
+and skips any path that doesn't exist (reports it — invents nothing). With `--rewrite`
+it (re)writes `<sim>/ext_libs.list` to the local copies (relative, so `bash run.sh` uses
+them next run) and backs the original up as `ext_libs.list.bak`.
+
+> Fix `ext_libs.list` to the real red-zone paths **first** (Step 4) — a MISSING entry is
+> skipped, so a self-contained copy is only complete once every external resolves.
+
 ## Troubleshooting
 
 | symptom | fix |
