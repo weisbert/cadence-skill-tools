@@ -1,5 +1,52 @@
 # verilog_helper — HANDOFF / design context
 
+## SESSION CLOSE 2026-06-27 — pdown X-bug found+fixed, Stage A `external_file/`
+
+**Headline: a real DESIGN model bug was caught by the waveform.** The user saw `OUT_NDIV`,
+`CLK2CNT`, `TESTCLK_300M` render **red/X on their active phase** in SimVision while the TB still
+said `=== TB PASS ===`. Root cause = the `pll_ndiv_pdown` power-down CLAMP model. Each chip output
+is driven by TWO things on one net: the real inverter buffer **and** a `pdown` clamp (instances
+I151/I71/I153/I152, `.IN(power_en_b)` / `enb_test`). A shared-net clamp MUST be **tri-state**:
+pull `0` only while clamping, else release to **high-Z**. The model instead did `reg Z; initial
+Z=1'bx;` and on the `IN==0` branch (all of normal operation, since `power_en_b=0` — probed) **never
+reassigned Z** → it drove a constant `1'bx` onto the shared net forever → the real buffer could not
+win → output = X. The timing checks PASS anyway because `@(posedge)` fires on `0→x` too, so period/
+duty still measure — **the waveform exposed it, the PASS line hid it.**
+
+**FIX (verified, local xcelium 18.03, probed 4-state levels before/after):** make `Z` tri-state —
+```
+always@(*) begin
+  if (!powerOK)        Z = 1'bx;   // bad supply
+  else if (IN==1'b1)   Z = 1'b0;   // clamp ACTIVE -> pull low
+  else                 Z = 1'bz;   // clamp RELEASED -> high-Z, real driver wins   <-- the fix
+end
+```
+After: `OUT_NDIV=1`, `CLK2CNT=1`, `CLK2DSM` toggles, no X; `=== TB PASS ===` unchanged. Scanned all
+gathered cells — **`pll_ndiv_pdown` is the ONLY one with this "init-x, never-release" anti-pattern**
+(`power_sw` etc. are single-driver, fully assigned, fine). This is the cell's own behavioral model
+(Stage A gathers it as-is; `vh_convert` does NOT generate it — it would flag `if/always/#delay`), so
+it is a **design-model bug, NOT a tool bug** — same class as the earlier nor4 fix.
+- Local mirror updated: `examples/lpbt_ndiv/_ref/build_afterfix/export/pll_ndiv_pdown.vams` (gitignored).
+- **RED-ZONE TODO (user owns):** apply the same tri-state fix to `pll_ndiv_pdown`'s verilogams view in OA.
+- Refreshed report package (4 clean SimVision PNGs, no X + table + verdict) was regenerated on the
+  FIXED build and handed to the user as a tar.
+
+**Tool change shipped (commit `2b88403`): Stage A writes `external_file/`.** Extract A now creates
+`external_file/` next to `export/` and copies in the external `-v`/`-y` model sources the design
+actually instantiates (resolved via the remembered ext env). One copy per source file; unresolved
+externals are skipped with a warning (Stage C still stubs them). Recorded in `manifest_A.json`
+(`external_files`) + the Stage A summary. Built into `extract()`, not a post-step (the earlier
+bolt-on `vh_collect_ext.py` was removed). So a build dir now holds every Verilog the design needs:
+`export/` (local) + `external_file/` (external). Snapshot reflects the machine where Extract A runs —
+point the ext env (`vh_env.py add-lib`) at real paths where they exist for a complete copy.
+
+**Open / next time (nothing blocking):**
+- OFFERED but not yet done: add an **X-guard to the TB** — assert the output level `=== 1` at the
+  known-high sample point so a future X-high FAILs instead of passing silently. User to confirm.
+- Red-zone: apply the pdown tri-state fix in OA, re-run, regenerate authoritative screenshots.
+
+---
+
 ## SESSION CLOSE 2026-06-26 — HEAD `a3634da`, all pushed + deployed-ready
 
 **Where we are (LPBT_NDIV is GREEN).** The div2 wreal-supply fix is validated end-to-end on the
