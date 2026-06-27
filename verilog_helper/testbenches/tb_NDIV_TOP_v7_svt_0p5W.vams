@@ -36,14 +36,20 @@
 //   TESTCLK_300M = DIV16sig & en_test : VCO/16 when en_test=1 (=300MHz @ VCO=4.8G),
 //                  else pdown-low.
 //
-//   OUT_ADCDIV (8-bit ADCDIV counter, clk=ADCDIVCKIN=VCO/4 when lpbt_en=0): in THIS
-//   behavioral model the 8-bit core (CORE_v3_reload2) COUNTS internally (q0..q7/EOC/
-//   reload all fire) but its output stage E_pfd->DFF->clk_to_PFD LATCHES high after the
-//   first pulse, so OUT_ADCDIV produces NO clock. Robust to the EOC delay-cell timing
-//   (swept 5..200ps). The 14-bit (reload3) core does NOT show this. => treated as an
-//   INFO/WARN check here (NOT a hard fail) -- CONFIRM on the red zone with the real
-//   DELAD1/DELBD1/INV cells; if it still stalls there it is a model bug in the 8-bit
-//   core's output stage (same class as the earlier nor4/pdown/div2 findings).
+//   OUT_ADCDIV (8-bit ADCDIV counter, clk = ADCDIVCKIN = VCO/4 when lpbt_en=0):
+//       OUT_ADCDIV = VCO / (4*(adcdiv-1))                  -> M_adc = adcdiv-1
+//     pwsel law = SAME step-2 form as NDIV but with a BIG +62 OFFSET. The 8-bit
+//     EOC_low_short gate is nor3(nand12,d_low, nand(q6,q7b)) -> EOC_low (the falling-edge
+//     trigger) fires only once the count reaches q6=1 (>=64), q7=0 -- opposite to the
+//     14-bit, whose EOC needs the high bits =0. Hence:
+//       low(ADCDIVCKIN) = 2*floor(adcpwsel/2) + 62         (adcpwsel[0] don't-care)
+//       period = M_adc ;  high = M_adc - low
+//       toggles ONLY when M_adc > low  <=>  adcdiv >= 2*floor(adcpwsel/2) + 64  (min ~64);
+//         below that q6 never sets, EOC_low never fires, clk_to_PFD latches high (NO clock).
+//       50% duty <=> adcpwsel = (adcdiv-1)/2 - 62.
+//     Operating point here: adcdiv=165, adcpwsel=20 -> M=164, low=82 -> EXACT 50%,
+//     OUT_ADCDIV = VCO/656. (A too-small adcdiv or too-large adcpwsel => low>=M => no
+//     output: a PROGRAMMING constraint, NOT a model bug.)
 // =============================================================================
 
 // slots: 0=OUT_NDIV 1=CLK2DSM 2=CLK2CNT 3=TESTCLK_300M 4=OUT_ADCDIV
@@ -83,8 +89,9 @@ module tb;
   localparam integer PWSEL   = (NDIV + 5) / 2;      // 50% duty law         = 28
   localparam integer D_WUR   = 16 * (NDIV - 1);     // WuR  OUT_NDIV divide = 800 (VCO/800=6MHz)
   localparam integer D_LPBT  =  4 * (NDIV - 1);     // LPBT OUT_NDIV divide = 200 (VCO/200=24MHz)
-  localparam integer ADCDIV  = 51;
-  localparam integer ADCPW   = (51 + 5) / 2;        // 28
+  localparam integer ADCDIV  = 165;                 // M_adc=164; needs adcdiv >= adcpwsel+64
+  localparam integer ADCPW   = 20;                  // (adcdiv-1)/2-62 = 20 -> exact 50% (low=82)
+  localparam integer D_ADC   = 4 * (ADCDIV - 1);    // OUT_ADCDIV divide = 656 (VCO/656)
   localparam real    TOL     = 0.25;                // divide-ratio tolerance (abs, on the ratio)
   localparam real    DTOL    = 3.0;                 // duty tolerance [percent points]
   localparam real    SETTLE  = 6.0  * D_WUR * TVCO; // settle a few WuR output periods
@@ -146,8 +153,10 @@ module tb;
   always @(posedge OUT_ADCDIV) begin
     ed[I_ADC]=ed[I_ADC]+1; if (OUT_ADCDIV!==1'b1) xc[I_ADC]=xc[I_ADC]+1;
     if (lr[I_ADC]>=0.0) begin ps[I_ADC]=ps[I_ADC]+($realtime-lr[I_ADC]); pn[I_ADC]=pn[I_ADC]+1; end
-    lr[I_ADC]=$realtime;
+    lr[I_ADC]=$realtime; hr[I_ADC]=$realtime;
   end
+  always @(negedge OUT_ADCDIV)
+    if (hr[I_ADC]>=0.0) begin hs[I_ADC]=hs[I_ADC]+($realtime-hr[I_ADC]); hn[I_ADC]=hn[I_ADC]+1; end
 
   initial begin
     fails   = 0;
@@ -172,13 +181,10 @@ module tb;
     `CKQ("TESTCLK low (en_test=0)",   I_TST)
     if ((NDIV % 4) == 3) begin `CKD("OUT_NDIV", I_OUT, 50) end
     else $display("  INFO OUT_NDIV duty (exact 50%% only when ndiv%%4==3)");
-    // OUT_ADCDIV: INFO/WARN only (8-bit core output-stage stall in this model).
-    if (ed[I_ADC] > 0) begin
-      avgp=(pn[I_ADC]>0)?(ps[I_ADC]/pn[I_ADC]):0.0; ratio=(avgp>0.0)?(avgp/TVCO):0.0;
-      $display("  INFO OUT_ADCDIV toggles: VCO/%0.2f (expect VCO/%0d=4*(adcdiv-1)) -- ADCDIV path LIVE",
-               ratio, 4*(ADCDIV-1));
-    end else
-      $display("  WARN OUT_ADCDIV: no edges (8-bit core output latched in this behavioral model; CONFIRM on red zone)");
+    // OUT_ADCDIV: hard checks (adcdiv=165,adcpwsel=20 -> VCO/656, exact 50%).
+    `CKR("OUT_ADCDIV = VCO/4/(adcdiv-1)", I_ADC, D_ADC)
+    `CKX("OUT_ADCDIV", I_ADC)
+    `CKD("OUT_ADCDIV", I_ADC, 50)
 
     // ===================== MODE: LPBT (lpbt_en=1) =====================
     lpbt_en = 1'b1; cal_en = 1'b0; en_test = 1'b0;

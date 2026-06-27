@@ -26,26 +26,30 @@ mismatch fails loudly). `run.sh` globs `ext_stub/*.vams` + `export/*.vams`.
 - **`cal_en` does NOT freeze NDIV here** (it did in LPBT): only turns on the `CLK2CNT=VCO/4` monitor.
 - `TESTCLK_300M=VCO/16` when `en_test=1` (300 MHz). `CLK2DSM` lags `OUT_NDIV` ~2.07 NDIVCKIN cyc.
 
-**OUT_ADCDIV — OPEN finding (red-zone TODO).** The 8-bit ADCDIV counter
-(`WL_PLL_Ndiv_counter_svt_CORE_v3_reload2_overlap`) **counts internally** (q0..q7/EOC/reload1/2 all
-fire, divide≈adcdiv−1) but its **output stage latches**: `E_pfd→DFF→clk_to_PFD` goes high once and
-never returns → `OUT_ADCDIV` emits no clock. Robust to the EOC delay-cell timing (swept the
-`DELAD1/DELBD1` stubs 5..200 ps — still stuck). The 14-bit `reload3` core does NOT do this. Likely a
-behavioral-model bug in the 8-bit `reload2` core output stage (same class as the nor4 / pdown / div2
-findings) — BUT the EOC path runs through **stubbed** COT cells, so **CONFIRM on the red zone with the
-real `L20_SVT_ana` cells before declaring it a model bug.** The committed TB treats OUT_ADCDIV as
-**INFO/WARN, never a hard fail**, so the verdict tracks the NDIV path regardless.
+**OUT_ADCDIV — RESOLVED (programming constraint, NOT a bug; user's hunt nailed it).** First pass I
+thought the 8-bit core output latched. User said "大概率是EOC_low没生效，检查 adcsel 怎么搞" — exactly
+right. The 8-bit `EOC_low_short = nor3(nand12,d_low, nand(q6,q7b))` needs the count to reach **q6=1
+(≥64), q7=0** to fire the falling edge (the 14-bit's EOC needs the high bits =0 — opposite polarity).
+So `OUT_ADCDIV` only toggles when the count is big enough AND adcpwsel small enough. Swept law:
+```
+OUT_ADCDIV = VCO/(4·(adcdiv−1))                (lpbt_en=0; ADCDIVCKIN=VCO/4)
+low(ADCDIVCKIN) = 2·floor(adcpwsel/2) + 62     (adcpwsel[0] don't-care; +62 offset vs NDIV's −3)
+toggles ⟺ adcdiv ≥ 2·floor(adcpwsel/2)+64  (min adcdiv≈64) ; 50% ⟺ adcpwsel=(adcdiv−1)/2−62
+```
+adcdiv=165,adcpwsel=20 → M=164,low=82 → exact 50%, VCO/656 (verified). My earlier "stall" was just
+adcdiv=51,adcpwsel=28 → low(=25+62=87) ≥ M(=50). The +62 offset is structural/count-driven (swept
+the EOC delay cells 5..200 ps — unchanged), so it carries to the red zone; divide is fully robust.
+The committed TB now **hard-checks OUT_ADCDIV** (divide + X-guard + 50% duty) at adcdiv=165/adcpwsel=20.
 
 **Red-zone wiring (user owns):** drop `testbenches/tb_NDIV_TOP_v7_svt_0p5W.vams` (module `tb`) into
 the build's `sim/` (replacing the trivial auto-gen TB) and `./run.sh` — its baked `-top tb` + `-v`
 libs resolve the real COT cells; the TB references only top ports (no internal hier refs), so it is
-netlist-robust. `+define+WAVES` for a SimVision dump. Expect all NDIV/CLK2DSM/CLK2CNT/TESTCLK checks
-PASS; OUT_ADCDIV = PASS-with-edges or WARN-stall → tells us if the 8-bit stall is real silicon-model
-or a local-stub artifact.
+netlist-robust. `+define+WAVES` for a SimVision dump. Expect all checks (NDIV/CLK2DSM/CLK2CNT/
+TESTCLK/OUT_ADCDIV) PASS → `=== TB PASS ===`.
 
-**Open / next time (nothing blocking):**
-- Confirm OUT_ADCDIV on the red zone (real COT cells). If still stuck → fix the 8-bit `reload2` core
-  output stage model (mirror whatever makes the 14-bit `reload3` core toggle).
+**Open / next time (nothing blocking):** none specific to WuR NDIV — all five outputs characterized
+and hard-checked. (General reminder: the +62 ADCDIV offset means usable `adcdiv ≥ ~64`; if a use case
+wants small ADC divide ratios, that's a spec question for the design owner, not a TB issue.)
 
 ---
 

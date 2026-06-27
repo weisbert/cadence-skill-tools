@@ -34,7 +34,7 @@ OUT_ADCDIV<-  8-bit counter clk_to_PFD (ADCDIVCKIN=VCO/4)
 | `CLK2DSM`      | = OUT_NDIV ✓ | = OUT_NDIV ✓ | = OUT_NDIV ✓ | = OUT_NDIV ✓ |
 | `CLK2CNT`      | static-high ✓ | static-high ✓ | **VCO/4** ✓ | static-high ✓ |
 | `TESTCLK_300M` | low ✓ | low ✓ | low ✓ | **VCO/16** ✓ |
-| `OUT_ADCDIV`   | *stall* (see below) | frozen (div4_en=0) ✓ | *stall* | *stall* |
+| `OUT_ADCDIV`   | **VCO/4/(adcdiv−1)** ✓ | frozen (div4_en=0) ✓ | = NORM (div4_en=1) | = NORM (div4_en=1) |
 
 - **`lpbt_en` is the prescaler select** — the headline difference vs LPBT. `lpbt_en=1` reproduces
   the LPBT operating point exactly (NDIVCKIN=VCO/4, ADCDIV path off).
@@ -61,22 +61,33 @@ corner clamp (~50% with don't-crash): pwsel = min((ndiv−1)/2 + 3, 63)
 Operating point in the committed TB: `ndiv=51` (51 % 4 == 3 → exact 50%), `pwsel=28`.
 WuR: OUT_NDIV = VCO/800 = 6 MHz @ 4.8 GHz. LPBT mode: VCO/200 = 24 MHz.
 
-## OUT_ADCDIV — open finding (needs red-zone confirmation)
-The 8-bit ADCDIV counter (`WL_PLL_Ndiv_counter_svt_CORE_v3_reload2_overlap`) **counts internally**
-(q0..q7, EOC, reload1/2 all fire, divide ≈ adcdiv−1) but its **output stage latches**: `E_pfd → DFF
-→ clk_to_PFD` goes high once and never returns, so `OUT_ADCDIV` produces no clock. Robust to the
-`delay2`/`DELAD1`/`DELBD1` EOC timing (swept 5..200 ps locally with stub cells). The 14-bit
-`reload3` core does NOT show this. → Likely a behavioral-model issue in the 8-bit core's output
-stage (same class as the earlier nor4 / pdown / div2 findings), but the EOC path uses external COT
-cells that were **stubbed** locally — **confirm on the red zone with the real `L20_SVT_ana` cells.**
-The committed TB reports OUT_ADCDIV as **INFO/WARN, not a hard fail**, so the verdict reflects the
-NDIV path regardless of how ADCDIV resolves.
+## OUT_ADCDIV LAW (8-bit ADCDIV counter) — RESOLVED (it was a programming constraint, NOT a bug)
+`OUT_ADCDIV` is clocked by `ADCDIVCKIN = VCO/4` whenever `lpbt_en=0` (div4_en=1). Divide law same
+family (`M_adc = adcdiv−1`), but **adcpwsel has a big +62 offset** vs the NDIV's −3, because the
+8-bit `EOC_low_short = nor3(nand12, d_low, nand(q6,q7b))` requires the count to reach **q6=1 (≥64),
+q7=0** to fire the falling edge (the 14-bit instead needs the high bits =0). Confirmed by sweep:
+```
+OUT_ADCDIV     = VCO / (4·(adcdiv−1))              (lpbt_en=0)
+low(ADCDIVCKIN)= 2·floor(adcpwsel/2) + 62          (adcpwsel[0] don't-care; +62 offset)
+period         = M_adc = adcdiv − 1 ;  high = M_adc − low
+TOGGLES only when M_adc > low  ⟺  adcdiv ≥ 2·floor(adcpwsel/2) + 64   (min adcdiv ≈ 64)
+50% duty  ⟺  adcpwsel = (adcdiv−1)/2 − 62
+```
+Measured: adcdiv=165,adcpwsel=20 → M=164,low=82,high=82 → **exact 50%, OUT_ADCDIV=VCO/656**;
+adcdiv=64,adcpwsel=0 → just toggles (high≈2); adcdiv≤63 → no q6 → stall; adcpwsel is 6-bit so 65
+wraps to 1. **The earlier "stall" was simply adcdiv<64 / low≥M (I had adcdiv=51,adcpwsel=28) — not a
+model bug.** The committed TB now hard-checks OUT_ADCDIV (divide + X-guard + 50% duty) at
+adcdiv=165/adcpwsel=20. (Local repro used stubbed COT cells in the EOC `delay2`, but the +62 offset
+is structural, count-driven — independent of those delays, swept 5..200 ps — so it carries to the
+red zone; the divide is fully robust.)
 
 ## How to re-characterize (local)
 ```
 cd examples/wur_ndiv/_ref/build
-./run.sh tb_ndivlaw.vams tb     # divide law + pwsel sweep  -> grep ^LAW / ^SWEEP
-./run.sh tb_modes.vams   tb     # mode matrix + divide range -> VCO/ratio per tap
+./run.sh tb_ndivlaw.vams tb     # NDIV divide law + pwsel sweep  -> grep ^LAW / ^SWEEP
+./run.sh tb_modes.vams   tb     # mode matrix + divide range     -> VCO/ratio per tap
+./run.sh tb_adc4.vams    tb     # ADCDIV adcpwsel->low sweep (+62 offset) -> grep ^ADCSWEEP
+./run.sh tb_adc5.vams    tb     # ADCDIV operating point + toggle boundary -> grep ^ADC
 ./run.sh tb_NDIV_TOP_v7_svt_0p5W.vams tb   # the committed self-checking TB
 ```
 (`run.sh` globs `export/*.vams` + `ext_stub/*.vams`; the stubs stand in for the red-zone COT cells.)
