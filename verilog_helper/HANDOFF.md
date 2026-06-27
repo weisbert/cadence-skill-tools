@@ -1,5 +1,54 @@
 # verilog_helper — HANDOFF / design context
 
+## SESSION CLOSE 2026-06-27c — WuR NDIV characterized (sim-verified) + OUT_ADCDIV open finding
+
+**Task done: `NDIV_TOP_v7_svt_0p5W` (WuR NDIV) reproduced locally from the user's red-zone debug
+dump and fully characterized; self-checking TB committed → `testbenches/tb_NDIV_TOP_v7_svt_0p5W.vams`.**
+Local repro (gitignored): `examples/wur_ndiv/_ref/build/` (reconstructed `export/` via the dump,
+`ext_stub/` for the COT cells, charac TBs). Truth table + laws: `examples/wur_ndiv/SPEC_CHECKLIST.md`.
+
+**Reproduction method (reusable for the next red-zone dump):** the dump is NOT self-contained — it
+carries `export/` (local cells) but leaves the red-zone COT std cells (`INVD1/ND2D1/NR2D1/INVD8/
+DELAD1/DELBD1_COT_...`) to the `-v` libs. Wrote behavioral `ext_stub/*.vams` for them (port names
+read straight off the struct instantiations; powerOK style copied from the provided BUFFD2/NR2D2).
+xrun elaboration is the faithfulness check on the hand-reconstructed struct (undefined-net / port
+mismatch fails loudly). `run.sh` globs `ext_stub/*.vams` + `export/*.vams`.
+
+**WuR vs LPBT — same family, key differences (all sim-confirmed, VCO=4.8 GHz):**
+- **`lpbt_en` is now a real control = the PRESCALER SELECT** for the 14-bit NDIV counter clock:
+  `NDIVCKIN = mux_sel ? DIV4sig : DIV16sig`, `mux_sel = lpbt_en & ~cal_en`. So `lpbt_en=1`
+  → NDIVCKIN=**VCO/4** (reproduces LPBT exactly, ADCDIV path off); `lpbt_en=0` (WuR) → **VCO/16**.
+- **Divide law unchanged in form:** `OUT_NDIV = CLK2DSM = NDIVCKIN/(ndiv−1)`, `M=ndiv−1` (confirmed
+  M=10..300). ⇒ WuR `OUT_NDIV = VCO/(16·(ndiv−1))`; LPBT-mode `VCO/(4·(ndiv−1))`.
+- **pwsel/pulse-width law IDENTICAL in form to LPBT**, only the counting unit changed (NDIVCKIN, now
+  VCO/16): `low = 2·floor(pwsel/2)−3` (NDIVCKIN cyc, pwsel[0] don't-care), `period=M`, `50% ⟺
+  pwsel=(ndiv+5)/2` exact only `ndiv≡3 (mod4)`, `pwsel≥4` else stall. So the LPBT clamp carries over.
+- **`cal_en` does NOT freeze NDIV here** (it did in LPBT): only turns on the `CLK2CNT=VCO/4` monitor.
+- `TESTCLK_300M=VCO/16` when `en_test=1` (300 MHz). `CLK2DSM` lags `OUT_NDIV` ~2.07 NDIVCKIN cyc.
+
+**OUT_ADCDIV — OPEN finding (red-zone TODO).** The 8-bit ADCDIV counter
+(`WL_PLL_Ndiv_counter_svt_CORE_v3_reload2_overlap`) **counts internally** (q0..q7/EOC/reload1/2 all
+fire, divide≈adcdiv−1) but its **output stage latches**: `E_pfd→DFF→clk_to_PFD` goes high once and
+never returns → `OUT_ADCDIV` emits no clock. Robust to the EOC delay-cell timing (swept the
+`DELAD1/DELBD1` stubs 5..200 ps — still stuck). The 14-bit `reload3` core does NOT do this. Likely a
+behavioral-model bug in the 8-bit `reload2` core output stage (same class as the nor4 / pdown / div2
+findings) — BUT the EOC path runs through **stubbed** COT cells, so **CONFIRM on the red zone with the
+real `L20_SVT_ana` cells before declaring it a model bug.** The committed TB treats OUT_ADCDIV as
+**INFO/WARN, never a hard fail**, so the verdict tracks the NDIV path regardless.
+
+**Red-zone wiring (user owns):** drop `testbenches/tb_NDIV_TOP_v7_svt_0p5W.vams` (module `tb`) into
+the build's `sim/` (replacing the trivial auto-gen TB) and `./run.sh` — its baked `-top tb` + `-v`
+libs resolve the real COT cells; the TB references only top ports (no internal hier refs), so it is
+netlist-robust. `+define+WAVES` for a SimVision dump. Expect all NDIV/CLK2DSM/CLK2CNT/TESTCLK checks
+PASS; OUT_ADCDIV = PASS-with-edges or WARN-stall → tells us if the 8-bit stall is real silicon-model
+or a local-stub artifact.
+
+**Open / next time (nothing blocking):**
+- Confirm OUT_ADCDIV on the red zone (real COT cells). If still stuck → fix the 8-bit `reload2` core
+  output stage model (mirror whatever makes the 14-bit `reload3` core toggle).
+
+---
+
 ## SESSION CLOSE 2026-06-27b — LPBT_NDIV pwsel↔Tclkin pulse-width law (sim-verified) → NEXT: WuR NDIV
 
 **NEXT TASK (user, next conversation): verify a SIMILAR divider — "WuR NDIV" (wake-up-receiver
