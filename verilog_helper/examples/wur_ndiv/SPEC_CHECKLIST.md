@@ -93,4 +93,8 @@ cd examples/wur_ndiv/_ref/build
 ./run.sh tb_adc5.vams    tb     # ADCDIV operating point + toggle boundary -> grep ^ADC
 ./run.sh tb_NDIV_TOP_v7_svt_0p5W.vams tb   # the committed self-checking TB
 ```
+Report (PASS/FAIL table + SimVision PNGs + report.md), like LPBT's:
+```
+python3 ../../../vh_wur_report.py --sim <simdir>   # runs run.sh +WAVES, writes <simdir>/report/
+```
 (`run.sh` globs `export/*.vams` + `ext_stub/*.vams`; the stubs stand in for the red-zone COT cells.)
