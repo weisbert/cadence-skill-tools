@@ -950,11 +950,14 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
     # copies get OVERWRITTEN by Stage B's digital conversion); orig/ is never touched, so
     # you always have the source and can diff orig/<cell> vs export/<cell>.
     orig = os.path.join(out_dir, "orig")
+    # external_file/ = a self-contained snapshot of the EXTERNAL dependency sources (the
+    # -v/-y model files the design instantiates), filled below once externals are resolved.
+    extdir = os.path.join(out_dir, "external_file")
     # FRESH each run. A prior extraction's files MUST NOT linger: if a cell was gathered last
     # time under a different extension (.va vs .vams), the stale twin survives, xrun compiles
     # BOTH, and the raw twin silently shadows this run's (converted) leaf -> dead logic that
     # re-extraction appears not to fix. Wipe + recreate so export/ is EXACTLY this run's gather.
-    for _d in (export, orig):
+    for _d in (export, orig, extdir):
         if os.path.isdir(_d):
             shutil.rmtree(_d)
         os.makedirs(_d)
@@ -1121,6 +1124,38 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
                 "cannot solve its electrical nodes (needs spectre); provide a wreal "
                 "model or let Stage C stub it." % (e["module"], resolved["file"]))
 
+    # copy the resolved external dependency SOURCES into external_file/ -- one self-contained
+    # folder of the -v/-y models the design actually instantiates. One copy per source file
+    # (a lib defining several used externals is copied once). Unresolved externals have no
+    # source to copy -> they stay recorded for Stage C to stub. The snapshot reflects the env
+    # where Stage A runs: resolve the ext env at the machine where the models exist.
+    by_src = {}
+    for e in ext_records:
+        r = e.get("resolved")
+        if r and r.get("file") and os.path.isfile(r["file"]):
+            by_src.setdefault(os.path.abspath(r["file"]), []).append(e["module"])
+    external_files, used_base = [], {}
+    for src in sorted(by_src):
+        base = os.path.basename(src)
+        if used_base.get(base, src) != src:          # basename clash across dirs -> disambiguate
+            stem, dot, extn = base.partition(".")
+            i = 2
+            while ("%s_%d%s%s" % (stem, i, dot, extn)) in used_base:
+                i += 1
+            base = "%s_%d%s%s" % (stem, i, dot, extn)
+        used_base[base] = src
+        shutil.copyfile(src, os.path.join(extdir, base))
+        external_files.append({"src": src, "copied": os.path.relpath(os.path.join(extdir, base), out_dir),
+                               "provides": sorted(by_src[src])})
+    n_unresolved = sum(1 for e in ext_records if not e.get("resolved"))
+    if external_files:
+        print("[vh_extract] external_file/: copied %d dependency file(s) (%d used external module(s))"
+              % (len(external_files), sum(len(f["provides"]) for f in external_files)))
+    if n_unresolved:
+        warnings.append("%d external module(s) had no -v match in the ext env -> NOT copied into "
+                        "external_file/ (Stage C will stub them). Point the ext env (vh_env.py "
+                        "add-lib) at their real models on the machine where they exist." % n_unresolved)
+
     manifest = {
         "stage": "A",
         "design": {"lib": lib, "cell": cell, "view": view},
@@ -1140,6 +1175,7 @@ def extract(lib, cell, view, libs, raw_netlist, out_dir, cfg=None, warnings=None
         "reconciled_ports": recon_report,
         "dropped_wreal_supply": supply_report,
         "external_modules": ext_records,
+        "external_files": external_files,
         "ext_env": {k: env.get(k, []) for k in ("lib_files", "lib_dirs", "inc_dirs")},
         "stripped": {"pins": pin_seen, "stimulus": stim_seen, "devices": dropped_seen},
         "passives": [{"module": m, "inst": i, "master": ms, "action": ac}
@@ -1197,6 +1233,12 @@ def render_summary(manifest):
             L.append("  - %-16s { %s }  %s" % (e["module"], pd, tag))
     else:
         L.append("  (none)")
+    if manifest.get("external_files"):
+        L.append("")
+        L.append("EXTERNAL_FILE/ (copied dependency sources -- self-contained snapshot):")
+        for f in manifest["external_files"]:
+            L.append("  - %-28s provides: %s" % (f["copied"], ", ".join(f["provides"])))
+            L.append("        from %s" % f["src"])
     env = manifest.get("ext_env", {})
     if env.get("lib_files") or env.get("lib_dirs") or env.get("inc_dirs"):
         L.append("")
