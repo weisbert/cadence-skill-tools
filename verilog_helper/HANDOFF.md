@@ -1,6 +1,6 @@
 # verilog_helper — HANDOFF / design context
 
-## SESSION CLOSE 2026-06-27c — WuR NDIV characterized (sim-verified) + OUT_ADCDIV open finding
+## SESSION CLOSE 2026-06-27c — WuR NDIV fully characterized + self-checking TB + report kit (all sim-verified)
 
 **Task done: `NDIV_TOP_v7_svt_0p5W` (WuR NDIV) reproduced locally from the user's red-zone debug
 dump and fully characterized; self-checking TB committed → `testbenches/tb_NDIV_TOP_v7_svt_0p5W.vams`.**
@@ -51,10 +51,28 @@ TESTCLK/OUT_ADCDIV) PASS → `=== TB PASS ===`.
 a clean logic 0 (`CKLO` macro: level `!== 1'b0` fails; catches a stuck-X that the edge-count `CKQ`
 would miss — the old pdown tri-state-clamp X-bug class). PASS locally.
 
-**Open / next time (nothing blocking):** none specific to WuR NDIV — all five outputs characterized
-and hard-checked across WuR-NORMAL / LPBT / CAL / TEST / POWER-DOWN. (Spec questions for the design
-owner, not TB issues: (a) the +62 ADCDIV offset → usable `adcdiv ≥ ~64`; (b) `cal_en` not freezing
-NDIV in WuR mode, unlike LPBT.)
+**TB final shape (5 modes, all hard-checked, local TB PASS 0-fail):** WuR-NORMAL / LPBT / CAL / TEST /
+POWER-DOWN. The TB also emits `RPTINFO` (fvco + divide consts) and per-mode `MODEWIN <key> <start>
+<end>` (ps) markers — consumed by the report tool to auto-zoom each mode. Op point: ndiv=51,pwsel=28
+(OUT_NDIV 50%); adcdiv=165,adcpwsel=20 (OUT_ADCDIV 50%).
+
+**Report kit shipped → `vh_wur_report.py`** (committed, the WuR analog of `vh_ndiv_report.py`): runs
+`run.sh +define+WAVES`, parses the PASS/FAIL table per mode, captures 6 headless SimVision PNGs
+(overview + the 5 modes) via Xvfb+PIL, writes `report/report.md` + path map + laws. Validated
+end-to-end locally (TB PASS, 6 real screenshots, report.md). A self-contained kit
+(`wur_ndiv_report_kit.tar.gz` = TB + tool + README_REPORT.md + SPEC + a dev-box sample report) was
+handed to the user to run on the **red zone** (real COT cells) for the authoritative report — the
+README spells out the steps + flags OUT_ADCDIV as the one thing to confirm with real cells.
+
+**Open / next time:**
+- **Pending: red-zone report run** (user is handing the kit to another Claude). Authoritative
+  report.md + waveforms come from there. The ONE thing to confirm: OUT_ADCDIV toggles at
+  adcdiv=165/adcpwsel=20 → VCO/656, 50% (should — the +62 offset is count-driven, swept stub delays
+  5..200 ps unchanged — but real `DELAD1/DELBD1` is the final word). If it stalls there, real finding.
+- Spec questions for the design owner (not TB issues): (a) +62 ADCDIV offset → usable `adcdiv ≥ ~64`;
+  (b) `cal_en` not freezing NDIV in WuR mode, unlike LPBT.
+- Commits this session: `147fc55` (TB+SPEC), `98cb311` (ADCDIV law), `ea26427` (power-down),
+  `f415e44` (report tool + TB markers). Local mirror (gitignored): `examples/wur_ndiv/_ref/build/`.
 
 ---
 
