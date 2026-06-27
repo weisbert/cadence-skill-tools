@@ -1,5 +1,70 @@
 # verilog_helper — HANDOFF / design context
 
+## SESSION CLOSE 2026-06-27b — LPBT_NDIV pwsel↔Tclkin pulse-width law (sim-verified) → NEXT: WuR NDIV
+
+**NEXT TASK (user, next conversation): verify a SIMILAR divider — "WuR NDIV" (wake-up-receiver
+N-divider).** Expect the same shape of question (divide law + pulse-width/duty law) but DIFFERENT
+constants/bit-widths — re-characterize, do NOT assume LPBT's numbers carry over. The method + a ready
+harness are saved (see bottom of this section).
+
+**What got nailed this session: the full `pwsel` → pulse-width mapping for LPBT_NDIV, ground-truthed
+by sweeping the REAL struct (local xcelium 18.03), not just traced.** Counting unit
+**Tclkin = NDIVCKIN = VCO/4** (the prescaler clock; the same unit `ndiv_var` counts in).
+Define `ndiv_var = sim_ndiv_var − 1 = M` (= OUT_NDIV period in Tclkin). Then:
+
+```
+OUT_NDIV low  = pwsel − 3   (Tclkin)        [pwsel even]
+OUT_NDIV high = (ndiv_var) − (pwsel − 3)
+period        = ndiv_var     (independent of pwsel — pwsel only moves the falling edge)
+duty(high)    = (ndiv_var + 2 − pwsel) / ndiv_var
+50% duty      ⟺  pwsel = ndiv_var/2 + 3   (== (sim_ndiv_var+5)/2)
+```
+Verified exact on real netlist for M ∈ {10,34,50,98} → 50.00%; operating point M=50 → pwsel=28. ✅
+
+**Quantization — `pwsel[0]` (LSB) is don't-care (悬空):** only `pwsel[5:1]` feed the decode muxes
+(`mux2_q5..q1 .S(d_ndiv_pw_sel[5..1])`). So every even/odd pair collapses: `{4,5}→low1, {6,7}→3,
+{8,9}→5,…` — achievable low is **odd only**, step 2 Tclk. Exact form: `low = 2·floor(pwsel/2) − 3`.
+Consequence: exact 50% only when `(ndiv_var)/2` is an **odd** integer, i.e. **`ndiv_var ≡ 2 (mod 4)`**
+(= register `ndiv ≡ 3 mod 4`); else nearest, off by `1/ndiv_var` (M=48→52.08%, verified).
+
+**Low-end stall:** `pwsel ≤ 3 → low ≤ −1` → OUT_NDIV does not toggle (no edges). Min usable `pwsel=4`
+(low=1). So formula needs `ndiv_var ≥ 2`.
+
+**Corner-tab expression (ADE/SKILL), for ~50% with a clamp:**
+```
+pwsel = min( ndiv_var/2 + 3, 63 )
+```
+- `ndiv_var` = the `sim_ndiv_var − 1` variable. SKILL `/` is integer-truncating → result is integer;
+  `round(ndiv_var/2.0)+3` if you want it parse-robust. `min()` is a SKILL builtin (OK in corners).
+- **Upper limits (two distinct ones, both verified):** `pwsel` is `[5:0]` → 0–63. (a) **6-bit overflow**
+  at `M/2+3 ≥ 64` ⟺ `M ≥ 122`: e.g. ndiv=127 → formula 66, `66&0x3F=2` → **STALL** (no edges) if not
+  clamped. (b) **Earlier physical saturation**: low maxes at **59** (pwsel 62/63), so 50% is
+  **unreachable for M > 118**. Clamp prevents the stall but does NOT hold 50%: M=120→50.8%,
+  M=126→53.2%, M=254→76.8% (all measured). So: to keep ~50% across a sweep, **cap the ndiv sweep at
+  ndiv≤119, not just clamp pwsel** — the clamp is a don't-crash net, not a duty fix.
+
+**Decode mechanism (for re-deriving WuR's law):** in `pll_ndiv_mmd_8bit`, `EOC_low_short =
+NOR3( nand(q2sel,q1sel), nand3(q3sel,q4sel,q5sel), nand(q6b,q7b) )`, where `qNsel = mux(qN, qNb,
+S=pwsel[N])`. So `pwsel` bit-matches the prescaler counter `q1..q5` (needs `q6=q7=0`); the match count
+is where the output's falling edge fires → `low` is linear in `pwsel`, and the counter-bit count (5
+here) sets the saturation ceiling (`2·(2^5−1)−3 = 59`). WuR will have its own widths → its own
+offset/ceiling; trace the analogous `EOC` NOR and the pw-sel mux fan-in.
+
+**Reusable harness saved (local, gitignored):**
+`examples/lpbt_ndiv/_ref/build_afterfix/charac/` — `tb_pwsweep.vams` (consecutive pwsel sweep, shows
+even/odd collapse), `tb_dutylaw.vams` (validates `pwsel=ndiv_var/2+3` across divide words),
+`tb_clamp.vams` (large-M overflow/saturation), `run_charac.sh <tb_name>` (globs `../export/*.vams` +
+`../ext_libs/*.vams`, NORM-mode, measures OUT_NDIV low/high in Tclkin). Clone the dir next to WuR's
+build, drop in WuR's struct, re-point, re-run. Method: drive NORM, sweep, measure low/high vs the
+input (prescaler) clock period — read the offset/ceiling straight off the table.
+
+**Open / next time (nothing blocking):**
+- WuR NDIV: re-characterize divide + pwsel/duty law (don't reuse LPBT constants). Harness above.
+- (optional) fold `pwsel = min(ndiv_var/2+3,63)` + the `ndiv≤119` caveat into the committed
+  `testbenches/tb_LPBT_NDIV_TOP.vams` header (currently only documents the single 50% point).
+
+---
+
 ## SESSION CLOSE 2026-06-27 — pdown X-bug found+fixed, Stage A `external_file/`
 
 **Headline: a real DESIGN model bug was caught by the waveform.** The user saw `OUT_NDIV`,
