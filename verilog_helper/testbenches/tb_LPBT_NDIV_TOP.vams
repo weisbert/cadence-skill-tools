@@ -30,7 +30,7 @@
 
 // measurement slots: rising-edge count + running-average period + high-time (for duty)
 //   0 = OUT_NDIV   1 = CLK2DSM   2 = CLK2CNT   3 = TESTCLK_300M
-`define RST(i) lr[i] = -1.0; ps[i] = 0.0; pn[i] = 0; ed[i] = 0; hr[i] = -1.0; hs[i] = 0.0; hn[i] = 0;
+`define RST(i) lr[i] = -1.0; ps[i] = 0.0; pn[i] = 0; ed[i] = 0; hr[i] = -1.0; hs[i] = 0.0; hn[i] = 0; xc[i] = 0;
 
 `define CKR(label, i, gold) \
   avgp  = (pn[i] > 0) ? (ps[i] / pn[i]) : 0.0; \
@@ -51,6 +51,16 @@
   else if ((duty > ((goldpct)+DTOL)) || (duty < ((goldpct)-DTOL))) begin \
     $display("  FAIL %0s duty = %0.1f%% (expected %0d%% +/-%0.0f)", label, duty, goldpct, DTOL); fails = fails + 1; end \
   else $display("  PASS %0s duty = %0.1f%% (expected %0d%%)", label, duty, goldpct);
+
+// X-guard: every rising edge of an active clock must land on a CLEAN logic 1. A net driven
+// to X (e.g. a shared output a power-down clamp never released -> 1'bx, the pll_ndiv_pdown bug)
+// makes `@(posedge)` fire on 0->x but the level read back is x, not 1. The period/duty checks
+// still PASS (posedge fires on 0->x too), so without this guard an X-high clock passes silently.
+// xc[i] counts rising edges whose new level != 1; it is reset per window by `RST`.
+`define CKX(label, i) \
+  if (xc[i] > 0) begin $display("  FAIL %0s: %0d rising edge(s) not a clean 1 (X/Z high level)", label, xc[i]); fails = fails + 1; end \
+  else if (ed[i] == 0) begin $display("  FAIL %0s: X-guard expected a live clock, saw no edges", label); fails = fails + 1; end \
+  else $display("  PASS %0s: clean high level (no X), %0d edges", label, ed[i]);
 
 module tb_LPBT_NDIV_TOP;
   // ---- slot indices ---------------------------------------------------------
@@ -86,6 +96,7 @@ module tb_LPBT_NDIV_TOP;
   real    ps [0:3];      // accumulated period
   integer pn [0:3];      // period samples
   integer ed [0:3];      // rising-edge count
+  integer xc [0:3];      // X-guard: count of rising edges whose new level != 1 (X/Z high)
   real    hr [0:3];      // last rising-edge time (for high-time / duty)
   real    hs [0:3];      // accumulated HIGH time
   integer hn [0:3];      // high-time samples
@@ -105,6 +116,7 @@ module tb_LPBT_NDIV_TOP;
   // ---- edge measurement (period via posedge, high-time via posedge->negedge) ----
   always @(posedge OUT_NDIV) begin
     ed[I_OUT] = ed[I_OUT] + 1;
+    if (OUT_NDIV !== 1'b1) xc[I_OUT] = xc[I_OUT] + 1;   // X-guard: rising edge must reach a clean 1
     if (lr[I_OUT] >= 0.0) begin ps[I_OUT] = ps[I_OUT] + ($realtime - lr[I_OUT]); pn[I_OUT] = pn[I_OUT] + 1; end
     lr[I_OUT] = $realtime;  hr[I_OUT] = $realtime;
   end
@@ -112,6 +124,7 @@ module tb_LPBT_NDIV_TOP;
     if (hr[I_OUT] >= 0.0) begin hs[I_OUT] = hs[I_OUT] + ($realtime - hr[I_OUT]); hn[I_OUT] = hn[I_OUT] + 1; end
   always @(posedge CLK2DSM) begin
     ed[I_DSM] = ed[I_DSM] + 1;
+    if (CLK2DSM !== 1'b1) xc[I_DSM] = xc[I_DSM] + 1;    // X-guard
     if (lr[I_DSM] >= 0.0) begin ps[I_DSM] = ps[I_DSM] + ($realtime - lr[I_DSM]); pn[I_DSM] = pn[I_DSM] + 1; end
     lr[I_DSM] = $realtime;  hr[I_DSM] = $realtime;
   end
@@ -119,11 +132,13 @@ module tb_LPBT_NDIV_TOP;
     if (hr[I_DSM] >= 0.0) begin hs[I_DSM] = hs[I_DSM] + ($realtime - hr[I_DSM]); hn[I_DSM] = hn[I_DSM] + 1; end
   always @(posedge CLK2CNT) begin
     ed[I_CNT] = ed[I_CNT] + 1;
+    if (CLK2CNT !== 1'b1) xc[I_CNT] = xc[I_CNT] + 1;    // X-guard
     if (lr[I_CNT] >= 0.0) begin ps[I_CNT] = ps[I_CNT] + ($realtime - lr[I_CNT]); pn[I_CNT] = pn[I_CNT] + 1; end
     lr[I_CNT] = $realtime;
   end
   always @(posedge TESTCLK_300M) begin
     ed[I_TST] = ed[I_TST] + 1;
+    if (TESTCLK_300M !== 1'b1) xc[I_TST] = xc[I_TST] + 1;   // X-guard
     if (lr[I_TST] >= 0.0) begin ps[I_TST] = ps[I_TST] + ($realtime - lr[I_TST]); pn[I_TST] = pn[I_TST] + 1; end
     lr[I_TST] = $realtime;
   end
@@ -145,6 +160,7 @@ module tb_LPBT_NDIV_TOP;
     #(WIN);
     $display("== CAL  (cal_en=1, ndiv_en=1) ==");
     `CKR("CLK2CNT = VCO/4", I_CNT, 4)         // CONFIRMED netlist: nand(DIV4sig,cal_en), front-end tap
+    `CKX("CLK2CNT level", I_CNT)              // X-guard: CLK2CNT must toggle clean 0/1 (no pdown X)
     `CKQ("OUT_NDIV disabled", I_OUT)          // CONFIRMED netlist: NDIVCKIN frozen by nor(DIV4sig,cal_en)
     `CKQ("CLK2DSM quiet (mmd frozen)", I_DSM) // CONFIRMED netlist
     `CKQ("TESTCLK quiet (en_test=0)", I_TST)  // CONFIRMED netlist: pdown on enb_test
@@ -156,9 +172,12 @@ module tb_LPBT_NDIV_TOP;
     #(WIN);
     $display("== TEST (ndiv_en=1,cal_en=0,en_test=1) ==");
     `CKR("TESTCLK_300M = VCO/16", I_TST, 16)  // CONFIRMED netlist: DIV4sig->div4_tspc, front-end tap
+    `CKX("TESTCLK_300M level", I_TST)         // X-guard
     `CKQ("CLK2CNT static (cal_en=0)", I_CNT)  // CONFIRMED netlist: nand(DIV4sig,0)=1
     `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)
+    `CKX("OUT_NDIV level", I_OUT)             // X-guard
     `CKR("CLK2DSM = VCO/4/(ndiv-1)",  I_DSM, D_GOLD)
+    `CKX("CLK2DSM level", I_DSM)              // X-guard
 
     // ===================== MODE: NORMAL divide =====================
     cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b0;
@@ -171,7 +190,9 @@ module tb_LPBT_NDIV_TOP;
     `CKQ("CLK2CNT static (cal_en=0)", I_CNT)  // CONFIRMED netlist
     `CKQ("TESTCLK low (en_test=0)",   I_TST)  // CONFIRMED netlist
     `CKR("OUT_NDIV = VCO/4/(ndiv-1)", I_OUT, D_GOLD)
+    `CKX("OUT_NDIV level", I_OUT)             // X-guard
     `CKR("CLK2DSM = VCO/4/(ndiv-1)",  I_DSM, D_GOLD)
+    `CKX("CLK2DSM level", I_DSM)              // X-guard
     // OUT_NDIV duty: hard 50% check when ndiv%4==3 (exact), else informational
     if ((NDIV_TEST % 4) == 3) begin
       `CKD("OUT_NDIV", I_OUT, 50)

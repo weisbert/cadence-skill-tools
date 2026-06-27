@@ -40,10 +40,17 @@ bolt-on `vh_collect_ext.py` was removed). So a build dir now holds every Verilog
 `export/` (local) + `external_file/` (external). Snapshot reflects the machine where Extract A runs —
 point the ext env (`vh_env.py add-lib`) at real paths where they exist for a complete copy.
 
+**TB X-guard ADDED (this session).** `testbenches/tb_LPBT_NDIV_TOP.vams` now has a `CKX` check:
+every rising edge of an active clock must land on a clean logic `1` (`xc[i]` counts edges whose
+new level `!== 1'b1`, reset per window by `RST`). Run for the active clock in each mode (CAL:
+CLK2CNT; TEST: TESTCLK/OUT_NDIV/CLK2DSM; NORM: OUT_NDIV/CLK2DSM). Validated BOTH ways: fixed build →
+all `CKX PASS`, `=== TB PASS ===`; broken (held-X) pdown → all 6 `CKX FAIL`, `=== TB FAIL (6) ===`
+(the bug that used to pass silently now fails). Note: targets the X-HIGH-on-active-clock failure
+mode; a constant-X *quiet* signal is still only covered by `CKQ` (edge count), a known limitation.
+
 **Open / next time (nothing blocking):**
-- OFFERED but not yet done: add an **X-guard to the TB** — assert the output level `=== 1` at the
-  known-high sample point so a future X-high FAILs instead of passing silently. User to confirm.
 - Red-zone: apply the pdown tri-state fix in OA, re-run, regenerate authoritative screenshots.
+  (The TB X-guard will now hard-FAIL there too if any output is still X.)
 
 ---
 
