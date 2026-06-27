@@ -41,6 +41,9 @@ OUT_ADCDIV<-  8-bit counter clk_to_PFD (ADCDIVCKIN=VCO/4)
 - **`cal_en` does NOT freeze NDIV here** (it does in LPBT): with `lpbt_en=0`, `mux_sel=0` regardless
   of `cal_en`, so the NDIV divider keeps running; `cal_en=1` only turns on the `CLK2CNT=VCO/4` monitor.
 - `CLK2DSM` lags `OUT_NDIV` by ~2.07 NDIVCKIN cycles (structural, ndiv-independent).
+- **POWER-DOWN** (`ndiv_en=0`): `power_en_b=1` → the four pdown clamps + `net082=0` unpower the
+  buffers → all five chip outputs settle to a **clean logic 0** (✓ TB-checked: quiet AND level 0,
+  via `CKLO` which catches a stuck-X that an edge-count alone would miss — the old pdown X-bug class).
 
 ## DIVIDE LAW (confirmed M = ndiv−1 for M ∈ {10,20,34,50,98,102,300})
 ```

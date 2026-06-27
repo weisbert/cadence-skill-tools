@@ -79,6 +79,12 @@
   if (xc[i] > 0) begin $display("  FAIL %0s: %0d active edge(s) not clean-1 (X/Z/0)", label, xc[i]); fails=fails+1; end \
   else if (ed[i] > 0) $display("  PASS %0s: clean (no X on active edges)", label);
 
+// CKLO: assert a signal is sitting at a clean logic 0 right now (catches stuck-X/Z/1 that
+// CKQ's edge-count can miss -- 0->x is not a posedge, so a constant-X reads "quiet").
+`define CKLO(label, sig) \
+  if ((sig) !== 1'b0) begin $display("  FAIL %0s: not clamped to clean 0 (level = %b)", label, sig); fails=fails+1; end \
+  else $display("  PASS %0s: clamped to 0", label);
+
 module tb;
   localparam integer I_OUT=0, I_DSM=1, I_CNT=2, I_TST=3, I_ADC=4;
 
@@ -216,6 +222,22 @@ module tb;
     `CKR("TESTCLK_300M = VCO/16", I_TST, 16)
     `CKX("TESTCLK_300M", I_TST)
     `CKR("OUT_NDIV still = VCO/16/(ndiv-1)", I_OUT, D_WUR)
+
+    // ===================== MODE: POWER-DOWN (ndiv_en=0) =====================
+    // power_en_b=1 -> the four pdown clamps (OUT_NDIV/CLK2DSM/CLK2CNT/OUT_ADCDIV) go ACTIVE->0
+    // and net082(vdd_div)=0 unpowers the buffers; en_test=0 -> TESTCLK pdown ACTIVE->0.
+    // Every chip output must settle to a CLEAN 0 -- no toggling AND no stuck-X (the pdown
+    // tri-state-clamp bug class). CKLO catches a held-X that CKQ's edge-count would miss.
+    ndiv_en = 1'b0; cal_en = 1'b0; en_test = 1'b0; lpbt_en = 1'b0;
+    #(SETTLE);
+    `RST(I_OUT) `RST(I_DSM) `RST(I_CNT) `RST(I_TST) `RST(I_ADC)
+    #(8000*TVCO);
+    $display("== POWER-DOWN (ndiv_en=0) : all chip outputs clamped to clean 0 ==");
+    `CKQ("OUT_NDIV quiet",     I_OUT) `CKLO("OUT_NDIV",     OUT_NDIV)
+    `CKQ("CLK2DSM quiet",      I_DSM) `CKLO("CLK2DSM",      CLK2DSM)
+    `CKQ("CLK2CNT quiet",      I_CNT) `CKLO("CLK2CNT",      CLK2CNT)
+    `CKQ("TESTCLK_300M quiet", I_TST) `CKLO("TESTCLK_300M", TESTCLK_300M)
+    `CKQ("OUT_ADCDIV quiet",   I_ADC) `CKLO("OUT_ADCDIV",   OUT_ADCDIV)
 
     // ---- verdict ----
     if (fails == 0) $display("=== TB PASS  (top=NDIV_TOP_v7_svt_0p5W) ===");

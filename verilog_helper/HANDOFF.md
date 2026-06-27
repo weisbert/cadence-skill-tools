@@ -47,9 +47,14 @@ libs resolve the real COT cells; the TB references only top ports (no internal h
 netlist-robust. `+define+WAVES` for a SimVision dump. Expect all checks (NDIV/CLK2DSM/CLK2CNT/
 TESTCLK/OUT_ADCDIV) PASS → `=== TB PASS ===`.
 
+**Power-down covered:** added a `ndiv_en=0` MODE — asserts all five outputs are quiet AND clamped to
+a clean logic 0 (`CKLO` macro: level `!== 1'b0` fails; catches a stuck-X that the edge-count `CKQ`
+would miss — the old pdown tri-state-clamp X-bug class). PASS locally.
+
 **Open / next time (nothing blocking):** none specific to WuR NDIV — all five outputs characterized
-and hard-checked. (General reminder: the +62 ADCDIV offset means usable `adcdiv ≥ ~64`; if a use case
-wants small ADC divide ratios, that's a spec question for the design owner, not a TB issue.)
+and hard-checked across WuR-NORMAL / LPBT / CAL / TEST / POWER-DOWN. (Spec questions for the design
+owner, not TB issues: (a) the +62 ADCDIV offset → usable `adcdiv ≥ ~64`; (b) `cal_en` not freezing
+NDIV in WuR mode, unlike LPBT.)
 
 ---
 
