@@ -1,0 +1,104 @@
+`timescale 1ps/1fs
+// ndiv sweep on the REAL LPBT_NDIV_TOP struct (NORM mode).
+//   ndiv_var = 14 .. 127 ,  pwsel = min((ndiv_var+5)/2, 62)   (clamped to 6-bit field)
+// Measures OUT_NDIV period + low in units of Tclkin (= NDIVCKIN = VCO/4), i.e. the
+// ACTUAL divisor with the front /4 prescaler removed, and the ACTUAL low pulse width.
+//   Mpred  = ndiv_var - 1
+//   lowpred= 2*floor(pwfield/2) - 3
+// One machine-parseable SWEEP line per point; a final SUMMARY line.
+module tb_ndivsweep;
+  localparam real    TVCO = 1000.0/4.8;      // 4.8 GHz VCO
+  localparam real    TCLK = 4.0*TVCO;        // Tclkin = VCO/4
+  localparam integer LO   = 14;
+  localparam integer HI   = 127;
+
+  reg        fromVCO;
+  reg [13:0] ndiv;
+  reg [5:0]  pwsel;
+  reg        ndiv_en, cal_en, en_test, lpbt_en;
+  wire       OUT_NDIV, CLK2DSM, CLK2CNT, TESTCLK_300M;
+  reg        VDD,VPP,VSS,VDD_VCO,VPP_VCO,VSS_VCO,psub;
+
+  real trise, tfall, tprev;
+  real lowsum, highsum, persum;
+  integer lown, highn, pern;
+  integer nd, pwset, pwfield, Mpred, lowpred;
+  real    perSim, lowSim, highSim, duty;
+  integer npass, nstall, nfail, nmeas;
+
+  LPBT_NDIV_TOP dut(
+    .fromVCO(fromVCO), .ndiv(ndiv), .pwsel(pwsel),
+    .ndiv_en(ndiv_en), .cal_en(cal_en), .en_test(en_test), .lpbt_en(lpbt_en),
+    .OUT_NDIV(OUT_NDIV), .CLK2DSM(CLK2DSM), .CLK2CNT(CLK2CNT), .TESTCLK_300M(TESTCLK_300M),
+    .VDD(VDD), .VPP(VPP), .VSS(VSS),
+    .VDD_VCO(VDD_VCO), .VPP_VCO(VPP_VCO), .VSS_VCO(VSS_VCO), .psub(psub));
+
+  initial fromVCO = 1'b0;
+  always #(TVCO/2.0) fromVCO = ~fromVCO;
+
+  always @(posedge OUT_NDIV) begin
+    if (tfall >= 0.0) begin lowsum = lowsum + ($realtime - tfall); lown = lown + 1; end
+    if (tprev >= 0.0) begin persum = persum + ($realtime - tprev); pern = pern + 1; end
+    tprev = $realtime; trise = $realtime;
+  end
+  always @(negedge OUT_NDIV) begin
+    if (trise >= 0.0) begin highsum = highsum + ($realtime - trise); highn = highn + 1; end
+    tfall = $realtime;
+  end
+
+  task reset_acc; begin
+    trise=-1.0; tfall=-1.0; tprev=-1.0;
+    lowsum=0.0; highsum=0.0; persum=0.0; lown=0; highn=0; pern=0;
+  end endtask
+
+  // round a real to nearest integer for reporting
+  function integer rnd; input real x; begin rnd = (x<0.0)? -1 : $rtoi(x+0.5); end endfunction
+
+  task measure; input integer n; real settle, win; begin
+    nd      = n;
+    pwset   = ((n+5)/2 > 62) ? 62 : (n+5)/2;   // pwsel = min((ndiv+5)/2, 62)  (clamped, per spec)
+    ndiv    = n[13:0];
+    pwsel   = pwset[5:0];
+    pwfield = pwsel;            // what the field actually holds
+    Mpred   = n-1;
+    lowpred = 2*(pwfield/2) - 3;
+    settle  = 3.0*Mpred*TCLK;
+    win     = 8.0*Mpred*TCLK;
+    #(settle);
+    reset_acc;
+    #(win);
+    perSim  = (pern>0) ? (persum/pern)/TCLK   : -1.0;
+    lowSim  = (lown>0) ? (lowsum/lown)/TCLK   : -1.0;
+    highSim = (highn>0)? (highsum/highn)/TCLK : -1.0;
+    duty    = (perSim>0.0)? 100.0*highSim/perSim : -1.0;
+    nmeas = nmeas + 1;
+    // classification vs prediction
+    if (perSim < 0.0) begin
+      nstall = nstall + 1;
+      $display("SWEEP nd=%0d pwset=%0d pwfield=%0d Mpred=%0d lowpred=%0d perSim=STALL lowSim=STALL duty=NA",
+               nd, pwset, pwfield, Mpred, lowpred);
+    end else begin
+      if (rnd(perSim)==Mpred && rnd(lowSim)==lowpred) npass = npass + 1;
+      else nfail = nfail + 1;
+      $display("SWEEP nd=%0d pwset=%0d pwfield=%0d Mpred=%0d lowpred=%0d perSim=%0.2f lowSim=%0.2f duty=%0.1f",
+               nd, pwset, pwfield, Mpred, lowpred, perSim, lowSim, duty);
+    end
+  end endtask
+
+  initial begin
+    ndiv = LO; pwsel = 6'd10;
+    ndiv_en=0; cal_en=0; en_test=0; lpbt_en=0;
+    {VDD,VPP,VDD_VCO,VPP_VCO} = 4'b1111;
+    {VSS,VSS_VCO,psub}        = 3'b000;
+    npass=0; nstall=0; nfail=0; nmeas=0;
+    #(20*TVCO);
+    ndiv_en=1;                          // NORM: cal_en=en_test=lpbt_en=0
+    for (nd=LO; nd<=HI; nd=nd+1) measure(nd);
+    $display("SUMMARY meas=%0d pass=%0d fail=%0d stall=%0d  (pass: perSim==ndiv-1 && lowSim==2*floor(pwsel/2)-3)",
+             nmeas, npass, nfail, nstall);
+    $display("=== SWEEP DONE ===");
+    $finish;
+  end
+
+  initial begin #(2_000_000_000); $display("=== TIMEOUT ==="); $finish; end
+endmodule

@@ -1,0 +1,11 @@
+# sim / tool outputs (all reproducible via run.sh / grab_sv.sh)
+xcelium.d/
+INCA_libs/
+.simvision/
+*.shm/
+*.log
+*.key
+*.vcd
+*.png
+.bpad/
+xrun.history

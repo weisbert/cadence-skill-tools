@@ -1,0 +1,43 @@
+`timescale 1ps/1fs
+// Short waveform capture at the nominal op point (ndiv=51, pwsel=28) on the REAL struct.
+// Dumps NDIVCKIN(=VCO/4) + OUT_NDIV + CLK2DSM to wave.vcd over ~2.2 output periods, so the
+// 50-cycle period and 25-cycle low pulse are directly countable against NDIVCKIN.
+module tb_wave;
+  localparam real    TVCO = 1000.0/4.8;
+  localparam real    TCLK = 4.0*TVCO;
+  localparam integer NDIV = 51;         // M = 50
+  localparam integer PWSEL= 28;         // low = 25 -> 50% duty
+
+  reg        fromVCO;
+  reg [13:0] ndiv;
+  reg [5:0]  pwsel;
+  reg        ndiv_en, cal_en, en_test, lpbt_en;
+  wire       OUT_NDIV, CLK2DSM, CLK2CNT, TESTCLK_300M;
+  reg        VDD,VPP,VSS,VDD_VCO,VPP_VCO,VSS_VCO,psub;
+
+  LPBT_NDIV_TOP dut(
+    .fromVCO(fromVCO), .ndiv(ndiv), .pwsel(pwsel),
+    .ndiv_en(ndiv_en), .cal_en(cal_en), .en_test(en_test), .lpbt_en(lpbt_en),
+    .OUT_NDIV(OUT_NDIV), .CLK2DSM(CLK2DSM), .CLK2CNT(CLK2CNT), .TESTCLK_300M(TESTCLK_300M),
+    .VDD(VDD), .VPP(VPP), .VSS(VSS),
+    .VDD_VCO(VDD_VCO), .VPP_VCO(VPP_VCO), .VSS_VCO(VSS_VCO), .psub(psub));
+
+  initial fromVCO = 1'b0;
+  always #(TVCO/2.0) fromVCO = ~fromVCO;
+
+  initial begin
+    ndiv=NDIV; pwsel=PWSEL;
+    ndiv_en=0; cal_en=0; en_test=0; lpbt_en=0;
+    {VDD,VPP,VDD_VCO,VPP_VCO}=4'b1111;
+    {VSS,VSS_VCO,psub}=3'b000;
+    #(20*TVCO);
+    ndiv_en=1;                         // NORM
+    #(6*NDIV*TCLK);                    // settle a few output periods
+    $shm_open("ndiv51.shm");           // SimVision database
+    $shm_probe(fromVCO); $shm_probe(OUT_NDIV); $shm_probe(CLK2DSM); $shm_probe(dut.NDIVCKIN);
+    #(2.5*NDIV*TCLK);                  // capture window (~2.5 output periods)
+    $shm_close;
+    $finish;
+  end
+  initial begin #(50_000_000); $finish; end
+endmodule
