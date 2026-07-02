@@ -99,6 +99,9 @@ module tb_LPBT_NDIV_TOP;
   real    avgp, ratio, duty;
   integer swi, sw_n, sw_pass, sw_fail;   // divisor-sweep accumulators
   real    sw_maxerr;
+  integer sw_dmin, sw_dmax;              // measured-divisor range (evidence it actually varied)
+  integer w14, w51, w100, w127;          // witness measured divisors spanning the sweep
+  real    w51_duty;                      // witness duty at the nominal 50% point
 
   // ---- measurement state ----------------------------------------------------
   real    lr [0:3];      // last rising-edge time
@@ -184,6 +187,13 @@ module tb_LPBT_NDIV_TOP;
           sw_fail = sw_fail + 1;
           $display("  SWEEP-FAIL ndiv=%0d: divisor(/4 removed)=%0.2f, expected %0d", nd, div4removed, expM);
         end
+        if (gotM < sw_dmin) sw_dmin = gotM;
+        if (gotM > sw_dmax) sw_dmax = gotM;
+        if (nd == 14)        w14  = gotM;
+        if (nd == NDIV_TEST) begin w51  = gotM;
+          w51_duty = (hn[I_OUT]>0 && pn[I_OUT]>0) ? 100.0*(hs[I_OUT]/hn[I_OUT])/(ps[I_OUT]/pn[I_OUT]) : -1.0; end
+        if (nd == 100)       w100 = gotM;
+        if (nd == 127)       w127 = gotM;
       end
     end
   endtask
@@ -254,9 +264,14 @@ module tb_LPBT_NDIV_TOP;
     // would exceed 63 for ndiv>=123 and wrap, dropping the low pulse negative -> OUT_NDIV stall.
     cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b0;
     sw_n = 0; sw_pass = 0; sw_fail = 0; sw_maxerr = 0.0;
+    sw_dmin = 100000; sw_dmax = -1; w14 = -1; w51 = -1; w100 = -1; w127 = -1; w51_duty = -1.0;
     for (swi = SW_LO; swi <= SW_HI; swi = swi + SW_STEP) ndsweep(swi);
-    $display("== NDIV-SWEEP (ndiv=%0d..%0d step %0d, pwsel=min((ndiv+5)/2,62), NORM) : %0d pts -> %0d divisor-match, %0d FAIL, max|err|=%0.2f cyc ==",
-             SW_LO, SW_HI, SW_STEP, sw_n, sw_pass, sw_fail, sw_maxerr);
+    $display("== NDIV-SWEEP : ndiv=%0d..%0d step %0d (%0d pts), pwsel=min((ndiv+5)/2,62), NORM, VCO=%0.1f GHz ==",
+             SW_LO, SW_HI, SW_STEP, sw_n, 1000.0/TVCO);
+    $display("   witness divisor (/4 removed, measured): ndiv14->%0d  ndiv51->%0d(%0.0f%% duty)  ndiv100->%0d  ndiv127->%0d(pwsel clamped@62)   [expect ndiv-1: 13/50/99/126]",
+             w14, w51, w51_duty, w100, w127);
+    $display("   RESULT: %0d/%0d divisor-match (=ndiv-1), %0d FAIL, max|err|=%0.2f cyc, measured divisor spans %0d..%0d",
+             sw_pass, sw_n, sw_fail, sw_maxerr, sw_dmin, sw_dmax);
     if (sw_fail > 0) fails = fails + sw_fail;
     ndiv = NDIV_TEST; pwsel = PWSEL;       // restore nominal
 

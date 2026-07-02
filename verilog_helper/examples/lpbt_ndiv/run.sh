@@ -20,5 +20,5 @@ rm -rf xcelium.d INCA_libs .simvision *.shm *.history xr.log xrun.log 2>/dev/nul
 xrun -ams -amsvlog_ext .vams,.va $ACCESS "$@" \
   ../../testbenches/tb_LPBT_NDIV_TOP.vams LPBT_NDIV_TOP_model.vams \
   -top tb_LPBT_NDIV_TOP -l xr.log > /dev/null 2>&1
-grep -E "==|PASS|FAIL|WARN" xr.log || { echo "no verdict -- see xr.log"; tail -20 xr.log; }
+grep -E "==|PASS|FAIL|WARN|witness|RESULT" xr.log || { echo "no verdict -- see xr.log"; tail -20 xr.log; }
 case " $* " in *"+define+WAVES"*) echo "-- waveform db: $(pwd)/ndiv.shm  (view:  simvision ndiv.shm &)";; esac
