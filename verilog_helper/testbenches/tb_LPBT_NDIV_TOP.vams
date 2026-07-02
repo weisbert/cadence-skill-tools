@@ -80,6 +80,13 @@ module tb_LPBT_NDIV_TOP;
   localparam real    SETTLE    = 4.0  * D_GOLD * TVCO; // settle >= a few output periods
   localparam real    WIN       = 30.0 * D_GOLD * TVCO; // measure over ~30 output periods
 
+  // ---- divisor sweep knobs --------------------------------------------------
+  // Sweep ndiv over the usable range with pwsel=(ndiv+5)/2 (same law as the charac kit)
+  // and assert the MMD divisor = ndiv-1 (front /4 removed). Summary-only print.
+  localparam integer SW_LO   = 14;                    // sweep low
+  localparam integer SW_HI   = 122;                   // sweep high (pwsel=(ndiv+5)/2 fits the 6-bit field)
+  localparam integer SW_STEP = 6;                     // stride (summary-only; ~19 pts + nominal)
+
   // ---- DUT I/O --------------------------------------------------------------
   reg         fromVCO;
   reg  [13:0] ndiv;
@@ -90,6 +97,8 @@ module tb_LPBT_NDIV_TOP;
 
   integer fails;
   real    avgp, ratio, duty;
+  integer swi, sw_n, sw_pass, sw_fail;   // divisor-sweep accumulators
+  real    sw_maxerr;
 
   // ---- measurement state ----------------------------------------------------
   real    lr [0:3];      // last rising-edge time
@@ -142,6 +151,42 @@ module tb_LPBT_NDIV_TOP;
     if (lr[I_TST] >= 0.0) begin ps[I_TST] = ps[I_TST] + ($realtime - lr[I_TST]); pn[I_TST] = pn[I_TST] + 1; end
     lr[I_TST] = $realtime;
   end
+
+  // ---- divisor-sweep helper -------------------------------------------------
+  // NORM mode. Program ndiv=nd, pwsel=(nd+5)/2, measure OUT_NDIV period and assert
+  // the divisor (front /4 removed) == nd-1. Reuses slot I_OUT accumulators. Only the
+  // DIVISOR is checked -- the local good-model ignores pwsel, so the pulse-width law
+  // is validated by the charac kit on the real struct, not here.
+  task ndsweep;
+    input integer nd;
+    real settle, win, div4removed, err;
+    integer expM, gotM;
+    begin
+      ndiv  = nd[13:0];
+      pwsel = (nd + 5) / 2;               // 6-bit field auto-truncates (matches charac kit)
+      expM  = nd - 1;                     // divisor with the front /4 prescaler removed
+      settle = 3.0 * (4*expM) * TVCO;
+      win    = 6.0 * (4*expM) * TVCO;
+      #(settle);
+      `RST(I_OUT)
+      #(win);
+      sw_n = sw_n + 1;
+      if (pn[I_OUT] == 0) begin
+        sw_fail = sw_fail + 1;
+        $display("  SWEEP-FAIL ndiv=%0d: OUT_NDIV did not toggle", nd);
+      end else begin
+        div4removed = ((ps[I_OUT]/pn[I_OUT]) / TVCO) / 4.0;   // OUT_NDIV period = 4*(ndiv-1) VCO
+        gotM = $rtoi(div4removed + 0.5);
+        err  = (div4removed > expM) ? (div4removed - expM) : (expM - div4removed);
+        if (err > sw_maxerr) sw_maxerr = err;
+        if (gotM == expM) sw_pass = sw_pass + 1;
+        else begin
+          sw_fail = sw_fail + 1;
+          $display("  SWEEP-FAIL ndiv=%0d: divisor(/4 removed)=%0.2f, expected %0d", nd, div4removed, expM);
+        end
+      end
+    end
+  endtask
 
   // ---- stimulus / checks ----------------------------------------------------
   initial begin
@@ -202,6 +247,20 @@ module tb_LPBT_NDIV_TOP;
     end
     duty = (hn[I_DSM]>0 && pn[I_DSM]>0) ? (100.0*(hs[I_DSM]/hn[I_DSM])/(ps[I_DSM]/pn[I_DSM])) : 0.0;
     $display("  INFO CLK2DSM(SDMOUT) duty = %0.1f%% ; SDMOUT.pe lags OUT_NDIV.pe by 8.5 VCO (fixed)", duty);
+
+    // ===================== MODE: NDIV divisor SWEEP (summary only) =====================
+    // Sweep ndiv over the usable range, pwsel=(ndiv+5)/2, assert divisor==ndiv-1 (front /4
+    // removed). ndiv>=123 is excluded on purpose: pwsel=(ndiv+5)/2 > 63 overflows the 6-bit
+    // pwsel field -> OUT_NDIV stalls on the real struct (a field-width limit, not a divide bug).
+    cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b0;
+    sw_n = 0; sw_pass = 0; sw_fail = 0; sw_maxerr = 0.0;
+    for (swi = SW_LO; swi <= SW_HI; swi = swi + SW_STEP) ndsweep(swi);
+    ndsweep(NDIV_TEST);                    // include the nominal 50%-duty op point
+    $display("== NDIV-SWEEP (ndiv=%0d..%0d step %0d +%0d, pwsel=(ndiv+5)/2, NORM) : %0d pts -> %0d divisor-match, %0d FAIL, max|err|=%0.2f cyc ==",
+             SW_LO, SW_HI, SW_STEP, NDIV_TEST, sw_n, sw_pass, sw_fail, sw_maxerr);
+    $display("   note: pwsel=(ndiv+5)/2 fits the 6-bit field only for ndiv<=122; ndiv>=123 wraps -> OUT_NDIV stalls (see charac kit).");
+    if (sw_fail > 0) fails = fails + sw_fail;
+    ndiv = NDIV_TEST; pwsel = PWSEL;       // restore nominal
 
     // ---- verdict ----
     if (fails == 0) $display("=== TB PASS ===");
