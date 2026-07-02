@@ -85,7 +85,7 @@ module tb_LPBT_NDIV_TOP;
   // the MMD divisor = ndiv-1 (front /4 removed). Summary-only print.
   localparam integer SW_LO   = 14;                    // sweep low
   localparam integer SW_HI   = 127;                   // sweep high (pwsel clamped to 62 -> valid across range)
-  localparam integer SW_STEP = 6;                     // stride (summary-only; ~20 pts + nominal)
+  localparam integer SW_STEP = 1;                     // step 1 -> every ndiv 14..127 (114 pts)
 
   // ---- DUT I/O --------------------------------------------------------------
   reg         fromVCO;
@@ -165,8 +165,8 @@ module tb_LPBT_NDIV_TOP;
       ndiv  = nd[13:0];
       pwsel = ((nd + 5) / 2 > 62) ? 6'd62 : (nd + 5) / 2;   // pwsel = min((ndiv+5)/2, 62)
       expM  = nd - 1;                     // divisor with the front /4 prescaler removed
-      settle = 3.0 * (4*expM) * TVCO;
-      win    = 6.0 * (4*expM) * TVCO;
+      settle = 2.0 * (4*expM) * TVCO;
+      win    = 4.0 * (4*expM) * TVCO;
       #(settle);
       `RST(I_OUT)
       #(win);
@@ -255,9 +255,8 @@ module tb_LPBT_NDIV_TOP;
     cal_en = 1'b0; ndiv_en = 1'b1; en_test = 1'b0;
     sw_n = 0; sw_pass = 0; sw_fail = 0; sw_maxerr = 0.0;
     for (swi = SW_LO; swi <= SW_HI; swi = swi + SW_STEP) ndsweep(swi);
-    ndsweep(NDIV_TEST);                    // include the nominal 50%-duty op point
-    $display("== NDIV-SWEEP (ndiv=%0d..%0d step %0d +%0d, pwsel=min((ndiv+5)/2,62), NORM) : %0d pts -> %0d divisor-match, %0d FAIL, max|err|=%0.2f cyc ==",
-             SW_LO, SW_HI, SW_STEP, NDIV_TEST, sw_n, sw_pass, sw_fail, sw_maxerr);
+    $display("== NDIV-SWEEP (ndiv=%0d..%0d step %0d, pwsel=min((ndiv+5)/2,62), NORM) : %0d pts -> %0d divisor-match, %0d FAIL, max|err|=%0.2f cyc ==",
+             SW_LO, SW_HI, SW_STEP, sw_n, sw_pass, sw_fail, sw_maxerr);
     if (sw_fail > 0) fails = fails + sw_fail;
     ndiv = NDIV_TEST; pwsel = PWSEL;       // restore nominal
 
@@ -277,9 +276,9 @@ module tb_LPBT_NDIV_TOP;
   end
 `endif
 
-  // safety timeout
+  // safety timeout (step-1 ndiv sweep over 14..127 needs ~40us of sim)
   initial begin
-    #(50_000_000);
+    #(300_000_000);
     $display("=== TB FAIL (timeout) ===");
     $finish;
   end
