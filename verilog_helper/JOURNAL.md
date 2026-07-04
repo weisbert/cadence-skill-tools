@@ -6,6 +6,43 @@ dossiers live here so they stop burying the current status. Append new closes at
 
 ---
 
+## SESSION CLOSE 2026-07-04 — LPBT_NDIV divide/pulse-width law SWEEP-CONFIRMED on real struct + TB divisor-sweep self-check (table report) + charac TBs tracked
+
+**Task done: swept `ndiv_var 14..127` on the REAL `LPBT_NDIV_TOP` struct (build_afterfix, xrun 18.03),
+`pwsel=min((ndiv_var+5)/2,62)`, NORM. 114/114 pts: divisor(front /4 removed)=`ndiv_var−1` AND
+low=`2·floor(pwsel/2)−3`, 0 fail, 0 stall.** Delivered a metadata+CSV+xrun/SimVision-screenshot zip
+to the user (for another Claude to write the report).
+
+- **Architecture (for the record):** the LPBT "MMD-8bit" is a PRESET/RELOAD binary ripple T-FF
+  counter (q0..q7; each TFF loads the divide word on reload, EOC-decode → staged reload), NOT a
+  ÷2/÷3 cascade. Divisor = ndiv-1 in NDIVCKIN(=VCO/4) units; full-chip = 4·(ndiv-1). `clk_to_DSM`→SDM,
+  `clk_to_PFD`→PFD. LPBT = WuR pinned to `lpbt_en=1` (main clk VCO/4) minus the ADC 8-bit counter and
+  the lpbt_en prescaler MUX.
+- **CAL correction (mid-session):** the real CAL op config is `lpbt_en=1 & cal_en=1` → `mux_sel=0`
+  selects DIV16sig, which `div4_en=0` has frozen → BOTH main NDIV and ADC dividers STOP; only
+  `CLK2CNT=VCO/4` runs. (Earlier I wrongly said cal keeps NDIV running — that's only true for
+  lpbt_en=0, which isn't the calibration config.)
+- **pwsel CLAMP finding:** raw `(ndiv+5)/2 > 63` for `ndiv ≥ 123` overflows the 6-bit pwsel field →
+  wraps → low negative → OUT_NDIV stalls. `min(.,62)` clamp fixes it (ndiv 119..127 → pwsel=62, low=59).
+- **Red-zone TB `testbenches/tb_LPBT_NDIV_TOP.vams`:** added an NDIV divisor-sweep self-check — NORM,
+  `ndiv 14..127 step 1` (114 pts), assert `divisor==ndiv-1`. Report is an ASCII table of witness points
+  (14/51/100/127 → expect vs meas + duty) + aggregate RESULT. Only the DIVISOR is asserted (the local
+  good-model `LPBT_NDIV_TOP_model.vams` hardwires ~50% duty and ignores pwsel, so its duty column
+  differs from the real struct — the pwl law is confirmed on the real struct via charac, not in-TB).
+  Green on BOTH good-model and real struct → `=== TB PASS ===`. Safety timeout raised 50us→300us for
+  the step-1 run; `run.sh` verdict-grep widened to surface the witness/table rows.
+- **Charac TBs now TRACKED:** `examples/lpbt_ndiv/charac/` (tb_ndivsweep, tb_wave, run.sh, sv_wave.tcl,
+  grab_sv.sh, README, .gitignore). `run.sh` is STRUCT_DIR-parameterized (default `../_ref/build_afterfix`);
+  proprietary struct netlist stays gitignored in `_ref/`. Verified the tracked run.sh compiles the real
+  struct + produces the SHM from the new location.
+- **Headless xrun/SimVision screenshot flow proven:** `Xvfb :99` + `simvision -input sv_wave.tcl <shm>`
+  + `PIL.ImageGrab(xdisplay=":99")`, crop to the app strip. Witness divisor numbers identical model vs
+  struct. (Reusable method — see also memory `reference_virtuoso_visual_verify`.)
+- **Folded into SPEC_CHECKLIST:** LPBT open-item #1 (`M=ndiv-1`) now CONFIRMED by sweep; pwl + 6-bit
+  clamp law added. Commits this arc: `f91d16d` `b729937` `3921a34` `d5d6345` `b21cdac` `5d3b1f7` (HEAD).
+
+---
+
 ## SESSION CLOSE 2026-06-27c — WuR NDIV fully characterized + self-checking TB + report kit (all sim-verified)
 
 **Task done: `NDIV_TOP_v7_svt_0p5W` (WuR NDIV) reproduced locally from the user's red-zone debug
