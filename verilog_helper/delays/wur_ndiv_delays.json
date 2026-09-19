@@ -1,0 +1,159 @@
+{
+  "schema": "vh_delay/1",
+  "version": "v1",
+  "design": "NDIV_TOP_v7_svt_0p5W  (WuR N-divider, Hi1108_WuR_PLL_ANA)",
+  "unit": "ps",
+  "scale": 1.0,
+  "scale_macro": "VH_TPD_SCALE",
+  "param_prefix": "VH_TPD_",
+  "notes": [
+    "Technology context: '0p5W' SVT cells at 0.8 V nominal (0.72 V powerOK floor).",
+    "All numbers are TYPICAL intrinsic cell delays at a light fan-out; they are",
+    "plausible engineering placeholders, NOT characterized silicon data. The point",
+    "is to give the pure-digital model a realistic, SCALABLE amount of delay so the",
+    "ripple-counter / EOC timing margin can be probed (see examples/wur_ndiv/DELAYS.md).",
+    "Every value is multiplied by the global scale (JSON 'scale', CLI --scale, or the",
+    "xrun macro +define+VH_TPD_SCALE=<x>), so a 'slow corner' sweep needs no re-injection.",
+    "Per-class override at xrun time: +define+VH_TPD_<CLASS>_PS=<ps>.",
+    "POLICY: the power-fail / reset branch (if(!powerOK) ... ) is NEVER delayed -- a",
+    "supply collapse or async clear must clamp immediately; delaying it would inject",
+    "phantom edges after power removal and would weaken the POWER-DOWN clean-0 check",
+    "for the wrong reason. Only the FUNCTIONAL branch of each model gets a delay.",
+    "The ext_stub/* entries stand in for red-zone COT std cells that the red zone",
+    "resolves through -v; they are listed here so the local margin sweep scales the",
+    "WHOLE design uniformly. On the red zone do NOT inject into the real COT models."
+  ],
+  "classes": {
+    "inv": {
+      "ps": 12.0, "kind": "tpd",
+      "rationale": "SVT inverter, 0.8 V, moderate fan-out -- 10-15 ps band."
+    },
+    "inv_pdiv": {
+      "ps": 10.0, "kind": "tpd",
+      "rationale": "Prescaler/clock-tree inverter: up-sized, runs at 4.8-5.8 GHz, fastest inverter in the block."
+    },
+    "nand2": {
+      "ps": 18.0, "kind": "tpd",
+      "rationale": "2-input NAND, series NMOS stack of 2 -- 15-25 ps band."
+    },
+    "nand3": {
+      "ps": 28.0, "kind": "tpd",
+      "rationale": "3-input NAND, 3-high stack -- 25-35 ps band."
+    },
+    "nor2": {
+      "ps": 20.0, "kind": "tpd",
+      "rationale": "2-input NOR, series PMOS stack of 2 (slower than NAND2 per stage)."
+    },
+    "nor3": {
+      "ps": 26.0, "kind": "tpd",
+      "rationale": "3-input NOR."
+    },
+    "nor4": {
+      "ps": 32.0, "kind": "tpd",
+      "rationale": "4-input NOR, 4-high PMOS stack -- the slowest static gate here (EOC detect)."
+    },
+    "mux": {
+      "ps": 25.0, "kind": "tpd",
+      "rationale": "2:1 inverting mux (TG pair + output inverter) -- 20-30 ps band."
+    },
+    "mux_delay": {
+      "ps": 30.0, "kind": "tpd",
+      "rationale": "The '..._delay' mux variant is the deliberately slower reload-path mux."
+    },
+    "buf": {
+      "ps": 30.0, "kind": "tpd",
+      "rationale": "Two-stage buffer (BUFFD2) = 2 x inverter + load -- 25-35 ps band."
+    },
+    "dff": {
+      "ps": 50.0, "kind": "clk2q",
+      "rationale": "Static master-slave DFF clk->Q at 0.8 V -- 40-60 ps band. Async clear is NOT delayed (see POLICY)."
+    },
+    "tff": {
+      "ps": 50.0, "kind": "clk2q",
+      "rationale": "Toggle FF clk->q, same master-slave core as the DFF. Applied to BOTH the toggle and the ld (reload) branch, and to q and qb TOGETHER -- the original model had q@20ps / qb@10ps, an artificial q/qb skew that a real TFF does not have."
+    },
+    "tspc_div2": {
+      "ps": 30.0, "kind": "clk2q",
+      "rationale": "TSPC divide-by-2, the FRONT-END /2 running at 4.8-5.8 GHz: dynamic, ratioed, only ~2-3 gate stages -> 25-35 ps clk->Q. Must stay well under Tvco/2 (86 ps @5.8 GHz)."
+    },
+    "power_sw": {
+      "ps": 80.0, "kind": "tpd",
+      "rationale": "Header/footer power switch: big device, slow but NON-CRITICAL (enable path only) -- 50-100 ps band."
+    },
+    "pdown": {
+      "ps": 60.0, "kind": "tpd",
+      "rationale": "Power-down output clamp (pull-low / release-to-Z). Non-critical static path -- 50-100 ps band."
+    },
+    "ext_inv": {
+      "ps": 12.0, "kind": "tpd",
+      "rationale": "Stand-in for the red-zone COT INVD1/INVD8. Same as 'inv'; on red the real -v model rules."
+    },
+    "ext_nand2": {
+      "ps": 18.0, "kind": "tpd",
+      "rationale": "Stand-in for the red-zone COT ND2D1. Same as 'nand2'."
+    },
+    "ext_nor2": {
+      "ps": 20.0, "kind": "tpd",
+      "rationale": "Stand-in for the red-zone COT NR2D1. Same as 'nor2'."
+    },
+    "delay_cell_a": {
+      "ps": 40.0, "kind": "tpd",
+      "rationale": "DELAD1 is a DELAY CELL -- its delay IS its function; keep the stub's 40 ps (scales with the sweep)."
+    },
+    "delay_cell_b": {
+      "ps": 30.0, "kind": "tpd",
+      "rationale": "DELBD1 delay cell -- keep the stub's 30 ps (scales with the sweep)."
+    }
+  },
+  "modules": {
+    "WL_PLL_Ndiv_inv_svt_x2_0p5W":        {"class": "inv",       "was": "#10"},
+    "WL_PLL_Ndiv_inv_svt_x4_0p5W":        {"class": "inv",       "was": "#10"},
+    "WL_PLL_Ndiv_inv_svt_x8_0p5W":        {"class": "inv",       "was": "#10"},
+    "WL_PLL_PDIV_lvt_x2":                 {"class": "inv_pdiv",  "was": "#10"},
+    "WL_PLL_PDIV_lvt_x4":                 {"class": "inv_pdiv",  "was": "#10"},
+    "WL_PLL_PDIV_svt_x2":                 {"class": "inv_pdiv",  "was": "#10"},
+    "WL_PLL_PDIV_svt_x2_0p5W":            {"class": "inv_pdiv",  "was": "#10"},
+    "WL_PLL_PDIV_svt_x4":                 {"class": "inv_pdiv",  "was": "#10"},
+    "WL_PLL_PDIV_svt_x4_emir":            {"class": "inv_pdiv",  "was": "#10"},
+    "WL_PLL_PDIV_svt_x8":                 {"class": "inv_pdiv",  "was": "#10"},
+    "WL_PLL_Ndiv_nand2_lvt_x2":           {"class": "nand2",     "was": "#10"},
+    "WL_PLL_Ndiv_nand2_svt_x2":           {"class": "nand2",     "was": "#10"},
+    "WL_PLL_Ndiv_nand2_svt_x2_0p5W":      {"class": "nand2",     "was": "#10"},
+    "WL_PLL_Ndiv_nand2_svt_x4_0p5W":      {"class": "nand2",     "was": "#10"},
+    "WL_PLL_Ndiv_nand2_svt_x8_0p5W":      {"class": "nand2",     "was": "#10"},
+    "WL_PLL_Ndiv_nand3_svt_0p5W":         {"class": "nand3",     "was": "#10"},
+    "WL_PLL_Ndiv_nand3_svt_x2_0p5W":      {"class": "nand3",     "was": "#10"},
+    "WL_PLL_Ndiv_nand3_svt_x8_0p5W":      {"class": "nand3",     "was": "#10"},
+    "WL_PLL_Ndiv_nor2_svt_x4_0p5W":       {"class": "nor2",      "was": "#10"},
+    "NR2D2_COT_H462SDB_L20P108_SVT_ana":  {"class": "nor2",      "was": "#(10e-12) [timescale 1s/1fs -> 10 ps]"},
+    "WL_PLL_Ndiv_nor3_svt_x4_0p5W":       {"class": "nor3",      "was": "#10"},
+    "WL_PLL_Ndiv_nor4_svt_x2_0p5W":       {"class": "nor4",      "was": "#10"},
+    "WL_PLL_Ndiv_mux2_1_svt_0p5W":        {"class": "mux",       "was": "#15"},
+    "Mux_2to1_v5_lvt":                    {"class": "mux",       "was": "#15"},
+    "WL_PLL_Ndiv_mux2_1_delay_svt_0p5W":  {"class": "mux_delay", "was": "#5"},
+    "BUFFD2_COT_H462SDB_L20P108_SVT_ana": {"class": "buf",       "was": "(none)"},
+    "WL_PLL_Ndiv_DFF_dif_svt_goodDesign_0p5W":                {"class": "dff", "was": "(none)"},
+    "WL_PLL_Ndiv_DFF_dif_svt_goodDesign_0p5W_Counter14bits":  {"class": "dff", "was": "(none)"},
+    "WL_PLL_Ndiv_DFF_dif_svt_goodDesign_0p5W_CNT14bits_b":    {"class": "dff", "was": "(none)"},
+    "WL_PLL_Ndiv_DFF_dif_svt_goodDesign_0p5W_Counter8bits":   {"class": "dff", "was": "(none)"},
+    "WL_PLL_Ndiv_DFF_dif_svt_goodDesign_0p5W_Counter8bits_b": {"class": "dff", "was": "(none)"},
+    "WL_PLL_Ndiv_TFF_gateinv_svt_x2_goodDesign_0p5W": {"class": "tff", "was": "q<=#20 ~q; qb<=#10 q; ld: q<=#10 ~datab; qb<=#10 datab"},
+    "WL_PLL_Ndiv_TFF_gateinv_svt_x8_goodDesign_0p5W": {"class": "tff", "was": "q<=#20 ~q; qb<=#10 q; ld: q<=#10 ~datab; qb<=#10 datab"},
+    "WL_PLL_PDIV_TSPCDIV2_pilot":         {"class": "tspc_div2", "was": "(none)"},
+    "pll_ndiv_power_sw":                  {"class": "power_sw",  "was": "(none)  [blocking assign]"},
+    "WL_PLL_Ndiv_pdown":                  {"class": "pdown",     "was": "(none)  [blocking assign, const RHS 0/z]",
+                                           "delay_const_rhs": true},
+    "INVD1_COT_H462SDB_L20P108_SVT_ana":  {"class": "ext_inv",   "was": "#(10e-12) [1s/1fs -> 10 ps]", "ext": true},
+    "INVD8_COT_H462SDB_L20P108_SVT_ana":  {"class": "ext_inv",   "was": "#(10e-12) [1s/1fs -> 10 ps]", "ext": true},
+    "ND2D1_COT_H462SDB_L20P108_SVT_ana":  {"class": "ext_nand2", "was": "#(10e-12) [1s/1fs -> 10 ps]", "ext": true},
+    "NR2D1_COT_H462SDB_L20P108_SVT_ana":  {"class": "ext_nor2",  "was": "#(10e-12) [1s/1fs -> 10 ps]", "ext": true},
+    "DELAD1_COT_H462SDB_L20P108_SVT_ana": {"class": "delay_cell_a", "was": "#(40e-12) [1s/1fs -> 40 ps]", "ext": true},
+    "DELBD1_COT_H462SDB_L20P108_SVT_ana": {"class": "delay_cell_b", "was": "#(30e-12) [1s/1fs -> 30 ps]", "ext": true}
+  },
+  "skip_modules": [
+    "NDIV_TOP_v7_svt_0p5W",
+    "WL_PLL_Ndiv_counter_14bit_svt_withCORE_v5_overlap",
+    "WL_PLL_Ndiv_counter_8bit_svt_withCORE_v5_overlap"
+  ],
+  "skip_comment": "Structural (netlist-only) modules in NDIV_TOP_v7_svt_0p5W_struct.vams carry no behaviour -> no delay sites. Listed for documentation; the injector skips any module with no delay site anyway."
+}

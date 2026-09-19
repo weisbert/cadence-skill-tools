@@ -98,3 +98,63 @@ Report (PASS/FAIL table + SimVision PNGs + report.md), like LPBT's:
 python3 ../../../vh_wur_report.py --sim <simdir>   # runs run.sh +WAVES, writes <simdir>/report/
 ```
 (`run.sh` globs `export/*.vams` + `ext_stub/*.vams`; the stubs stand in for the red-zone COT cells.)
+
+---
+
+## 32.768 kHz REFERENCE / SDM-MODULATED DIVIDE WORD  (✓ = simulated on the Stage-A struct, 2026-09-19)
+
+Sources `examples/wur_ndiv/charac/` (`tb_wur32k.vams`, `mash111.vams`, `tb_wur_sdm.vams`,
+`sdm_psd.py`, `run.sh`); full numbers + "not covered" list in `examples/wur_ndiv/SDM_32K_RESULTS.md`.
+Local build (gitignored): `examples/wur_ndiv/_ref/build_sdm/`. 13 runs, 143 s wall total.
+
+### Static law at the real reference
+- ✓ `M = ndiv − 1` now confirmed over the **full 14-bit range**, not just M ≤ 300:
+  swept ndiv = 8191, 8192, 8193, 9155, 9537, 11063, 12288, 16383 (bit-12/bit-13 witnesses),
+  `period(OUT_NDIV) = period(CLK2DSM) = M·Tclk` exactly, clean-1 edges, no X.
+- ✓ `CLK2DSM` lag = **2.066–2.080 Tclk**, ndiv-independent (was quoted as ~2.07).
+- ✓ WuR locking to 32.768 kHz needs `ndiv−1 = f_VCO/524288`, which is **fractional at every
+  band** → an SDM is mandatory. Static (integer-ndiv) error:
+  | band | best ndiv | f_OUT_NDIV | err |
+  |---|---|---|---|
+  | 4.8 GHz | 9155 | 32772.558 Hz | +139.1 ppm |
+  | 5.0 GHz | 9537 | 32770.554 Hz | +77.9 ppm |
+  | 5.8 GHz | 11063 | 32769.843 Hz | +56.2 ppm |
+- ✓ **50 % duty is UNREACHABLE at M ≈ 9 k**: the 50 % law needs `pwsel = M/2 + 3 ≈ 4580` but
+  `pwsel` is 6-bit. Widest legal setting `pwsel = 62` → `low = 59 Tclk` (196 ns @4.8 GHz),
+  duty 99.3–99.6 %. `OUT_NDIV` is a narrow low pulse — the PFD must use the **rising** edge.
+
+### Dynamic (MASH 1-1-1) divide word
+- ✓ **Per-cycle law with a changing word:** `period_k = ndiv_applied_k − 1` **exactly, every
+  cycle**, with all 8 MASH outputs `y ∈ [−3,+4]` exercised. 8190/8190 at N_int = 300 (two
+  fractions + dithered), 254/254 at each real 32 kHz point (N_int = 9156/9537/11063),
+  510/510 in LPBT at ndiv = 51. No glitch, no double load, no dropped period.
+- ✓ **LOAD ALIGNMENT (new):** a word placed on `ndiv` at time T governs the **first OUT_NDIV
+  period that STARTS after T** (the counter reloads `d_n` on the OUT_NDIV rising edge).
+  Because `CLK2DSM` trails `OUT_NDIV` by ~2.07 Tclk, the word issued on CLK2DSM edge *k*
+  sets the period between OUT_NDIV edges **k+1 and k+2** →
+  **one full divider period of latency (z⁻¹) from SDM word to period.** Put it in the loop model.
+- ✓ **SDM UPDATE TIMING (new):** the `ndiv` word must be stable **≥ 1 NDIVCKIN cycle before
+  the OUT_NDIV rising edge**. Boundary measured between 0.95 and 1.00 Tclk and found
+  **mode- and ratio-independent** (M = 50, 299, 9155). Inside that window the word is applied
+  one period late on a data-dependent subset of cycles — intermittent, looks like PLL noise.
+  ```
+  setup_required = 1 Tclk  ->  3.33 ns @4.8G, 3.20 ns @5.0G, 2.76 ns @5.8G (WuR)
+                               0.83 ns @4.8G (LPBT)
+  latency_max after CLK2DSM rising edge = M_min - 3.07 Tclk,  M_min = N_int - 4
+        = 30.50 us at all three WuR bands  (i.e. ~a whole reference period)
+  LATC=0 (update right at the CLK2DSM edge) has NO race: it already has M-2.07 Tclk of setup.
+  ```
+- ✓ **Average ratio:** `mean(period) = N_int − 1 + F` within the finite-record bound (≈4/K).
+  With the SDM the 32.768 kHz error collapses from +56…+139 ppm to **≤ 1.1 ppm**
+  (4.8 GHz −0.55 ppm, 5.0 GHz +1.03 ppm, 5.8 GHz −0.13 ppm over 255 cycles).
+- ✓ **Noise shaping:** PSD of the period error rises **+59.2 dB/dec** (implied order 2.96)
+  over `f/fs = 2e-3…2e-2`, 8191 cycles at N_int = 300 — consistent with `(1−z⁻¹)³`.
+  (Analysis trap: a Blackman-Harris window leaks and reports a false +39 dB/dec; the 160 dB
+  spectral span needs a Kaiser β≈24 window — `sdm_psd.py` handles this.)
+- ✓ **LPBT mode** (`lpbt_en=1`, NDIVCKIN = VCO/4, ndiv = 51 + y, 512 cycles): same per-cycle
+  law, same alignment, PSD +62.6 dB/dec → the FDR's operating mode is unaffected.
+
+### Not confirmed here
+Closed loop, real flop/cell delays (the 2.07 Tclk lag and the 1 Tclk reload setup both depend
+on the ad-hoc leaf delays), in-band (<1 kHz offset) shaping at ndiv ≈ 9 k (needs ≥10⁵ cycles),
+changing `pwsel` during modulation, and the red-zone COT library (runs used `ext_stub/`).

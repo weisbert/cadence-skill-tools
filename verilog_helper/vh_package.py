@@ -16,12 +16,19 @@ SELF-CONTAINED, RELOCATABLE package that runs on the red zone with no path edits
 Transfer: dev -> (skill_tools deploy / yellow) -> red work dir; untar; `bash verify.sh`.
 The preflight proves pure-digital xrun works on THIS machine before trusting the run.
 
+Optional timing: `--delays <table.json>` runs vh_delay on the PACKAGED COPIES of
+the sources (never on the build inputs), so the bundle that crosses the air gap
+carries realistic, command-line-overridable gate/FF delays.  The table travels
+with the package as `delays.json` and is recorded in manifest_D.json.
+
 CLI:  python3 vh_package.py --build <stageC_dir> [--out <dir>] [--name <pkgname>]
+                            [--delays <table.json>] [--delay-scale <x>]
 """
 import os, sys, json, shutil, argparse, hashlib, tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vh_gen as vg
+import vh_delay as vd
 
 PREFLIGHT_SMOKE = """`timescale 1s/1fs
 module vh_pf_dut(o, i); input i; output o; wreal i, o; assign o = 2.0*i; endmodule
@@ -118,6 +125,8 @@ def main():
     ap.add_argument("--build", required=True, help="Stage-C output dir (has manifest.json/run.sh)")
     ap.add_argument("--out", help="where to write the package (default: <build>/../package)")
     ap.add_argument("--name", help="package name (default: <top>_pkg)")
+    ap.add_argument("--delays", help="vh_delay table JSON: inject delays into the PACKAGED copies")
+    ap.add_argument("--delay-scale", type=float, help="global delay scale for --delays")
     args = ap.parse_args()
 
     man_path = os.path.join(args.build, "manifest.json")
@@ -168,6 +177,20 @@ def main():
            "# (seeded from where the package was built -- red-zone paths likely differ)\n")
     open(os.path.join(pkg, "ext_libs.list"), "w").write(hdr + "\n".join(ext_lines) + ("\n" if ext_lines else ""))
 
+    # optional: inject the delay table into the PACKAGED copies (never the inputs)
+    delays_applied = []
+    if args.delays:
+        tab = vd.Table.load(args.delays, args.delay_scale)
+        for base in src_base + stub_base:
+            fp = os.path.join(pkg, base)
+            txt = open(fp).read()
+            new, done = vd.apply_text(txt, tab)
+            if done:
+                open(fp, "w").write(new)
+                delays_applied += [{"module": m, "class": c, "sites": n, "file": base}
+                                   for m, c, n in done]
+        shutil.copy(args.delays, os.path.join(pkg, "delays.json"))
+
     open(os.path.join(pkg, "README.txt"), "w").write(README % {"top": top})
     manifest_d = {
         "stage": "D", "top": top, "package": name,
@@ -175,6 +198,10 @@ def main():
         "ext_libs_seed": ext_lines,
         "resolved_externals": [e.get("module") for e in man.get("external_resolved", [])],
         "run": "verify.sh -> run.sh", "preflight": "vh_preflight.vams",
+        "delays_table": os.path.basename(args.delays) if args.delays else None,
+        "delays_scale": (args.delay_scale if args.delay_scale is not None
+                         else (tab.scale if args.delays else None)),
+        "delays_applied": delays_applied,
     }
     json.dump(manifest_d, open(os.path.join(pkg, "manifest_D.json"), "w"), indent=2)
 
@@ -191,6 +218,10 @@ def main():
     print("package dir : %s" % pkg)
     print("contents    : %d sources, %d stubs, tb=%s" % (len(src_base), len(stub_base), tb_base))
     print("ext_libs    : %s" % (ext_lines or "(none -- all externals stubbed)"))
+    if args.delays:
+        print("delays      : %s -> %d module(s) injected (override at xrun time with "
+              "+define+%s=<x>)" % (os.path.basename(args.delays), len(delays_applied),
+                                   vd.SCALE_MACRO))
     print("tarball     : %s" % tar_path)
     print("sha256      : %s" % digest)
     print()

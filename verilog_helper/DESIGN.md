@@ -247,6 +247,10 @@ dev(linux8, this box) ──git push──▶ GitHub ──git pull──▶ yel
 - [x] **Stage B `vh_convert.py`** — built & verified (see §3b). Remaining: richer pattern
       coverage if real cells need it (sample/hold, dff with explicit clocks → currently
       skeleton); verify bus packed-wire↔unpacked-wreal-array connection in a real hierarchy.
+- [x] **Delay injection `vh_delay.py`** (2026-09-19) — JSON delay table → idempotent
+      `#(TPD)` injection into leaf copies (never originals), `+define+VH_TPD_SCALE`/`_<CLASS>_PS`
+      runtime override, `vh_package.py --delays`. Zero-delay models hide hold races and ripple
+      accumulation; red-zone recipe in RED_ZONE.md. Table values are placeholders until .lib data.
 - [x] **Stage D** — built & verified (`vh_package.py` + env-agnostic `run.sh`/`setup_env.sh`).
       **Red-zone facts (preflight 2026-06-25):** red `xrun = 19.04-a001`, pure-digital wreal
       smoke PASSed with **zero** spectre license errors (cleaner than dev) and no `*F,INTERR`;

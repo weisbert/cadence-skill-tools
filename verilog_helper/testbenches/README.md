@@ -28,3 +28,18 @@ in the dropdown.
 - Optional knobs via `+define+...` reach xrun (the generated `run.sh` forwards `"$@"`):
   e.g. `tb_LPBT_NDIV_TOP.vams` gates its exact-N check behind `+define+CHECK_NDIV` and a
   SimVision dump behind `+define+WAVES`.
+
+## Margin / hold-race probes (`tb_<DUT>_dly.vams`)
+
+A `tb_<DUT>_dly.vams` is a **single-mode, `+define+`-parameterised timing probe** that goes with
+the `vh_delay.py` delay tables (`delays/*.json`). It stays in one mode for the whole run (so a
+failure is attributable to that mode and not to a mode-switch glitch) and checks the divide law
+**cycle by cycle** rather than on average, which is what catches a ripple stage that
+double-counts. It appears in the dropdown but is never auto-selected (auto-select is an exact
+`tb_<DUT>.vams` match).
+
+`tb_NDIV_TOP_v7_svt_0p5W_dly.vams` knobs:
+`+define+FGHZ=5.8` `+define+NDIVW=9155` `+define+LPBTEN=1` `+define+NPER=40`
+`+define+CALEN=1` `+define+ENTEST=1` `+define+PRELPBT=1`, plus the delay knobs
+`+define+VH_TPD_SCALE=<x>` / `+define+VH_TPD_<CLASS>_PS=<ps>`.
+Results and the measured margins: `examples/wur_ndiv/DELAYS.md`.

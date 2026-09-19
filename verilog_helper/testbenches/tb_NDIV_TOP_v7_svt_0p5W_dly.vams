@@ -1,0 +1,189 @@
+`include "disciplines.vams"
+`timescale 1ps/1fs
+// =============================================================================
+// tb_dly.vams -- single-mode, parameterisable margin / hold-race probe for the
+// WuR NDIV top, used by the vh_delay margin sweep (examples/wur_ndiv/DELAYS.md).
+//
+// Unlike the committed 5-mode TB this one stays in ONE mode for the whole run
+// (no lpbt_en transition), so a failure is attributable to the mode itself and
+// not to a mode-switch glitch.  It also checks the period law CYCLE-BY-CYCLE
+// (min == max == M*PRE*TVCO), which is what catches a ripple-chain stage that
+// double-counts or swallows a count -- an AVERAGE period would hide it.
+//
+//   +define+FGHZ=5.8      VCO frequency   (GHz)
+//   +define+NDIVW=51      ndiv word       -> M = ndiv-1
+//   +define+LPBTEN=1      LPBT mode (NDIVCKIN=VCO/4); 0 = WuR (VCO/16)
+//   +define+NPER=40       output periods to measure
+//   +define+CALEN=1       also assert cal_en   (CAL mode)
+//   +define+ENTEST=1      also assert en_test  (TEST mode)
+//   +define+PRELPBT=1     take an LPBT excursion (lpbt_en 0->1->0) BEFORE measuring,
+//                         to reproduce the mode-switch glitch the 5-mode TB shows
+//   +define+VH_TPD_SCALE=x  delay scale (consumed by the injected leaf models)
+// =============================================================================
+`ifndef FGHZ
+ `define FGHZ 5.8
+`endif
+`ifndef NDIVW
+ `define NDIVW 51
+`endif
+`ifndef LPBTEN
+ `define LPBTEN 0
+`endif
+`ifndef NPER
+ `define NPER 40
+`endif
+`ifndef CALEN
+ `define CALEN 0
+`endif
+`ifndef ENTEST
+ `define ENTEST 0
+`endif
+`ifndef PRELPBT
+ `define PRELPBT 0
+`endif
+
+module tb;
+  localparam real    TVCO   = 1000.0 / `FGHZ;
+  localparam integer NDIV   = `NDIVW;
+  localparam integer M      = NDIV - 1;
+  localparam integer PWRAW  = (NDIV + 5) / 2;
+  localparam integer PWSEL  = (PWRAW > 63) ? 63 : PWRAW;     // 6-bit corner clamp
+  localparam integer PRE    = (`LPBTEN) ? 4 : 16;            // prescaler ahead of the counter
+  localparam integer D      = PRE * M;                       // OUT_NDIV = VCO/D
+  localparam integer NPER   = `NPER;
+  localparam real    TOUT   = D * TVCO;
+  localparam real    SETTLE = 3.0 * TOUT + 200.0 * TVCO;
+  localparam real    WIN    = (NPER + 1) * TOUT;
+  // Tolerances are expressed in COUNTS of NDIVCKIN, not in percent: one missed or
+  // doubled count moves the ratio by exactly PRE, so 0.3*PRE is a tight-but-safe
+  // gate at every ndiv from 51 to 9155.  The VCO period is MEASURED rather than
+  // taken as 1000/FGHZ, because at 4.8 GHz the nominal half-period (104.1666..ps)
+  // is not representable on the 1 fs grid and the 3.2e-6 rounding error would
+  // otherwise swamp a real +-1-count error at ndiv=9155.
+  localparam real    TOLC   = 0.3;       // divide-ratio tolerance, in NDIVCKIN counts
+
+  reg         fromVCO;
+  reg  [13:0] ndiv;
+  reg  [7:0]  adcdiv;
+  reg  [5:0]  pwsel, adcpwsel;
+  reg         ndiv_en, cal_en, en_test, lpbt_en, psub;
+  wire        OUT_NDIV, CLK2DSM, CLK2CNT, OUT_ADCDIV, TESTCLK_300M;
+  reg         VDD, VPP, VSS, VDD_VCO, VPP_VCO, VSS_VCO;
+
+  integer fails, non, ndsm, xo, nvco;
+  real    lvco, vsum, tvco_m, tol;
+  real    lo, ls, pmin, pmax, psum, avgp, ratio, hsum, hr;
+  integer hn;
+  real    ldsm, dsum; integer dn;
+  reg     meas;
+
+  NDIV_TOP_v7_svt_0p5W dut (
+    .CLK2CNT(CLK2CNT), .CLK2DSM(CLK2DSM), .OUT_ADCDIV(OUT_ADCDIV), .OUT_NDIV(OUT_NDIV),
+    .TESTCLK_300M(TESTCLK_300M),
+    .VDD(VDD), .VDD_VCO(VDD_VCO), .VPP(VPP), .VPP_VCO(VPP_VCO), .VSS(VSS), .VSS_VCO(VSS_VCO),
+    .adcdiv(adcdiv), .adcpwsel(adcpwsel), .cal_en(cal_en), .en_test(en_test),
+    .fromVCO(fromVCO), .lpbt_en(lpbt_en), .ndiv(ndiv), .ndiv_en(ndiv_en),
+    .psub(psub), .pwsel(pwsel));
+
+  initial fromVCO = 1'b0;
+  always #(TVCO/2.0) fromVCO = ~fromVCO;
+
+  always @(posedge fromVCO) if (meas) begin
+    if (lvco >= 0.0) begin vsum = vsum + ($realtime - lvco); nvco = nvco + 1; end
+    lvco = $realtime;
+  end
+
+  always @(posedge OUT_NDIV) if (meas) begin
+    non = non + 1;
+    if (OUT_NDIV !== 1'b1) xo = xo + 1;
+    if (lo >= 0.0) begin
+      ls = $realtime - lo;
+      psum = psum + ls;
+      if (pmin < 0.0 || ls < pmin) pmin = ls;
+      if (ls > pmax) pmax = ls;
+    end
+    lo = $realtime; hr = $realtime;
+  end
+  always @(negedge OUT_NDIV) if (meas && hr >= 0.0) begin
+    hsum = hsum + ($realtime - hr); hn = hn + 1;
+  end
+  always @(posedge CLK2DSM) if (meas) begin
+    ndsm = ndsm + 1;
+    if (ldsm >= 0.0) begin dsum = dsum + ($realtime - ldsm); dn = dn + 1; end
+    ldsm = $realtime;
+  end
+
+  initial begin
+    fails = 0; non = 0; ndsm = 0; xo = 0; hn = 0; dn = 0; meas = 1'b0;
+    nvco = 0; lvco = -1.0; vsum = 0.0;
+    lo = -1.0; ldsm = -1.0; hr = -1.0; pmin = -1.0; pmax = 0.0; psum = 0.0;
+    hsum = 0.0; dsum = 0.0;
+    ndiv = NDIV; pwsel = PWSEL; adcdiv = 165; adcpwsel = 20;
+    ndiv_en = 1'b0; cal_en = 1'b0; en_test = 1'b0; lpbt_en = (`LPBTEN) ? 1'b1 : 1'b0;
+    psub = 1'b0;
+    {VDD,VPP,VDD_VCO,VPP_VCO} = 4'b1111;
+    {VSS,VSS_VCO}             = 2'b00;
+    #(20*TVCO);
+    ndiv_en = 1'b1;
+    if (`PRELPBT) begin                 // WuR -> LPBT -> WuR excursion
+      #(3.0*TOUT); lpbt_en = 1'b1; #(3.0*4*M*TVCO); lpbt_en = 1'b0;
+    end
+    cal_en  = (`CALEN)  ? 1'b1 : 1'b0;
+    en_test = (`ENTEST) ? 1'b1 : 1'b0;
+    #(SETTLE);
+    meas = 1'b1;
+    #(WIN);
+    meas = 1'b0;
+
+    $display("HOLD cfg: fvco=%0.3fGHz mode=%0s ndiv=%0d M=%0d pwsel=%0d -> OUT_NDIV=VCO/%0d",
+             `FGHZ, (`LPBTEN) ? "LPBT" : "WuR", NDIV, M, PWSEL, D);
+    tvco_m = (nvco > 0) ? (vsum / nvco) : TVCO;     // measured VCO period reference
+    tol    = TOLC * PRE;                            // 0.3 of one NDIVCKIN count
+    avgp  = (non > 1) ? (psum / (non - 1)) : 0.0;
+    ratio = (avgp > 0.0) ? (avgp / tvco_m) : 0.0;
+    $display("HOLD meas: edges=%0d avg=VCO/%0.3f  per-cycle min=VCO/%0.3f max=VCO/%0.3f  (Tvco_meas=%0.4fps)",
+             non, ratio, (pmin > 0.0) ? pmin/tvco_m : 0.0, pmax/tvco_m, tvco_m);
+
+    if (non < 3) begin
+      $display("  FAIL OUT_NDIV: only %0d edge(s) in %0d expected periods (stalled)", non, NPER);
+      fails = fails + 1;
+    end else begin
+      if ((ratio > (D + tol)) || (ratio < (D - tol))) begin
+        $display("  FAIL divide law: avg VCO/%0.3f, expected VCO/%0d  (off by %0.2f NDIVCKIN count(s))",
+                 ratio, D, (ratio - D)/PRE); fails = fails + 1;
+      end else
+        $display("  PASS divide law: OUT_NDIV = VCO/%0d  (M = ndiv-1 = %0d)", D, M);
+      // cycle-by-cycle spread: a double-count or a swallowed count in the ripple
+      // chain shows up as a period that differs by a whole NDIVCKIN count.
+      if ((pmax - pmin) > (0.5 * PRE * tvco_m)) begin
+        $display("  FAIL period spread: min=%0.1fps max=%0.1fps (%0.2f counts) -- a ripple stage mis-counted",
+                 pmin, pmax, (pmax-pmin)/(PRE*tvco_m)); fails = fails + 1;
+      end else
+        $display("  PASS period exact every cycle: %0.1fps, spread %0.1fps < 1 NDIVCKIN count, %0d periods",
+                 (pmin+pmax)/2.0, pmax-pmin, non-1);
+      if (xo > 0) begin
+        $display("  FAIL OUT_NDIV: %0d edge(s) not clean-1", xo); fails = fails + 1;
+      end else $display("  PASS OUT_NDIV clean (no X/Z on active edges)");
+      if (dn < 2) begin
+        $display("  FAIL CLK2DSM: %0d edge(s)", ndsm); fails = fails + 1;
+      end else begin
+        ratio = (dsum/dn)/tvco_m;
+        if ((ratio > (D + tol)) || (ratio < (D - tol))) begin
+          $display("  FAIL CLK2DSM: VCO/%0.3f expected VCO/%0d", ratio, D); fails = fails + 1;
+        end else $display("  PASS CLK2DSM = OUT_NDIV = VCO/%0d", D);
+      end
+      if (hn > 0) $display("HOLD duty: %0.2f%% (law: high=M-(2*floor(pwsel/2)-3))",
+                           100.0*(hsum/hn)/avgp);
+    end
+
+    if (fails == 0) $display("=== TB PASS  (top=NDIV_TOP_v7_svt_0p5W) ===");
+    else            $display("=== TB FAIL  (%0d mismatches) ===", fails);
+    $finish;
+  end
+
+  initial begin
+    #(SETTLE + WIN + 50.0*TOUT + 1.0e6);
+    $display("=== TB FAIL (timeout) ===");
+    $finish;
+  end
+endmodule

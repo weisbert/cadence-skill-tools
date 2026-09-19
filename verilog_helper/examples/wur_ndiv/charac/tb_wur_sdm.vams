@@ -1,0 +1,372 @@
+`timescale 1ps/1fs
+// =============================================================================
+// tb_wur_sdm -- DYNAMIC (sigma-delta modulated) divide-word verification of the
+// real NDIV_TOP_v7_svt_0p5W Stage-A struct.
+//
+// A behavioral MASH 1-1-1 (mash111.vams) is clocked by the chip's own CLK2DSM pin
+// and drives  ndiv = N_int + y  (y in [-3,+4]).  The TB measures, at TOP-LEVEL
+// PORTS ONLY, the per-cycle OUT_NDIV period in NDIVCKIN units and checks
+//
+//   (a) per-cycle law     period_i == ndiv_applied - 1   for EVERY cycle, once the
+//                         alignment offset g (which divider period a word issued at
+//                         CLK2DSM edge k governs) is identified;
+//   (b) average ratio     mean(period) == N_int - 1 + F/2^W;
+//   (c) noise shaping     period-error sequence dumped to perr_<TAG>.txt for sdm_psd.py;
+//   (d) update timing     sweep of the delay between the CLK2DSM rising edge and the
+//                         ndiv-bus update, to find the last SAFE update latency;
+//   (e) LPBT mode         same per-cycle law with NDIVCKIN = VCO/4.
+//
+// Plusargs (all optional):
+//   +PHASE=main|lat     main = single operating point ; lat = update-latency sweep
+//   +LPBT=0|1           0 -> WuR mode (NDIVCKIN=VCO/16) ; 1 -> LPBT mode (VCO/4)
+//   +FVCO_MHZ=4800      VCO frequency in MHz
+//   +NINT=300           integer part of the divide word
+//   +FNUM=773094        fractional part, in units of 2^-20  (773094 -> 0.7373)
+//   +KCYC=4096          number of OUT_NDIV cycles to record
+//   +LATC=0             ndiv-bus update latency after the CLK2DSM edge, in NDIVCKIN cycles
+//   +DITH=0|1           1-LSB dither in the MASH
+//   +ALLY=1             require all 8 y values (-3..+4) to be exercised
+//   +TAG=name           suffix of the dumped period file perr_<name>.txt
+//   +NODUMP=1           skip the period dump
+// =============================================================================
+module tb_wur_sdm;
+
+  localparam integer W     = 20;
+  localparam integer MAXK  = 8400;
+  localparam integer MAXG  = 6;
+
+  // ---- config ----
+  integer fvco_mhz, NINT, FNUM, KCYC, LATC, LATF, DITH, LPBTM, ALLY, NODUMP, PHLAT;
+  real    TVCO, TCLK, FRAC;
+  reg [8*40:1] tag;
+
+  // ---- DUT I/O ----
+  reg        fromVCO;
+  reg [13:0] ndiv;
+  reg [7:0]  adcdiv;
+  reg [5:0]  pwsel, adcpwsel;
+  reg        ndiv_en, cal_en, en_test, lpbt_en, psub;
+  wire       OUT_NDIV, CLK2DSM, CLK2CNT, OUT_ADCDIV, TESTCLK_300M;
+  reg        VDD,VPP,VSS,VDD_VCO,VPP_VCO,VSS_VCO;
+
+  NDIV_TOP_v7_svt_0p5W dut(
+    .CLK2CNT(CLK2CNT), .CLK2DSM(CLK2DSM), .OUT_ADCDIV(OUT_ADCDIV), .OUT_NDIV(OUT_NDIV),
+    .TESTCLK_300M(TESTCLK_300M),
+    .VDD(VDD), .VDD_VCO(VDD_VCO), .VPP(VPP), .VPP_VCO(VPP_VCO), .VSS(VSS), .VSS_VCO(VSS_VCO),
+    .adcdiv(adcdiv), .adcpwsel(adcpwsel), .cal_en(cal_en), .en_test(en_test),
+    .fromVCO(fromVCO), .lpbt_en(lpbt_en), .ndiv(ndiv), .ndiv_en(ndiv_en),
+    .psub(psub), .pwsel(pwsel));
+
+  initial fromVCO = 1'b0;
+  always #(TVCO/2.0) fromVCO = ~fromVCO;
+
+  // ---- the MASH 1-1-1, clocked by the chip's CLK2DSM pin ----
+  reg               sdm_rstn, sdm_en, sdm_drive, dith_en;
+  reg  [W-1:0]      Fw;
+  wire signed [3:0] y;
+  mash111 #(.W(W)) sdm (.clk(CLK2DSM), .rstn(sdm_rstn), .en(sdm_en),
+                        .F(Fw), .dither_en(dith_en), .y(y));
+
+  // ---- recorders (top-level ports only) ----
+  real    tE  [0:MAXK];          // timestamp of each recorded OUT_NDIV rising edge
+  integer katE[0:MAXK];          // # of SDM words issued at that moment
+  integer word[0:MAXK];          // ndiv value the k-th CLK2DSM edge put on the bus
+  real    twE [0:MAXK];          // time at which word[k] actually reached the ndiv bus
+  integer iidx, kidx, dsm_cnt, o_x, d_x, o_ed;
+  reg     rec;
+
+  always @(posedge OUT_NDIV) begin
+    o_ed = o_ed + 1;
+    if (OUT_NDIV !== 1'b1) o_x = o_x + 1;
+    if (rec && iidx < MAXK) begin tE[iidx] = $realtime; katE[iidx] = kidx; iidx = iidx + 1; end
+  end
+  always @(posedge CLK2DSM) begin
+    if (CLK2DSM !== 1'b1) d_x = d_x + 1;
+    dsm_cnt = dsm_cnt + 1;
+  end
+
+  // ---- ndiv-bus driver: update LATC NDIVCKIN cycles after the CLK2DSM rising edge ----
+  // (the +0.001 ps = 1 fs offset just puts the read of y after its non-blocking update,
+  //  i.e. it models an infinitesimal clk->q; LATC=0 is the "update right at the edge" case)
+  integer nw;
+  always @(posedge CLK2DSM) begin
+    if (sdm_drive) begin
+      #((LATC*1000.0 + LATF)*TCLK/1000.0 + 0.001);
+      nw   = NINT + y;
+      ndiv = nw[13:0];
+      if (rec && kidx < MAXK) begin word[kidx] = nw; twE[kidx] = $realtime; end
+      kidx = kidx + 1;
+    end
+  end
+
+  // ---- alternative bus driver (PHLAT=3): apply the word a FIXED setup time S before the
+  // NEXT OUT_NDIV rising edge (= the next counter reload).  The period now starting is known
+  // exactly (= ndiv-1 Tclk, the word just loaded), so S is deterministic and jitter-free --
+  // unlike a delay referenced to CLK2DSM, whose distance to the reload moves with the SDM word.
+  integer setup_drive, SETUPM;        // SETUPM = setup in milli-Tclk
+  integer mcur, nw2;
+  always @(posedge OUT_NDIV) begin
+    if (setup_drive) begin
+      mcur = ndiv - 1;
+      #((mcur*1000.0 - SETUPM)*TCLK/1000.0);
+      nw2  = NINT + y;
+      ndiv = nw2[13:0];
+      if (rec && kidx < MAXK) begin word[kidx] = nw2; twE[kidx] = $realtime; end
+      kidx = kidx + 1;
+    end
+  end
+
+  // ---- helpers ----
+  function integer rnd; input real x; begin rnd = (x<0.0) ? -1 : $rtoi(x+0.5); end endfunction
+
+  integer fails, i, g, gi, ki, tot, mat, bestg, bestmat, besttot, hist[0:7], yv, fh, nmiss;
+  integer per_i, kdiff, gsame;
+  real    meanp, expmean, tolmean, r;
+  integer m_tot[0:MAXG], m_mat[0:MAXG], m_dn[0:MAXG], nbadc;
+  real    m_dsum[0:MAXG], setup_tclk, setup_ns, minok, maxbad;
+
+  task clr_rec; begin
+    iidx = 0; kidx = 0; o_x = 0; d_x = 0;
+    for (i=0; i<8; i=i+1) hist[i] = 0;
+  end endtask
+
+  // wait until n OUT_NDIV rising edges have been recorded
+  task wait_cycles; input integer n; integer guard; begin
+    guard = 0;
+    while (iidx < n && guard < 400000) begin #(0.25*NINT*TCLK); guard = guard + 1; end
+    if (iidx < n) $display("WARN wait_cycles gave up: iidx=%0d < %0d", iidx, n);
+  end endtask
+
+  // scan the alignment offset g: period ending at recorded edge i is predicted by
+  // word[ katE[i-1] - 1 - g ] - 1   (katE[i-1]-1 = last word issued before that period began)
+  task analyze; begin
+    bestg = -1; bestmat = -1; besttot = 0;
+    for (g=0; g<=MAXG; g=g+1) begin
+      tot = 0; mat = 0; m_dsum[g] = 0.0; m_dn[g] = 0;
+      for (i=1; i<iidx; i=i+1) begin
+        ki = katE[i-1] - 1 - g;
+        if (ki >= 0 && ki < kidx && ki < MAXK) begin
+          tot = tot + 1;
+          per_i = rnd((tE[i]-tE[i-1])/TCLK);
+          if (per_i == (word[ki]-1)) mat = mat + 1;
+          // setup: how long BEFORE the reload (= start of the period it governs) the word landed
+          m_dsum[g] = m_dsum[g] + (tE[i-1]-twE[ki]); m_dn[g] = m_dn[g] + 1;
+        end
+      end
+      m_tot[g] = tot; m_mat[g] = mat;
+      if (tot > 8 && mat > bestmat) begin bestmat = mat; besttot = tot; bestg = g; end
+    end
+    setup_tclk = (bestg >= 0 && m_dn[bestg] > 0) ? (m_dsum[bestg]/m_dn[bestg])/TCLK : -9999.0;
+    setup_ns   = (bestg >= 0 && m_dn[bestg] > 0) ? (m_dsum[bestg]/m_dn[bestg])/1000.0 : -9999.0;
+    // per-cycle setup bracket at the best alignment: smallest setup that still produced a
+    // correct period, and largest setup that did NOT -> brackets the real setup requirement
+    minok = 1.0e9; maxbad = -1.0e9; nbadc = 0;
+    if (bestg >= 0) for (i=1; i<iidx; i=i+1) begin
+      ki = katE[i-1] - 1 - bestg;
+      if (ki >= 0 && ki < kidx && ki < MAXK) begin
+        r     = (tE[i-1]-twE[ki])/TCLK;
+        per_i = rnd((tE[i]-tE[i-1])/TCLK);
+        if (per_i == (word[ki]-1)) begin if (r < minok) minok = r; end
+        else begin nbadc = nbadc + 1; if (r > maxbad) maxbad = r; end
+      end
+    end
+    // y histogram over the recorded words
+    for (i=0; i<8; i=i+1) hist[i] = 0;
+    for (i=0; i<kidx && i<MAXK; i=i+1) begin
+      yv = word[i] - NINT;
+      if (yv >= -3 && yv <= 4) hist[yv+3] = hist[yv+3] + 1;
+    end
+  end endtask
+
+  // ---------------------------------------------------------------- main ----
+  integer lat, lat0_g, nsafe, nshift, nbroken, lastsafe;
+  initial begin
+    fails = 0; rec = 0; sdm_drive = 0; setup_drive = 0; SETUPM = 1000; dsm_cnt = 0; o_ed = 0; clr_rec;
+
+    if (!$value$plusargs("FVCO_MHZ=%d", fvco_mhz)) fvco_mhz = 4800;
+    if (!$value$plusargs("NINT=%d",     NINT))     NINT     = 300;
+    if (!$value$plusargs("FNUM=%d",     FNUM))     FNUM     = 773094;
+    if (!$value$plusargs("KCYC=%d",     KCYC))     KCYC     = 4096;
+    if (!$value$plusargs("LATC=%d",     LATC))     LATC     = 0;
+    if (!$value$plusargs("LATF=%d",     LATF))     LATF     = 0;   // extra latency, milli-Tclk
+    if (!$value$plusargs("DITH=%d",     DITH))     DITH     = 0;
+    if (!$value$plusargs("LPBT=%d",     LPBTM))    LPBTM    = 0;
+    if (!$value$plusargs("ALLY=%d",     ALLY))     ALLY     = 0;
+    if (!$value$plusargs("NODUMP=%d",   NODUMP))   NODUMP   = 0;
+    if (!$value$plusargs("PHLAT=%d",    PHLAT))    PHLAT    = 0;
+    if (!$value$plusargs("TAG=%s",      tag))      tag      = "run";
+    if (KCYC > MAXK-8) KCYC = MAXK-8;
+
+    TVCO = 1000000.0/fvco_mhz;                       // ps
+    TCLK = (LPBTM ? 4.0 : 16.0) * TVCO;              // NDIVCKIN period
+    FRAC = FNUM / 1048576.0;
+    Fw   = FNUM[W-1:0];
+    dith_en = DITH[0];
+
+    $display("SDMCFG phase=%0s mode=%0s fvco=%0d MHz TVCO=%0.4f ps TCLK=%0.4f ps NINT=%0d FNUM=%0d (F=%0.9f) KCYC=%0d LATC=%0d DITH=%0d",
+             PHLAT ? "lat" : "main", LPBTM ? "LPBT(VCO/4)" : "WuR(VCO/16)",
+             fvco_mhz, TVCO, TCLK, NINT, FNUM, FRAC, KCYC, LATC, DITH);
+
+    // pwsel: widest legal low pulse that still fits the 6-bit field, and stays < M
+    pwsel    = (NINT > 70) ? 6'd62 : ((NINT+5)/2);
+    ndiv     = NINT[13:0];
+    adcdiv   = 8'd165; adcpwsel = 6'd20;
+    ndiv_en  = 0; cal_en = 0; en_test = 0; psub = 0; lpbt_en = LPBTM[0];
+    {VDD,VPP,VDD_VCO,VPP_VCO} = 4'b1111; {VSS,VSS_VCO} = 2'b00;
+    sdm_rstn = 0; sdm_en = 0;
+    #(40.0*TVCO);
+    ndiv_en = 1;
+    #(6.0*NINT*TCLK);                                 // settle with the static word
+
+    sdm_rstn = 1; sdm_en = 1;                         // release the modulator
+    if (PHLAT == 3) setup_drive = 1; else sdm_drive = 1;
+    #(6.0*NINT*TCLK);
+
+    if (PHLAT == 0) begin
+      // ============================ PHASE: main =============================
+      rec = 1; clr_rec;
+      wait_cycles(KCYC);
+      rec = 0;
+      analyze;
+
+      $display("ALIGN recorded cycles=%0d words=%0d dsm_edges=%0d", iidx, kidx, dsm_cnt);
+      for (g=0; g<=MAXG; g=g+1)
+        if (m_tot[g] > 0)
+          $display("ALIGN g=%0d : %0d/%0d cycles match  period_i == word[katE[i-1]-1-g]-1  (%0.2f%%)",
+                   g, m_mat[g], m_tot[g], 100.0*m_mat[g]/m_tot[g]);
+      $display("ALIGN best g=%0d  %0d/%0d  setup = %0.3f Tclk (= %0.3f ns) before the reload that uses the word",
+               bestg, bestmat, besttot, setup_tclk, setup_ns);
+      $display("ALIGN rule: the word on ndiv at time T governs the FIRST OUT_NDIV period that STARTS after T;");
+      $display("ALIGN       CLK2DSM edge k trails OUT_NDIV edge k by ~2.07 Tclk, so y_k sets the period [edge k+1 -> edge k+2]");
+      $display("ALIGN       i.e. ONE full divider period of latency (z^-1) between the SDM word and the period it produces.");
+      if (bestg >= 0 && bestmat == besttot && besttot > 8)
+        begin
+        $display("  PASS (a) per-cycle law: period_i == ndiv_applied-1 for all %0d cycles (alignment g=%0d)", besttot, bestg);
+        $display("SETUP min setup among CORRECT cycles = %0.3f Tclk (%0.3f ns) ; no incorrect cycles", minok, minok*TCLK/1000.0);
+      end
+      else begin
+        $display("  FAIL (a) per-cycle law: best alignment g=%0d matches only %0d/%0d cycles", bestg, bestmat, besttot);
+        fails = fails + 1;
+      end
+
+      $display("HIST y=-3:%0d -2:%0d -1:%0d 0:%0d +1:%0d +2:%0d +3:%0d +4:%0d",
+               hist[0],hist[1],hist[2],hist[3],hist[4],hist[5],hist[6],hist[7]);
+      if (ALLY) begin
+        nmiss = 0;
+        for (i=0; i<8; i=i+1) if (hist[i] == 0) nmiss = nmiss + 1;
+        if (nmiss > 0) begin $display("  FAIL (a) only %0d of 8 y values exercised", 8-nmiss); fails = fails + 1; end
+        else $display("  PASS (a) all 8 y values (-3..+4) exercised");
+      end
+
+      // ---- (b) average ratio ----
+      meanp   = (iidx > 1) ? ((tE[iidx-1]-tE[0])/((iidx-1)*TCLK)) : -1.0;
+      expmean = NINT - 1 + FRAC;
+      tolmean = 10.0/(iidx-1) + 0.002;
+      $display("AVG cycles=%0d mean_period=%0.6f Tclk expected=%0.6f err=%+0.6f tol=%0.6f",
+               iidx-1, meanp, expmean, meanp-expmean, tolmean);
+      if (meanp < 0.0 || ((meanp-expmean) > tolmean) || ((expmean-meanp) > tolmean)) begin
+        $display("  FAIL (b) average divide ratio off by %+0.6f Tclk", meanp-expmean); fails = fails + 1;
+      end else $display("  PASS (b) mean(period) = N_int-1+F = %0.6f Tclk (err %+0.2e)", expmean, meanp-expmean);
+
+      // ---- X-guard ----
+      if (o_x > 0 || d_x > 0) begin
+        $display("  FAIL X-guard: %0d OUT_NDIV / %0d CLK2DSM rising edge(s) not clean-1", o_x, d_x);
+        fails = fails + 1;
+      end else $display("  PASS X-guard: all OUT_NDIV / CLK2DSM rising edges clean-1");
+
+      // ---- (c) dump the period sequence ----
+      if (!NODUMP) begin
+        fh = $fopen({"perr_", tag, ".txt"});
+        if (fh == 0) $display("WARN could not open period dump file");
+        else begin
+          $fdisplay(fh, "# tb_wur_sdm period dump  mode=%0s fvco=%0d MHz NINT=%0d FNUM=%0d F=%0.9f DITH=%0d LATC=%0d",
+                    LPBTM ? "LPBT" : "WuR", fvco_mhz, NINT, FNUM, FRAC, DITH, LATC);
+          $fdisplay(fh, "# one integer per line: OUT_NDIV period in NDIVCKIN (Tclk) units");
+          for (i=1; i<iidx; i=i+1) $fdisplay(fh, "%0d", rnd((tE[i]-tE[i-1])/TCLK));
+          $fclose(fh);
+          $display("PSD wrote perr_%0s.txt with %0d periods", tag, iidx-1);
+        end
+      end
+
+    end else if (PHLAT == 3) begin
+      // ============ PHASE: setup sweep (edge-anchored, deterministic) ============
+      // S = how long BEFORE the OUT_NDIV rising edge (the counter reload) the new ndiv word
+      // lands on the bus.  Sweep S down until the per-cycle law breaks.
+      lastsafe = -1; nsafe = 0; nbroken = 0; lat0_g = -1;
+      for (lat = 0; lat < 20; lat = lat + 1) begin
+        case (lat)
+          0: SETUPM = 8000; 1: SETUPM = 4000; 2: SETUPM = 2000; 3: SETUPM = 1500;
+          4: SETUPM = 1200; 5: SETUPM = 1100; 6: SETUPM = 1050; 7: SETUPM = 1010;
+          8: SETUPM = 1000; 9: SETUPM =  990; 10: SETUPM = 975; 11: SETUPM = 950;
+          12: SETUPM = 900; 13: SETUPM = 800; 14: SETUPM = 600; 15: SETUPM = 400;
+          16: SETUPM = 200; 17: SETUPM = 100; 18: SETUPM =  20; 19: SETUPM =  2;
+        endcase
+        #(6.0*NINT*TCLK);
+        rec = 1; clr_rec;
+        wait_cycles(40);
+        rec = 0;
+        analyze;
+        if (lat == 0) lat0_g = bestg;
+        if (bestmat == besttot && besttot > 8 && bestg == lat0_g) begin
+          nsafe = nsafe + 1; lastsafe = SETUPM;
+          $display("LAT setup=%0.3f Tclk (%0.4f ns) : SAFE    g=%0d %0d/%0d",
+                   SETUPM/1000.0, SETUPM*TCLK/1000000.0, bestg, bestmat, besttot);
+        end else begin
+          nbroken = nbroken + 1;
+          $display("LAT setup=%0.3f Tclk (%0.4f ns) : BROKEN  g=%0d %0d/%0d bad=%0d -- word arrives inside the reload window",
+                   SETUPM/1000.0, SETUPM*TCLK/1000000.0, bestg, bestmat, besttot, nbadc);
+        end
+      end
+      $display("LATSUM(setup) mode=%0s NINT=%0d M=%0d Tclk=%0.4f ns : smallest SAFE setup = %0.3f Tclk (%0.4f ns) ; safe=%0d broken=%0d",
+               LPBTM ? "LPBT" : "WuR", NINT, NINT-1, TCLK/1000.0,
+               lastsafe/1000.0, lastsafe*TCLK/1000000.0, nsafe, nbroken);
+      if (lastsafe < 0) begin $display("  FAIL (d) no safe setup found"); fails = fails + 1; end
+      else $display("  PASS (d) ndiv word is honoured when it lands >= %0.3f Tclk (%0.4f ns) before the OUT_NDIV rising edge",
+                    lastsafe/1000.0, lastsafe*TCLK/1000000.0);
+
+    end else begin
+      // ======================= PHASE: latency sweep =========================
+      // The SDM word must reach d_n BEFORE the counter reloads. The reload happens at
+      // the OUT_NDIV rising edge, which is ~2.07 Tclk BEFORE the CLK2DSM edge, so an
+      // update LATC cycles after CLK2DSM edge k has ~ (M - 2.07 - LATC) Tclk of margin.
+      lat0_g = -1; nsafe = 0; nshift = 0; nbroken = 0; lastsafe = -1;
+      for (lat = (PHLAT==2 ? 0 : 0); lat <= (PHLAT==2 ? 20 : NINT-3); lat = lat + 1) begin
+        if (PHLAT == 2) begin LATF = -50*lat; end          // fine: hold LATC, back off in 0.05 Tclk steps
+        else            LATC = lat;
+        #(6.0*NINT*TCLK);                     // let the new latency settle
+        rec = 1; clr_rec;
+        wait_cycles(40);
+        rec = 0;
+        analyze;
+        if (lat == 0) lat0_g = bestg;
+        gsame = (bestg == lat0_g);
+        if (bestmat == besttot && besttot > 8 && gsame) begin
+          nsafe = nsafe + 1; if (lastsafe == lat-1 || lastsafe == -1) lastsafe = lat;
+          $display("LAT lat=%0d%+0.3f Tclk : SAFE     g=%0d %0d/%0d setup_avg=%0.3f Tclk (%0.3f ns) setup_min_ok=%0.3f Tclk",
+                   LATC, LATF/1000.0, bestg, bestmat, besttot, setup_tclk, setup_ns, minok);
+        end else if (bestmat == besttot && besttot > 8) begin
+          nshift = nshift + 1;
+          $display("LAT lat=%0d%+0.3f Tclk : SHIFTED  g=%0d (was %0d) %0d/%0d setup_avg=%0.3f Tclk -- word lands after the reload it was meant for",
+                   LATC, LATF/1000.0, bestg, lat0_g, bestmat, besttot, setup_tclk);
+        end else begin
+          nbroken = nbroken + 1;
+          $display("LAT lat=%0d%+0.3f Tclk : BROKEN   g=%0d %0d/%0d bad=%0d setup_min_ok=%0.3f Tclk setup_max_bad=%0.3f Tclk -- word too late for the reload",
+                   LATC, LATF/1000.0, bestg, bestmat, besttot, nbadc, minok, maxbad);
+        end
+      end
+      $display("LATSUM mode=%0s NINT=%0d M=%0d : last SAFE latency = %0d Tclk ; safe=%0d shifted=%0d broken=%0d",
+               LPBTM ? "LPBT" : "WuR", NINT, NINT-1, lastsafe, nsafe, nshift, nbroken);
+      if (lastsafe < 0) begin $display("  FAIL (d) no safe update latency found"); fails = fails + 1; end
+      else $display("  PASS (d) update latencies 0..%0d Tclk are safe (margin to the reload = %0d Tclk)",
+                    lastsafe, (NINT-1) - lastsafe);
+      if (nbroken > 0)
+        $display("NOTE (d) %0d latency value(s) produced a BROKEN (non-alignable) divide sequence -- see LAT lines", nbroken);
+    end
+
+    if (fails == 0) $display("=== TB PASS ===");
+    else            $display("=== TB FAIL (%0d) ===", fails);
+    $finish;
+  end
+
+  initial begin #(5.0e10); $display("=== TB FAIL (timeout) ==="); $finish; end
+endmodule

@@ -1,0 +1,153 @@
+`timescale 1ps/1fs
+// =============================================================================
+// tb_wur32k -- STATIC divide law of the WuR NDIV at the REAL 32.768 kHz PLL
+// reference, on the real NDIV_TOP_v7_svt_0p5W Stage-A struct.
+//
+// WuR mode (lpbt_en=0) => NDIVCKIN = VCO/16 ; counting unit Tclk = 16*TVCO.
+// Law under test:  period(OUT_NDIV) = period(CLK2DSM) = (ndiv-1) * Tclk   [M = ndiv-1]
+//
+// Operating points: ndiv chosen so that OUT_NDIV lands on the 32.768 kHz reference
+//   VCO/16/(ndiv-1) = 32768  =>  ndiv-1 = VCO/524288
+//     4.8 GHz -> 9155.27  (ndiv=9155+1 -> use ndiv=9156? see below)   we test ndiv=9155
+//     5.0 GHz -> 9536.74                                              we test ndiv=9537
+//     5.8 GHz -> 11062.6                                              we test ndiv=11063
+//   (all three are FRACTIONAL -> a SDM must modulate ndiv; see tb_wur_sdm)
+// plus witness points that flip the high bits of the 14-bit word:
+//   8191 (0x1FFF) 8192 (0x2000) 8193 (0x2001) 12288 (0x3000) 16383 (0x3FFF).
+//
+// pwsel: 6-bit, low(NDIVCKIN) = 2*floor(pwsel/2)-3, so the widest low pulse is
+// pwsel=62 -> low=59 Tclk.  At M~9k that is a duty of (M-59)/M ~ 99.4% -- 50% duty
+// is UNREACHABLE at these divide ratios (it would need pwsel = M/2+3 ~ 4580 >> 63).
+// =============================================================================
+module tb_wur32k;
+
+  real TVCO;                       // VCO period [ps], set per point
+  real TCLK;                       // NDIVCKIN period [ps] = 16*TVCO (WuR mode)
+
+  reg        fromVCO;
+  reg [13:0] ndiv;
+  reg [7:0]  adcdiv;
+  reg [5:0]  pwsel, adcpwsel;
+  reg        ndiv_en, cal_en, en_test, lpbt_en, psub;
+  wire       OUT_NDIV, CLK2DSM, CLK2CNT, OUT_ADCDIV, TESTCLK_300M;
+  reg        VDD,VPP,VSS,VDD_VCO,VPP_VCO,VSS_VCO;
+
+  NDIV_TOP_v7_svt_0p5W dut(
+    .CLK2CNT(CLK2CNT), .CLK2DSM(CLK2DSM), .OUT_ADCDIV(OUT_ADCDIV), .OUT_NDIV(OUT_NDIV),
+    .TESTCLK_300M(TESTCLK_300M),
+    .VDD(VDD), .VDD_VCO(VDD_VCO), .VPP(VPP), .VPP_VCO(VPP_VCO), .VSS(VSS), .VSS_VCO(VSS_VCO),
+    .adcdiv(adcdiv), .adcpwsel(adcpwsel), .cal_en(cal_en), .en_test(en_test),
+    .fromVCO(fromVCO), .lpbt_en(lpbt_en), .ndiv(ndiv), .ndiv_en(ndiv_en),
+    .psub(psub), .pwsel(pwsel));
+
+  initial fromVCO = 1'b0;
+  always #(TVCO/2.0) fromVCO = ~fromVCO;
+
+  // ---- edge meters (top-level ports only) ----
+  real    o_last, o_persum, o_hisum, o_rise;
+  integer o_n, o_hn, o_ed, o_x;
+  real    d_last, d_persum;
+  integer d_n, d_ed, d_x;
+  real    lag_sum, t_out_pe; integer lag_n;
+
+  always @(posedge OUT_NDIV) begin
+    o_ed = o_ed + 1; if (OUT_NDIV !== 1'b1) o_x = o_x + 1;
+    if (o_last >= 0.0) begin o_persum = o_persum + ($realtime-o_last); o_n = o_n + 1; end
+    o_last = $realtime; o_rise = $realtime; t_out_pe = $realtime;
+  end
+  always @(negedge OUT_NDIV)
+    if (o_rise >= 0.0) begin o_hisum = o_hisum + ($realtime-o_rise); o_hn = o_hn + 1; end
+  always @(posedge CLK2DSM) begin
+    d_ed = d_ed + 1; if (CLK2DSM !== 1'b1) d_x = d_x + 1;
+    if (d_last >= 0.0) begin d_persum = d_persum + ($realtime-d_last); d_n = d_n + 1; end
+    d_last = $realtime;
+    if (t_out_pe >= 0.0) begin lag_sum = lag_sum + ($realtime-t_out_pe); lag_n = lag_n + 1; end
+  end
+
+  task clr; begin
+    o_last=-1.0; o_rise=-1.0; o_persum=0.0; o_hisum=0.0; o_n=0; o_hn=0; o_ed=0; o_x=0;
+    d_last=-1.0; d_persum=0.0; d_n=0; d_ed=0; d_x=0;
+    lag_sum=0.0; lag_n=0; t_out_pe=-1.0;
+  end endtask
+
+  function integer rnd; input real x; begin rnd = (x<0.0)? -1 : ((x+0.5)>2147483000.0 ? -2 : $rtoi(x+0.5)); end endfunction
+
+  integer fails, npt;
+  real    perO, perD, hiO, lagC, fout, ferr, dutyp;
+  integer Mgold;
+
+  task pt;
+    input real    fghz;
+    input integer nd;
+    input integer pw;
+    begin
+      TVCO  = 1000.0/fghz;
+      TCLK  = 16.0*TVCO;
+      Mgold = nd - 1;
+      ndiv  = nd[13:0];
+      pwsel = pw[5:0];
+      #(3.0*Mgold*TCLK);                 // settle: 3 output periods after the word change
+      clr;
+      #(8.0*Mgold*TCLK);                 // measurement window: 8 output periods
+      perO  = (o_n>0)  ? (o_persum/o_n)  : -1.0;
+      perD  = (d_n>0)  ? (d_persum/d_n)  : -1.0;
+      hiO   = (o_hn>0) ? (o_hisum/o_hn)  : -1.0;
+      lagC  = (lag_n>0)? (lag_sum/lag_n)/TCLK : -1.0;
+      fout  = (perO>0.0) ? 1.0e12/perO : 0.0;                 // ps -> Hz
+      ferr  = fout - 32768.0;
+      dutyp = (perO>0.0 && hiO>=0.0) ? 100.0*hiO/perO : -1.0;
+      npt   = npt + 1;
+      $display("PT32K fvco=%0.3fGHz ndiv=%0d M=%0d pwsel=%0d | per_out=%0.3f Tclk per_dsm=%0.3f Tclk low=%0.2f duty=%0.3f%% | f_out=%0.3f Hz err=%+0.3f Hz (%+0.1f ppm) | dsm_lag=%0.3f Tclk edges=%0d x=%0d",
+               fghz, nd, Mgold, pw, perO/TCLK, perD/TCLK, (perO-hiO)/TCLK, dutyp,
+               fout, ferr, 1.0e6*ferr/32768.0, lagC, o_ed, o_x);
+      if (o_n < 2) begin $display("  FAIL ndiv=%0d: OUT_NDIV stalled (no periods)", nd); fails=fails+1; end
+      else begin
+        if (rnd(perO/TCLK) != Mgold) begin
+          $display("  FAIL ndiv=%0d: period(OUT_NDIV)=%0.3f Tclk, expected M=%0d", nd, perO/TCLK, Mgold); fails=fails+1;
+        end else $display("  PASS ndiv=%0d: period(OUT_NDIV) = M = ndiv-1 = %0d Tclk", nd, Mgold);
+        if (d_n < 2 || rnd(perD/TCLK) != Mgold) begin
+          $display("  FAIL ndiv=%0d: period(CLK2DSM)=%0.3f Tclk, expected M=%0d", nd, perD/TCLK, Mgold); fails=fails+1;
+        end else $display("  PASS ndiv=%0d: period(CLK2DSM) = M = %0d Tclk", nd, Mgold);
+        if (lagC < 1.5 || lagC > 2.6) begin
+          $display("  FAIL ndiv=%0d: CLK2DSM lag = %0.3f Tclk, expected ~2.07", nd, lagC); fails=fails+1;
+        end else $display("  PASS ndiv=%0d: CLK2DSM lag = %0.3f Tclk (~2.07 structural)", nd, lagC);
+        if (rnd((perO-hiO)/TCLK) != (2*(pw/2)-3)) begin
+          $display("  FAIL ndiv=%0d: low = %0.2f Tclk, expected 2*floor(pwsel/2)-3 = %0d", nd, (perO-hiO)/TCLK, 2*(pw/2)-3); fails=fails+1;
+        end else $display("  PASS ndiv=%0d: low = %0d Tclk = 2*floor(pwsel/2)-3", nd, 2*(pw/2)-3);
+      end
+      if (o_x > 0 || d_x > 0) begin
+        $display("  FAIL ndiv=%0d: %0d/%0d rising edge(s) of OUT_NDIV/CLK2DSM not clean-1 (X/Z/0)", nd, o_x, d_x); fails=fails+1;
+      end else $display("  PASS ndiv=%0d: clean-1 edges on OUT_NDIV and CLK2DSM", nd);
+    end
+  endtask
+
+  initial begin
+    fails = 0; npt = 0; clr;
+    TVCO = 1000.0/4.8; TCLK = 16.0*TVCO;
+    ndiv=14'd9155; pwsel=6'd62; adcdiv=8'd165; adcpwsel=6'd20;
+    ndiv_en=0; cal_en=0; en_test=0; lpbt_en=0; psub=0;
+    {VDD,VPP,VDD_VCO,VPP_VCO}=4'b1111; {VSS,VSS_VCO}=2'b00;
+    #(40.0*TVCO);
+    ndiv_en=1; lpbt_en=0;                                  // WuR-NORMAL
+    $display("== WuR 32.768 kHz static law: NDIVCKIN=VCO/16, pwsel=62 (low=59 Tclk) ==");
+    $display("NOTE 50%% duty is UNREACHABLE at M~9k: it needs pwsel=M/2+3 >> 63 (pwsel is 6-bit).");
+
+    // --- real operating bands (the ndiv nearest the 32.768 kHz target) ---
+    pt(4.8, 9155,  62);
+    pt(5.0, 9537,  62);
+    pt(5.8, 11063, 62);
+    // --- high-bit witness points (bit12/bit13 boundaries), all at 4.8 GHz ---
+    pt(4.8, 8191,  62);
+    pt(4.8, 8192,  62);
+    pt(4.8, 8193,  62);
+    pt(4.8, 12288, 62);
+    pt(4.8, 16383, 62);
+
+    $display("== points=%0d fails=%0d ==", npt, fails);
+    if (fails == 0) $display("=== TB PASS ===");
+    else            $display("=== TB FAIL (%0d) ===", fails);
+    $finish;
+  end
+
+  initial begin #(3.0e10); $display("=== TB FAIL (timeout) ==="); $finish; end
+endmodule

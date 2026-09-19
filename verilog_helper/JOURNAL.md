@@ -6,6 +6,37 @@ dossiers live here so they stop burying the current status. Append new closes at
 
 ---
 
+## SESSION CLOSE 2026-09-19 — WuR 32.768 kHz + MASH-111 SDM verified (open loop) + `vh_delay.py` delay injection + margin sweep
+
+Two Opus-5 subagents in parallel (own build dirs `_ref/build_sdm/`, `_ref/build_dly/`), integrated
+here. Previous HANDOFF state (2026-07-04, LPBT divide law sweep-confirmed) folded into DESIGN/SPEC.
+
+**SDM stream** → `examples/wur_ndiv/charac/{tb_wur32k,tb_wur_sdm,mash111}.vams`, `sdm_psd.py`,
+`SDM_32K_RESULTS.md`, SPEC_CHECKLIST "32.768 kHz / SDM" section. 15 xrun runs, all TB PASS, 143 s
+wall (~0.6 s per simulated ms — the "1.25 ms is too slow" worry from the FDR era was unfounded).
+Findings: full-14-bit `M=ndiv−1`; integer error +139/+78/+56 ppm at 4.8/5.0/5.8 GHz; SDM mean
+<1.1 ppm; alignment z⁻¹ (word at CLK2DSM edge k → period k+1..k+2); setup ≥1 Tclk before OUT_NDIV
+rising edge, ratio/mode-independent; max latency ≈ M−3.07 Tclk; PSD +59.2 dB/dec. Trap: Blackman-
+Harris leaks over the 160 dB span → false +39 dB/dec; Kaiser β=24 required (script auto-selects).
+
+**Delay stream** → `vh_delay.py` (apply/report/revert/flags, idempotent `// VH_DELAY` markers,
+`// VH_ORIG` byte-exact revert), `delays/wur_ndiv_delays.json`, `tests/test_vh_delay.py` (30),
+`vh_package.py --delays`, `testbenches/tb_NDIV_TOP_v7_svt_0p5W_dly.vams`, `DELAYS.md`, RED_ZONE.md
+"Applying delays on the red zone" (A ship tool+table → inject into export/ copy; B `+define+`
+retune with no file edit; C in-place OA cellview patch, discouraged). 1× regression PASS at
+4.8/5.0/5.8; scale sweep @5.8: 4× lpbt_en mode-switch hang (hard, no recovery; passes 3×, passes
+4× without the excursion), 5× LPBT M=52 (reload late), 6× WuR ÷2 (180 ps > 172 ps T_VCO), ADCDIV
++1 count at 6×. `+define+` chosen over `-defparam` (leaves instantiated hundreds of times).
+
+**Cross-check**: the four headline SDM runs repeated on the 1× delayed models — all PASS, same
+alignment/setup/slope (SDM_32K_RESULTS.md §5).
+
+**Interaction assessment (user asked)**: framework OK (pure-digital, port-only TBs, text dump
+round-trip); gaps were delay-as-first-class (now fixed), numeric post-processing (sdm_psd.py),
+SKILL GUI irrelevant for this class of task, and closed-loop needs a wreal loop wrapper (not built).
+
+---
+
 ## SESSION CLOSE 2026-07-04 — LPBT_NDIV divide/pulse-width law SWEEP-CONFIRMED on real struct + TB divisor-sweep self-check (table report) + charac TBs tracked
 
 **Task done: swept `ndiv_var 14..127` on the REAL `LPBT_NDIV_TOP` struct (build_afterfix, xrun 18.03),

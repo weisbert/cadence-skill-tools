@@ -31,6 +31,7 @@ D  package (airgap_deploy_template) → red-zone verify.sh runs pure-digital xru
 | `vh_env.py`     | tool-remembered **external HDL env** (`-v` lib files / `-y` dirs / `+incdir`); resolves externals & bakes into `run.sh` | ✅ working |
 | `vh_convert.py` | Stage B: detect analog cells, convert voltage-transfer analog→wreal, skeleton the rest; writes a candidate `veriloga_wreal.va` beside each cell + a detection list | ✅ working |
 | `vh_package.py` | Stage D: pack a build into a relocatable, env-agnostic air-gap bundle (sources + `setup_env.sh` + `ext_libs.list` + `verify.sh` preflight) + tar.gz/sha256 | ✅ working |
+| `vh_delay.py`   | **leaf timing**: inject realistic, overridable gate/FF delays from a JSON table (`delays/*.json`) into Verilog-AMS leaf models — `apply` (non-destructive `--out`, or `--in-place` with `.orig`), `report`, `--dry-run` diff, `revert`, `flags`. Idempotent (marker + `VH_ORIG` record), timescale-aware, power-fail branch never delayed; retune at run time with `+define+VH_TPD_SCALE=<x>` / `+define+VH_TPD_<CLASS>_PS=<ps>` (no re-injection). `vh_package.py --delays T` injects into the packaged copies | ✅ working |
 | `vh_dut.py`     | multi-DUT driver: one folder per DUT, auto-detect config/sources/test, run the whole pipeline per DUT, `run-all` with a PASS/FAIL summary | ✅ working |
 | `vhGui.il`      | thin SKILL GUI: select-from-schematic + Lib/Cell/View picker + **[Scan Pins]** (cellview terminals → name/dir/bus to clipboard+file) → `system()`-shells out to the CLIs ([Extract A][Convert B][Generate C][Run xrun][Package D]) + external-`-v`-env buttons. Registers under **MyTool → Verilog Helper** | ✅ working |
 | `verilog_helper.il` | single-file loader (resolves `verilog_helperDir`, sources `vhGui.il`); also loaded by the `skill_tools.il` umbrella | ✅ working |
@@ -226,10 +227,46 @@ to `assign`s; anything with `I(…)<+` / `ddt` / noise / temp-vars gets a **TODO
 to fill in. In `--manifest` mode the gathered `export/` copy is updated to the digital
 version so the pure-digital run uses it. `--no-cell-write` keeps everything out of the lib.
 
+## Leaf timing (vh_delay) — realistic delays, from a table, reversible
+
+Hand-written `verilogams` leaves usually have no timing (`Q <= D;`) or ad-hoc `#10`s, which
+hides hold races and ripple accumulation. `vh_delay.py` injects a **delay table** instead:
+
+```bash
+python3 vh_delay.py report --src export --table delays/wur_ndiv_delays.json   # inventory first
+python3 vh_delay.py apply  --table delays/wur_ndiv_delays.json --src export --out export_dly
+python3 vh_delay.py apply  --table … --src export --out export_dly --dry-run  # unified diff
+python3 vh_delay.py revert --src export_dly --out export_back                 # byte-exact
+python3 vh_delay.py flags  --table delays/wur_ndiv_delays.json                # the xrun macros
+```
+The table is JSON: `classes` (class → ps + rationale) + `modules` (module → class, plus the
+ad-hoc value it had before) + a global `scale`. Each injected module gets
+
+```verilog
+parameter real VH_TPD_DFF = 50.0 * VH_TPD_SCALE_P;   // ps, converted to the file's timescale
+always @(posedge clk …) Q <= #(VH_TPD_DFF) D;
+```
+
+- **non-destructive** by default (`--out`); `--in-place` always writes `<file>.orig`
+- **idempotent** — a `// ---- VH_DELAY v1 BEGIN` marker + a `// VH_ORIG [...]` record of what
+  was replaced, so re-apply updates and `revert` restores byte-for-byte
+- **timescale aware** — `1ps/1ps` files get `50.0`, `1s/1fs` files get `5e-11`
+- **the power-fail / async-clear branch is never delayed** (`if (!powerOK) …` stays immediate),
+  and `initial` blocks are untouched
+- **retune without touching a file**: `bash run.sh +define+VH_TPD_SCALE=2.0`, or one class with
+  `+define+VH_TPD_DFF_PS=75`. Chosen over `-defparam` because leaves are instantiated hundreds
+  of times — a macro hits every instance.
+- OA cellviews can be patched directly (`apply --in-place --cdslib cds.lib --lib X`) but that is
+  **discouraged** for a shared design library — see `RED_ZONE.md` § "Applying delays on the red zone".
+
+Worked example with measured timing margin (which mechanism breaks first, and at what multiple
+of nominal): `examples/wur_ndiv/DELAYS.md`. Tests: `python3 tests/test_vh_delay.py`.
+
 ## Stage D (vh_package) — relocatable air-gap bundle for the red zone
 
 ```bash
 python3 vh_package.py --build <stageC_out>/sim          # -> package/ + tar.gz + sha256
+python3 vh_package.py --build <stageC_out>/sim --delays delays/<dut>_delays.json   # + leaf timing
 # transfer to the red zone, then there:
 tar xzf <top>_pkg.tar.gz && bash <top>_pkg/verify.sh     # preflight smoke, then the TB
 ```

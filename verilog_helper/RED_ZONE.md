@@ -106,6 +106,121 @@ xrun-bin: /software/cadence/xcelium/19.04.001/tools/bin/xrun
 - Work area: `/data/RFIC3/Hi1108V100_Pilot_C1Xplus/w84368867/workarea`,
   lib `sim_1108_yusheg`.
 
+## Applying delays on the red zone
+
+The red-zone `verilogams` cellviews of the divider leaves carry **no timing** (`Q <= D;`) or
+ad-hoc `#10`s. A zero-delay model hides every hold race and every ripple-accumulation effect, so
+a red-zone `=== TB PASS ===` on zero-delay models is weaker than it looks. `vh_delay.py` +
+a JSON delay table fixes that **without editing the design library**. Worked example and the
+measured margins: `examples/wur_ndiv/DELAYS.md`.
+
+**Recommended path = (A) then (B).** (C) exists, and is discouraged.
+
+### (A) Ship the tool + table, inject into the red-zone `export/` copy  ← do this
+
+`vh_delay.py` and `delays/*.json` are ordinary committed tool files, so they ride the **normal
+skill_tools deploy** — nothing new crosses the air gap:
+
+```tcsh
+# yellow (Windows), after git pull:
+powershell -ExecutionPolicy Bypass -File deploy\pack.ps1
+# red, in .../workarea/skill_tools:
+bash deploy/deploy.sh skill_tools_<shorthash>.tar.gz
+```
+
+Then, on red, inject into the **Extract-A output** (or into the unpacked `<top>_pkg/`), never
+into the OA library:
+
+```bash
+cd <build>                        # the dir that has export/ (Stage A) or the unpacked <top>_pkg
+python3 <skill_tools>/verilog_helper/vh_delay.py report \
+        --src export --table <skill_tools>/verilog_helper/delays/wur_ndiv_delays.json
+python3 <skill_tools>/verilog_helper/vh_delay.py apply \
+        --table <skill_tools>/verilog_helper/delays/wur_ndiv_delays.json \
+        --src export --out export_dly            # non-destructive: originals untouched
+# point the run at the delayed copy, then:
+bash verify.sh        # or bash run.sh
+```
+
+Properties that make this the right default:
+
+- **Reversible.** `vh_delay.py revert --src export_dly --out export_back` restores the sources
+  byte-for-byte (every injected module carries a `// VH_ORIG [...]` record of what it replaced).
+  Or simply delete `export_dly/`.
+- **Source cellviews untouched.** The OA `verilogams` views keep whatever the designer wrote;
+  Stage A re-extracts them unchanged next time.
+- **The table is the record.** One JSON holds class → ps + module → class + the rationale + the
+  ad-hoc value each model had before. Review it, not a diff of 40 files.
+- **Idempotent.** Re-running `apply` after editing the table updates the values; it never
+  double-injects.
+- **Only the functional branch is delayed** — `if (!powerOK) ...` power-fail clamps and
+  `initial` blocks stay immediate, so the POWER-DOWN clean-0 checks still mean what they meant.
+
+> **Do NOT inject into the real COT std cells.** The `-v` libraries (`INVD1/ND2D1/DELAD1/...`)
+> already carry vendor timing. Inject only into `export/` (the design's own leaves). The local
+> `ext_stub/` copies are injected on dev *because they are stubs*; on red they do not exist.
+
+Packaging hook (optional, one flag): `vh_package.py` can inject while it builds the air-gap
+bundle, so the tarball that crosses the gap already has timing:
+
+```bash
+python3 vh_package.py --build <stageC_out>/sim \
+        --delays <skill_tools>/verilog_helper/delays/wur_ndiv_delays.json [--delay-scale 1.0]
+```
+It injects into the **packaged copies only** (the build inputs are not modified), copies the
+table into the bundle as `delays.json`, and records every injected module in `manifest_D.json`.
+(`vh_gen.py` was deliberately not hooked: it references sources by path instead of copying them,
+so a delay step there would have to invent an output dir — `vh_package` is the natural seam.)
+
+### (B) Retune on red with NO file edit at all  ← use with (A)
+
+Every injected module reads two optional macros, so a corner sweep needs no re-injection, no
+`vh_delay` re-run and no file write (handy on a read-only or slow red filesystem):
+
+```bash
+# scale every class at once (1.0 = exactly as injected)
+xrun -64bit -ams -timescale 1s/1fs -amsvlog_ext .vams,.va \
+     +define+VH_TPD_SCALE=2.0 \
+     ${EXT[@]} export_dly/*.vams tb_<top>.vams -top tb -access +rwc -l xrun.log
+
+# or one class only, in absolute ps (still multiplied by VH_TPD_SCALE)
+xrun ... +define+VH_TPD_DFF_PS=75 +define+VH_TPD_TSPC_DIV2_PS=28
+```
+With the generated runner, everything after `run.sh` is passed straight to xrun:
+```bash
+bash run.sh +define+VH_TPD_SCALE=2.0
+```
+`vh_delay.py flags --table <table>` prints the exact macro names for a given table.
+
+`+define+` was chosen over `-defparam` on purpose: these leaves are instantiated **hundreds of
+times**, so a macro hits every instance while a `-defparam` would need one hierarchical path per
+instance. It is core Verilog-2001 preprocessing — verified on dev xrun 18.03 and expected to
+behave identically on red xrun 19.04. Verified equivalent to baking the same scale into the
+files (`--scale 5` vs `+define+VH_TPD_SCALE=5.0` gave check-for-check identical results).
+
+### (C) Patch the OA `verilogams` cellview text in place  — discouraged
+
+```bash
+python3 vh_delay.py apply --table <table> --in-place \
+        --cdslib <cds.lib> --lib <LIBNAME>      # -> <libpath>/<cell>/verilogams/verilog.vams
+python3 vh_delay.py revert --src <libpath>/<cell>/verilogams --in-place   # restores from .orig
+```
+`--in-place` always writes a `<file>.orig` backup first and `revert` puts it back.
+
+**Why this is discouraged:** the design library is **shared**. Editing `verilog.vams` under
+someone else's `<lib>/<cell>/verilogams/` changes the model for every user and every simulation
+of that cell, is invisible in the schematic, survives your session, can be clobbered by (or
+clobber) a designer's edit, and is not covered by the OA lock you may or may not hold. It also
+puts timing that came from *your* estimate into what everyone else reads as *the* model.
+
+**When it is OK:** a **copy library that is yours** (your own `sim_*` lib, or a checked-out
+branch of the cells), where you actually want the delayed model to be the model — e.g. to hand
+a timed version to an AMS testbench that binds `verilogams` directly and cannot be pointed at an
+`export_dly/` folder. Even then: tell the owner, keep the `.orig` files, and re-`revert` when
+you are done.
+
+---
+
 ## Verification report + waveform screenshots (`vh_ndiv_report.py`)
 
 For a presentation-ready summary (what was checked, PASS/FAIL, and genuine SimVision
