@@ -25,7 +25,8 @@ Last updated: 2026-09-19.
   **Setup**: word stable ≥1 NDIVCKIN before the OUT_NDIV rising edge (3.33/3.20/2.76 ns); max
   latency after CLK2DSM ≈ M−3.07 Tclk ≈ 30.5 µs. Inside the window → word applied one period late
   on a data-dependent subset (looks like PLL noise, no hang). All re-confirmed on the 1× delay
-  models. Kit: `examples/wur_ndiv/charac/` (+ `sdm_psd.py`), results `examples/wur_ndiv/SDM_32K_RESULTS.md`.
+  models, and at **7 GHz** (ndiv=13352: static/SDM/setup/5-mode all PASS; delay margin ≥4×,
+  front-end ÷2 limit 4.8×). TB Tclk now uses the fs-quantized VCO half period (false +6 ppm fixed). Kit: `examples/wur_ndiv/charac/` (+ `sdm_psd.py`), results `examples/wur_ndiv/SDM_32K_RESULTS.md`.
 - **Delay injection** `vh_delay.py` + `delays/wur_ndiv_delays.json` (20 classes/42 modules/47
   sites; DFF/TFF 50 ps, TSPC÷2 30 ps, gates 12–32 ps; powerOK/initial branches never delayed;
   `+define+VH_TPD_SCALE=` / `+define+VH_TPD_<CLASS>_PS=` runtime override; 30 unit tests;

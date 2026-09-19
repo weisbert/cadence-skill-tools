@@ -197,7 +197,11 @@ module tb_wur_sdm;
     if (!$value$plusargs("TAG=%s",      tag))      tag      = "run";
     if (KCYC > MAXK-8) KCYC = MAXK-8;
 
-    TVCO = 1000000.0/fvco_mhz;                       // ps
+    TVCO = 1000000.0/fvco_mhz;                       // ps (ideal)
+    // The VCO half period is quantized to the TB precision (1 fs) by `#(TVCO/2.0)`, so use the
+    // period the DUT actually SEES: 2 x round(TVCO/2 to 1 fs). Otherwise the time-based mean
+    // carries a false +6 ppm at 7 GHz (71.4285714 -> 71.429 ps) = +0.08 Tclk at M=13351.
+    TVCO = 2.0 * ($rtoi(TVCO/2.0*1000.0 + 0.5) / 1000.0);
     TCLK = (LPBTM ? 4.0 : 16.0) * TVCO;              // NDIVCKIN period
     FRAC = FNUM / 1048576.0;
     Fw   = FNUM[W-1:0];

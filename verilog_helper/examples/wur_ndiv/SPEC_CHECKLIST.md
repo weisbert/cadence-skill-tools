@@ -158,3 +158,5 @@ Local build (gitignored): `examples/wur_ndiv/_ref/build_sdm/`. 13 runs, 143 s wa
 Closed loop, real flop/cell delays (the 2.07 Tclk lag and the 1 Tclk reload setup both depend
 on the ad-hoc leaf delays), in-band (<1 kHz offset) shaping at ndiv ≈ 9 k (needs ≥10⁵ cycles),
 changing `pwsel` during modulation, and the red-zone COT library (runs used `ext_stub/`).
+
+- **7 GHz (2026-09-19)**: static law ndiv=13352 → 13351 Tclk ✓ (+27 ppm integer error), MASH-111 254/254 ✓, setup ≥0.99 Tclk ✓, 5-mode TB ✓ on 1× delays; delay margin ≥4× (front-end ÷2 limit 4.8×, mode-switch hang 4×) — see `SDM_32K_RESULTS.md` §6, `DELAYS.md`.

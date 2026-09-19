@@ -82,6 +82,7 @@ module tb_wur32k;
     input integer pw;
     begin
       TVCO  = 1000.0/fghz;
+      TVCO  = 2.0 * ($rtoi(TVCO/2.0*1000.0 + 0.5) / 1000.0);   // what the DUT sees (1 fs quantized half period)
       TCLK  = 16.0*TVCO;
       Mgold = nd - 1;
       ndiv  = nd[13:0];
@@ -136,6 +137,7 @@ module tb_wur32k;
     pt(4.8, 9155,  62);
     pt(5.0, 9537,  62);
     pt(5.8, 11063, 62);
+    pt(7.0, 13352, 62);                                    // 7 GHz upper-band check (ndiv ~ 7e9/16/32768)
     // --- high-bit witness points (bit12/bit13 boundaries), all at 4.8 GHz ---
     pt(4.8, 8191,  62);
     pt(4.8, 8192,  62);

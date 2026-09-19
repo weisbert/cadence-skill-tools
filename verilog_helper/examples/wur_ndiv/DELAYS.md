@@ -290,3 +290,18 @@ runs each simulation in its own `VH_RUNDIR`, so it never collides with a sibling
   exact stuck node in the reload/EOC logic was not traced.
 - **Power-down and the ADCDIV pulse-width law were only spot-checked**, at the committed
   operating point (`adcdiv=165/adcpwsel=20`), not swept again under delay.
+
+## 7 GHz margin sweep (added 2026-09-19, `tb_NDIV_TOP_v7_svt_0p5W_dly.vams +define+FGHZ=7.0`)
+
+| scale | DFF clk→Q | TSPC ÷2 clk→Q | WuR | LPBT | lpbt_en 1→0 excursion |
+|---|---|---|---|---|---|
+| 1× | 50 ps | 30 ps | PASS | PASS | — |
+| 2× | 100 | 60 | PASS | PASS | — |
+| 3× | 150 | 90 | PASS | PASS | PASS |
+| 4× | 200 | 120 | PASS | PASS | **FAIL (hang)** |
+| 5× | 250 | 150 | **FAIL** | **FAIL** | — |
+
+At 7 GHz T_VCO = 142.9 ps, so the front-end ÷2 limit moves from ≈5.7× (5.8 GHz) to ≈4.8×
+(150 ps > 142.9 ps at 5×) and becomes the first steady-state failure in BOTH modes; the
+`lpbt_en` mode-switch hang stays at 4×, unchanged. With the 1× placeholder table the block has
+≥4× margin at 7 GHz. Committed 5-mode TB at 7 GHz on 1× delays: TB PASS.

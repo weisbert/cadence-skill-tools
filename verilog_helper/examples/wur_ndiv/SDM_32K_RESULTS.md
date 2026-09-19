@@ -258,3 +258,21 @@ numbers above no longer ride only on the ad-hoc `#10` leaf delays:
 
 Alignment rule (z⁻¹), 1-Tclk setup and the noise-shaping slope are therefore delay-independent
 at 1×; the delay-scale margin itself (5×/6× break points) is in `DELAYS.md`.
+
+## 6. 7 GHz upper-band check (added 2026-09-19, 1× delayed models)
+
+`ndiv = 7e9/16/32768 + 1 ≈ 13352.27` → NINT=13352, FNUM=282600 (F=0.2695).
+
+| run | result |
+|---|---|
+| `tb_wur32k` point (7.0 GHz, 13352, 62) | PASS: per_out = per_dsm = 13351.000 Tclk, low 59, duty 99.56 %, integer error **+27.0 ppm** |
+| `tb_wur_sdm +FVCO_MHZ=7000 +NINT=13352 +FNUM=282600 +KCYC=256` | PASS: ALIGN g=0 **254/254**, mean 13351.2667 vs 13351.2695 (**−0.003 Tclk**) |
+| `tb_wur_sdm +PHLAT=3 +LPBT=0 +NINT=300 +FVCO_MHZ=7000` | PASS: smallest SAFE setup = **0.99 Tclk = 2.26 ns** |
+| committed 5-mode TB (`TVCO=1000/7.0`) on 1× delays | **TB PASS** (all 30 checks) |
+
+**TB fix found by this run:** the time-based AVG check used the ideal Tclk while `#(TVCO/2.0)`
+quantizes the half period to 1 fs (71.4285714 → 71.429 ps = +6 ppm at 7 GHz → a false +0.08 Tclk
+at M=13351, reported as FAIL on the first attempt). The integer period dump was already correct
+(mean 13351.2667). Both TBs now derive Tclk from the quantized half period the DUT actually sees.
+5.0 GHz (half = 100.000 ps exactly) never showed it; 4.8/5.8 GHz were inside tolerance.
+Re-verified after the fix: 4.8 GHz +0.002, 5.8 GHz −0.000, 7.0 GHz −0.003 Tclk.
