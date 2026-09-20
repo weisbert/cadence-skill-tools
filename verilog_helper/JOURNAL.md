@@ -6,6 +6,22 @@ dossiers live here so they stop burying the current status. Append new closes at
 
 ---
 
+## SESSION 2026-09-20 — 7 GHz check, red-zone repro kit, report-material package
+
+- **7 GHz**: static/SDM/setup/5-mode all PASS on 1× delays; delay margin ≥4× (front-end ÷2 limit
+  moves to 4.8×, mode-switch hang stays 4×). TB fix: Tclk from the fs-quantized VCO half period
+  (ideal Tclk gave a false +6 ppm / +0.08 Tclk at 7 GHz). Commit `e901683`.
+- **Repro kit** (`repro/`, commit `625e6ac`): `repro.sh --struct <build> --ext-libs <list> --out <o>
+  [--only …]` → `SUMMARY.md` (run | verdict | expect | RUN-KIND | key numbers); sweep points are
+  `expect=INFO` (real COT cells don't scale). Proven from `git archive HEAD`: 70/0.
+- **Report kit** (gitignored `_ref/report_kit/`): 00_README, 01_test_matrix (57 rows, log-cited),
+  02_delay_table, 03_margin_summary, 04_sdm_summary, fig/ (7 SimVision waveforms incl. ÷2 edge loss,
+  mode-switch hang, reload-late; 6 console renders; PSD; margin chart), logs/, src/. Note: the
+  delay cross-check runs used approximate fractions F=0.3/0.6 at 4.8/5.8 GHz; exact 32.768 kHz
+  FNUM are 286720/779264/652288/282600 (repro.sh default).
+
+---
+
 ## SESSION CLOSE 2026-09-19 — WuR 32.768 kHz + MASH-111 SDM verified (open loop) + `vh_delay.py` delay injection + margin sweep
 
 Two Opus-5 subagents in parallel (own build dirs `_ref/build_sdm/`, `_ref/build_dly/`), integrated

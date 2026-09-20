@@ -34,6 +34,12 @@ Last updated: 2026-09-19.
   LPBT reload law breaks at 5×, WuR front-end ÷2 at 6× (TSPC clk→Q > T_VCO), **`lpbt_en` 1→0
   mode-switch hangs the counter at 4×** (prescaler mux not glitch-free — design question).
   Results `examples/wur_ndiv/DELAYS.md`; red-zone recipe in `RED_ZONE.md` "Applying delays".
+- **Red-zone repro kit** `examples/wur_ndiv/repro/repro.sh` + `README_REPRO.md` (2026-09-20): one command
+  reruns the whole week (32k / sdm / modes / delay / report), proven from a `git archive` extract
+  (70 runs, 0 fail, 463 s). `sdm_psd.py` has a stdlib FFT fallback (red zone numpy unconfirmed);
+  committed 5-mode TB takes `+define+FGHZ`. Report-material package (gitignored, local only):
+  `examples/wur_ndiv/_ref/report_kit/WUR_NDIV_AMS_SDM_DELAY_20260920.{tar.gz,zip}` (test matrix,
+  delay table, margin/SDM summaries, 15 PNGs, 84 logs, sources).
 - **LPBT_NDIV_TOP**: unchanged, green (divide + pwl laws sweep-confirmed 14..127; charac kit tracked).
 
 ## Open
