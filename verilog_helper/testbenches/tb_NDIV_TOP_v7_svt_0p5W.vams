@@ -85,11 +85,20 @@
   if ((sig) !== 1'b0) begin $display("  FAIL %0s: not clamped to clean 0 (level = %b)", label, sig); fails=fails+1; end \
   else $display("  PASS %0s: clamped to 0", label);
 
+// VCO frequency knob (GHz).  Default 4.8 == the historical hard-coded value, so an
+// invocation without the macro is unchanged; the 5.0 / 5.8 / 7.0 GHz runs are now
+//    bash run.sh +define+FGHZ=7.0
+// instead of a sed on the TVCO line.
+`ifndef FGHZ
+ `define FGHZ 4.8
+`endif
+
 module tb;
   localparam integer I_OUT=0, I_DSM=1, I_CNT=2, I_TST=3, I_ADC=4;
 
   // ---- knobs ----
-  localparam real    TVCO    = 1000.0 / 4.8;        // VCO period [ps] -> 4.8 GHz
+  localparam real    FVCO_GHZ = `FGHZ;              // +define+FGHZ=<x>, default 4.8
+  localparam real    TVCO    = 1000.0 / FVCO_GHZ;   // VCO period [ps] -> 4.8 GHz
   localparam integer NDIV    = 51;                  // 51 % 4 == 3 -> exact 50% achievable
   localparam integer M_GOLD  = NDIV - 1;            // counter divisor      = 50
   localparam integer PWSEL   = (NDIV + 5) / 2;      // 50% duty law         = 28
@@ -170,7 +179,7 @@ module tb;
 
   initial begin
     fails   = 0;
-    $display("RPTINFO fvco_ghz=4.8 D_WUR=%0d D_LPBT=%0d D_ADC=%0d", D_WUR, D_LPBT, D_ADC);
+    $display("RPTINFO fvco_ghz=%0.1f D_WUR=%0d D_LPBT=%0d D_ADC=%0d", FVCO_GHZ, D_WUR, D_LPBT, D_ADC);
     ndiv    = NDIV;  pwsel = PWSEL;  adcdiv = ADCDIV;  adcpwsel = ADCPW;
     ndiv_en = 1'b0;  cal_en = 1'b0;  en_test = 1'b0;  lpbt_en = 1'b0;  psub = 1'b0;
     {VDD,VPP,VDD_VCO,VPP_VCO} = 4'b1111;

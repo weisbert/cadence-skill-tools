@@ -28,6 +28,8 @@ in the dropdown.
 - Optional knobs via `+define+...` reach xrun (the generated `run.sh` forwards `"$@"`):
   e.g. `tb_LPBT_NDIV_TOP.vams` gates its exact-N check behind `+define+CHECK_NDIV` and a
   SimVision dump behind `+define+WAVES`.
+- `tb_NDIV_TOP_v7_svt_0p5W.vams` takes `+define+FGHZ=<GHz>` (default **4.8**, i.e. unchanged
+  without the macro) — that is how the 5.0 / 5.8 / 7.0 GHz runs are made; no `sed` on `TVCO`.
 
 ## Margin / hold-race probes (`tb_<DUT>_dly.vams`)
 
