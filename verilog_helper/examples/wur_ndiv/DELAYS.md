@@ -40,7 +40,7 @@ and it is a single JSON file you edit when real numbers arrive.
 | `delay_cell_a` | 40 | `DELAD1_COT_…` (ext_stub) | `#(40e-12)` | a **delay cell** — its delay *is* its function; value kept |
 | `delay_cell_b` | 30 | `DELBD1_COT_…` (ext_stub) | `#(30e-12)` | idem |
 
-**42 modules, 47 delay sites** (`vh_delay.py report`). The structural top
+**42 modules, 54 delay sites** (`vh_delay.py report`). The structural top
 `NDIV_TOP_v7_svt_0p5W_struct.vams` has no behavioural statement → nothing to inject.
 
 ### Decisions baked into the injection
