@@ -106,6 +106,22 @@ xrun-bin: /software/cadence/xcelium/19.04.001/tools/bin/xrun
 - Work area: `/data/RFIC3/Hi1108V100_Pilot_C1Xplus/w84368867/workarea`,
   lib `sim_1108_yusheg`.
 
+## WuR NDIV on red -- the concrete paths (confirmed 2026-09-21)
+
+- Stage-A build: `…/workarea/verilogBox/WUR_NDIV/` **is itself** the `--struct` dir
+  (`export/` = the 37 no-delay `.vams`, plus `external_file/`, `orig/`, `sim/`,
+  `manifest_A/B.*`). There is no extra build subdirectory.
+- `ext_libs.list` did not exist; the whole `-v` list is **one file** that Stage A had
+  already snapshotted on red: `external_file/L20_SVT_ana.v`. So
+  `ls $B/external_file/*.v > $B/ext_libs.list` is the whole Step 4 for this DUT.
+- Login shell is **tcsh**; `bash` first, then paste. `xrun` was **not** ambient in that
+  session (contrary to the 2026-06-25 note) -- export PATH or set `VH_SITE_ENV` before
+  `repro.sh`.
+- The shell there is **not** a UTF-8 locale: python3 stdout defaults to ASCII
+  (`UnicodeEncodeError` on any CJK `print`) and non-ASCII filenames list as `??????`.
+  Keep red-zone scripts and the filenames they create ASCII-only, and set
+  `PYTHONIOENCODING=utf-8` if a tool must emit UTF-8.
+
 ## Applying delays on the red zone
 
 The red-zone `verilogams` cellviews of the divider leaves carry **no timing** (`Q <= D;`) or
