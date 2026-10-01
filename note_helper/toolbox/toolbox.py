@@ -59,19 +59,33 @@ def build_image_tab(parent):
     simp_var = tk.DoubleVar(value=1.5)
     minlen_var = tk.DoubleVar(value=8.0)
     maxdim_var = tk.IntVar(value=1000)
+    blur_var = tk.DoubleVar(value=0.0)
+    gamma_var = tk.DoubleVar(value=1.0)
     invert_var = tk.BooleanVar(value=False)
     rmbg_var = tk.BooleanVar(value=False)
 
-    def labeled(parent_, text, var, frm, to, width=110):
+    def labeled(parent_, text, var, frm, to, width=110, fmt="%d"):
+        # the value readout next to the caption: a ttk.Scale shows no number
         f = ttk.Frame(parent_)
-        ttk.Label(f, text=text).pack(anchor="w")
+        cap = ttk.Label(f, text=text)
+        cap.pack(anchor="w")
+
+        def show(*_):
+            try:
+                cap.config(text="%s  %s" % (text, fmt % float(var.get())))
+            except (tk.TclError, ValueError):
+                pass
+        var.trace_add("write", show)
+        show()
         ttk.Scale(f, from_=frm, to=to, variable=var, orient="horizontal", length=width).pack()
         f.pack(side="left", padx=5)
 
     labeled(sl, "Threshold (0=auto)", thr_var, 0, 255)
-    labeled(sl, "Levels (detail)", levels_var, 1, 8)
-    labeled(sl, "Simplify (px)", simp_var, 0, 8)
-    labeled(sl, "Min length (px)", minlen_var, 0, 60)
+    labeled(sl, "Levels", levels_var, 1, 32)
+    labeled(sl, "Gamma", gamma_var, 0.3, 4.0, fmt="%.1f")
+    labeled(sl, "Blur", blur_var, 0, 10, fmt="%.1f")
+    labeled(sl, "Simplify", simp_var, 0, 8, fmt="%.1f")
+    labeled(sl, "Min length", minlen_var, 0, 300)
     labeled(sl, "Max dim", maxdim_var, 200, 2000)
     ttk.Checkbutton(sl, text="invert", variable=invert_var).pack(side="left", padx=6)
     ttk.Checkbutton(sl, text="rm bg", variable=rmbg_var).pack(side="left")
@@ -102,7 +116,8 @@ def build_image_tab(parent):
         if not state["in"]:
             status.config(text="Open an image first.")
             return
-        gray = img2svg.load_gray(state["in"], max_dim=int(maxdim_var.get()))
+        gray = img2svg.load_gray(state["in"], max_dim=int(maxdim_var.get()),
+                                 blur=float(blur_var.get()), gamma=float(gamma_var.get()))
         H, W = gray.shape
         thr = int(thr_var.get()) or None
         polys = img2svg.trace(gray, mode=mode_var.get(), threshold=thr,
@@ -265,7 +280,7 @@ def build_window():
     from tkinter import ttk
     root = tk.Tk()
     root.title("note-helper toolbox")
-    root.geometry("940x700")
+    root.geometry("1100x760")
     nb = ttk.Notebook(root)
     f_img = ttk.Frame(nb)
     f_tab = ttk.Frame(nb)

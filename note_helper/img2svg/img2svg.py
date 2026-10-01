@@ -47,12 +47,20 @@ def _require_libs():
         raise
 
 
-def load_gray(path, max_dim=1000, blur=0.0):
-    """Load an image as a 2D uint8 grayscale numpy array, optionally downscaled
-    to max_dim on its longer side and lightly blurred to denoise."""
+def load_gray(path, max_dim=1000, blur=0.0, gamma=1.0):
+    """Load an image as a 2D uint8 grayscale numpy array, optionally tone-
+    adjusted (gamma), downscaled to max_dim on its longer side and lightly
+    blurred to denoise.
+
+    gamma > 1 darkens the mid-tones (out = in**gamma on 0..1), which pushes the
+    --levels bands out of the shadows and into the lit areas -- on a portrait,
+    that is what puts the contour lines on the face instead of the hair."""
     import numpy as np
     from PIL import Image, ImageFilter
     img = Image.open(path).convert("L")
+    if gamma and abs(gamma - 1.0) > 1e-9:
+        lut = [int(round(((i / 255.0) ** gamma) * 255.0)) for i in range(256)]
+        img = img.point(lut)
     if max_dim and max(img.size) > max_dim:
         s = max_dim / float(max(img.size))
         img = img.resize((max(1, int(img.size[0] * s)),
@@ -331,10 +339,10 @@ def to_svg(polylines, W, H, stroke=1.0):
 
 def convert_file(in_path, out_path, mode="threshold", threshold=None, invert=False,
                  simplify=1.5, min_len=8.0, stroke=1.0, max_dim=1000, blur=0.0,
-                 levels=1, rmbg=False):
+                 levels=1, rmbg=False, gamma=1.0):
     """Full pipeline: image file -> SVG file. Returns (n_contours, W, H)."""
     _require_libs()
-    gray = load_gray(in_path, max_dim=max_dim, blur=blur)
+    gray = load_gray(in_path, max_dim=max_dim, blur=blur, gamma=gamma)
     H, W = gray.shape
     polys = trace(gray, mode=mode, threshold=threshold, invert=invert,
                   simplify=simplify, min_len=min_len, levels=levels, rmbg=rmbg)
@@ -372,12 +380,15 @@ def run_cli(argv):
                     help="downscale longer side to this before tracing")
     ap.add_argument("--blur", type=float, default=0.0,
                     help="Gaussian denoise radius before tracing")
+    ap.add_argument("--gamma", type=float, default=1.0,
+                    help="tone curve before tracing: >1 darkens mid-tones so "
+                         "--levels bands land in the lit areas (default 1 = off)")
     args = ap.parse_args(argv)
     n, W, H = convert_file(args.infile, args.outfile, mode=args.mode,
                            threshold=args.threshold, invert=args.invert,
                            simplify=args.simplify, min_len=args.min_len,
                            stroke=args.stroke, max_dim=args.max_dim, blur=args.blur,
-                           levels=args.levels, rmbg=args.rmbg)
+                           levels=args.levels, rmbg=args.rmbg, gamma=args.gamma)
     sys.stderr.write("img2svg: %s -> %s  (%d contours, %dx%d, mode=%s)\n"
                      % (args.infile, args.outfile, n, W, H, args.mode))
     return 0
@@ -394,7 +405,7 @@ def run_gui():
 
     root = tk.Tk()
     root.title("img2svg  --  trace a raster image to SVG")
-    root.geometry("900x640")
+    root.geometry("1100x700")
     main = ttk.Frame(root, padding=8)
     main.pack(fill="both", expand=True)
 
@@ -423,18 +434,31 @@ def run_gui():
     rmbg_var = tk.BooleanVar(value=False)
     maxdim_var = tk.IntVar(value=1000)
     levels_var = tk.IntVar(value=1)    # threshold-mode tonal bands (detail)
+    blur_var = tk.DoubleVar(value=0.0)
+    gamma_var = tk.DoubleVar(value=1.0)
 
-    def labeled(parent, text, var, frm, to, width=120):
+    def labeled(parent, text, var, frm, to, width=120, fmt="%d"):
+        # the value readout next to the caption: a ttk.Scale shows no number
         f = ttk.Frame(parent)
-        ttk.Label(f, text=text).pack(anchor="w")
+        cap = ttk.Label(f, text=text)
+        cap.pack(anchor="w")
+        def show(*_):
+            try:
+                cap.config(text="%s  %s" % (text, fmt % float(var.get())))
+            except (tk.TclError, ValueError):
+                pass
+        var.trace_add("write", show)
+        show()
         ttk.Scale(f, from_=frm, to=to, variable=var, orient="horizontal",
                   length=width).pack()
         f.pack(side="left", padx=6)
 
     labeled(sl, "Threshold (0=auto)", thr_var, 0, 255)
-    labeled(sl, "Levels (detail)", levels_var, 1, 8)
-    labeled(sl, "Simplify (px)", simp_var, 0, 8)
-    labeled(sl, "Min length (px)", minlen_var, 0, 60)
+    labeled(sl, "Levels", levels_var, 1, 32)
+    labeled(sl, "Gamma", gamma_var, 0.3, 4.0, fmt="%.1f")
+    labeled(sl, "Blur", blur_var, 0, 10, fmt="%.1f")
+    labeled(sl, "Simplify", simp_var, 0, 8, fmt="%.1f")
+    labeled(sl, "Min length", minlen_var, 0, 300)
     labeled(sl, "Max dim", maxdim_var, 200, 2000)
     ttk.Checkbutton(sl, text="invert", variable=invert_var).pack(side="left", padx=8)
     ttk.Checkbutton(sl, text="rm bg", variable=rmbg_var).pack(side="left")
@@ -466,7 +490,8 @@ def run_gui():
             status.config(text="Open an image first.")
             return
         try:
-            gray = load_gray(state["in"], max_dim=int(maxdim_var.get()))
+            gray = load_gray(state["in"], max_dim=int(maxdim_var.get()),
+                             blur=float(blur_var.get()), gamma=float(gamma_var.get()))
             H, W = gray.shape
             thr = int(thr_var.get()) or None
             polys = trace(gray, mode=mode_var.get(), threshold=thr,

@@ -6,7 +6,7 @@ side so it drops cleanly into a Cadence schematic**:
 
 | Tab | Tool | Does | Feed into |
 |-----|------|------|-----------|
-| **Image → SVG** | `img2svg` | trace a raster image to a line-art SVG (threshold/edge, Levels detail, rm-bg) with a live preview | note-helper **Import SVG...** |
+| **Image → SVG** | `img2svg` | trace a raster image to a line-art SVG (threshold/edge, Levels up to 32, Gamma, Blur, rm-bg; every slider shows its value) with a live preview | note-helper **Import SVG...** |
 | **Table → Markdown** | `tsv2md` | Excel-copied TSV (clipboard or **Open file**) → aligned Markdown, to clipboard or **Save .md** | paste into the note-helper form |
 
 The algorithms are **imported** from the sibling modules (`../img2svg/img2svg.py`,

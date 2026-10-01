@@ -44,14 +44,20 @@ python3 img2svg.py photo.jpg OUT.svg --mode edge --min-len 12 --simplify 1.2
 | `--stroke W` | SVG stroke width | 1.0 |
 | `--max-dim N` | downscale longer side to N before tracing | 1000 |
 | `--blur R` | Gaussian denoise radius before tracing | 0 |
+| `--gamma G` | tone curve before tracing (`out = in^G`): >1 darkens mid-tones so the `--levels` bands land in the lit areas | 1 (off) |
 
-The GUI exposes the same knobs as sliders/checkboxes (incl. **Levels** and
-**rm bg**) with a live preview.
+The GUI exposes the same knobs as sliders/checkboxes (incl. **Levels** up to
+32, **Gamma**, **Blur** and **rm bg**), each slider with its current value
+shown next to its caption, and a live preview.
 
 ## Tuning tips
 
 - **More detail** (faces, shading, folds) → raise `--levels` (4–6). It traces
   several tonal bands, like iso-tone contour lines.
+- **A portrait that reads as an engraving** → crop to head and shoulders, then
+  many bands with heavy smoothing, e.g. `--levels 24 --gamma 2.5 --blur 5
+  --simplify 1.2 --min-len 250 --max-dim 1500`. Gamma pulls the bands onto the
+  face; blur + a long `--min-len` drop the background crackle.
 - **Clean the background** → `--rmbg` removes the border-connected background.
   Works best when the subject is clearly darker/different from a fairly uniform
   background (logos, diagrams, dark-subject photos). On a **bright subject over

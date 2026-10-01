@@ -6,6 +6,26 @@ piling up at the top of HANDOFF. Append new closes at the TOP.
 
 ---
 
+## SESSION 2026-10-01 — img2svg/toolbox: Gamma + Blur sliders, Levels to 32
+
+The portrait trace made for the MyTool demo video (Mona Lisa, head and
+shoulders) needs `--levels 24 --gamma 2.5 --blur 5 --simplify 1.2 --min-len 250
+--max-dim 1500`; the GUIs could not reach it (Levels capped at 8, no Blur, no
+tone control), so the only way to make it was the CLI plus an outside tone
+script. Now:
+
+- `img2svg.load_gray(..., gamma=1.0)` + CLI `--gamma` (LUT `out = in^G`,
+  applied before resize/blur; default 1 = unchanged behaviour). `convert_file`
+  passes it through.
+- Both GUIs (`img2svg` and `toolbox`): Levels slider 1..32, new **Gamma**
+  (0.3..4) and **Blur** (0..10) sliders, Min length up to 300, and every slider
+  shows its current value next to its caption (ttk.Scale shows no number).
+- Verified: the GUI path (crop only, gamma in the tool) reproduces the
+  CLI+tone-script SVG byte-for-byte (modulo line endings); `toolbox.py
+  --selftest` OK on :77; `shapes.png` sample unchanged.
+
+---
+
 ## SESSION 2026-06-21 — M5-UX: live drag-ghost placement + Table/SVG tabs + file Browse
 
 **M5-UX: live drag-ghost placement + Table/SVG tabs + file Browse — committed
