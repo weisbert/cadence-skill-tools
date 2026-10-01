@@ -64,17 +64,28 @@ def build_image_tab(parent):
     invert_var = tk.BooleanVar(value=False)
     rmbg_var = tk.BooleanVar(value=False)
 
-    def labeled(parent_, text, var, frm, to, width=110, fmt="%d"):
-        # the value readout next to the caption: a ttk.Scale shows no number
+    def labeled(parent_, text, var, frm, to, width=110, fmt="%d", step=1):
+        # the value readout next to the caption (a ttk.Scale shows no number),
+        # with the value snapped to `step` so the number shown IS the one traced
         f = ttk.Frame(parent_)
         cap = ttk.Label(f, text=text)
         cap.pack(anchor="w")
 
-        def show(*_):
+        busy = [False]
+
+        def show(*ev):
             try:
-                cap.config(text="%s  %s" % (text, fmt % float(var.get())))
+                v = float(var.get())
             except (tk.TclError, ValueError):
-                pass
+                return
+            if ev and not busy[0]:
+                q = round(round(v / step) * step, 6)
+                if abs(q - v) > 1e-9:
+                    busy[0] = True
+                    var.set(int(q) if isinstance(var, tk.IntVar) else q)
+                    busy[0] = False
+                    v = q
+            cap.config(text="%s  %s" % (text, fmt % v))
         var.trace_add("write", show)
         show()
         ttk.Scale(f, from_=frm, to=to, variable=var, orient="horizontal", length=width).pack()
@@ -82,11 +93,11 @@ def build_image_tab(parent):
 
     labeled(sl, "Threshold (0=auto)", thr_var, 0, 255)
     labeled(sl, "Levels", levels_var, 1, 32)
-    labeled(sl, "Gamma", gamma_var, 0.3, 4.0, fmt="%.1f")
-    labeled(sl, "Blur", blur_var, 0, 10, fmt="%.1f")
-    labeled(sl, "Simplify", simp_var, 0, 8, fmt="%.1f")
-    labeled(sl, "Min length", minlen_var, 0, 300)
-    labeled(sl, "Max dim", maxdim_var, 200, 2000)
+    labeled(sl, "Gamma", gamma_var, 0.3, 4.0, fmt="%.1f", step=0.1)
+    labeled(sl, "Blur", blur_var, 0, 10, fmt="%.1f", step=0.5)
+    labeled(sl, "Simplify", simp_var, 0, 8, fmt="%.1f", step=0.1)
+    labeled(sl, "Min length", minlen_var, 0, 300, step=5)
+    labeled(sl, "Max dim", maxdim_var, 200, 2000, step=50)
     ttk.Checkbutton(sl, text="invert", variable=invert_var).pack(side="left", padx=6)
     ttk.Checkbutton(sl, text="rm bg", variable=rmbg_var).pack(side="left")
 
