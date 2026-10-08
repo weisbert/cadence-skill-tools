@@ -23,20 +23,22 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 FAKE_DIR = os.path.join(TESTS_DIR, "fake_tools")
 GOLDEN_DIR = os.path.join(TESTS_DIR, "fixtures", "extract")
 
+# Literal values (no $ references) pin every parameter; check_files off
+# because /proj/... does not exist here. test_rk_pdk covers the env rules.
 SITE_EXTRACT = {
     "layout_view": "layout",
-    "pdk_layer_map": "/proj/pdk/example/layermap.txt",
-    "calibre_lvs_dir": "/proj/pdk/example/calibre/lvs",
-    "calibre_lvs_basename": "example_lvs.rul",
+    "check_files": False,
+    "layer_map": "/proj/pdk/example/layermap.txt",
+    "lvs_deck_dir": "/proj/pdk/example/calibre/lvs",
+    "lvs_basename": "example_lvs.rul",
     "lvs_variant": "default",
-    "qrc_query_cmd": "/proj/pdk/example/qrc/query_cmd",
-    "qrc_preserve_cell_list": "/proj/pdk/example/qrc/preserveCellList.txt",
+    "qrc_deck_dir": "/proj/pdk/example/qrc",
+    "cdl_include_file": "",
     "technology_library_file": "/proj/pdk/example/quantus/lib.defs",
-    "technology_name": "example_tech",
-    "technology_corner": "typical",
+    "tech_name": "example_tech",
     "temperature": 25,
-    "power_nets": ["VDD", "AVDD"],
-    "ground_nets": ["VSS", "AVSS"],
+    "power_names": ["VDD", "AVDD"],
+    "ground_names": ["VSS", "AVSS"],
 }
 
 
@@ -98,7 +100,7 @@ class RenderGoldenTest(unittest.TestCase):
         txt = rk_extract.render_template("quantus/dspf.cmd.tmpl", rk_extract.qrc_values(p))
         self._golden("amp_core.dspf.cmd", txt)
         self.assertIn('-file_name "/proj/wa/Reliability/amp_core/extract/qrc/amp_core.dspf"', txt)
-        self.assertIn('"cworst"', txt)
+        self.assertIn('"CWORST"', txt)
         self.assertIn("-temperature \\\n              55\n", txt)
         self.assertIn('-ground_net "VSS"', txt)
         self.assertIn('extract \\\n              -selection "all" \\\n              -type "rc_coupled"\n', txt)
@@ -124,13 +126,15 @@ class RenderGoldenTest(unittest.TestCase):
             rk_extract.qrc_values(p)
 
     def test_missing_settings(self):
-        site = {"artifact_root": "/proj/wa/Reliability",
-                "extract": {"pdk_layer_map": None, "temperature": 25}}
+        ext = dict(SITE_EXTRACT, layer_map="$RKT_NO_SUCH_LAYERMAP", tech_name=None,
+                   tech_name_env_vars=["RKT_NO_SUCH_TECH"])
+        site = {"artifact_root": "/proj/wa/Reliability", "extract": ext}
         with self.assertRaises(rk_common.RkError) as cm:
             rk_extract.resolve_params(make_ctx("/proj/wa", None), site)
-        missing = cm.exception.fields["missing"]
-        self.assertIn("extract.pdk_layer_map", missing)
-        self.assertIn("extract.technology_corner", missing)
+        f = cm.exception.fields
+        self.assertEqual(f["missing_env"], ["RKT_NO_SUCH_LAYERMAP", "RKT_NO_SUCH_TECH"])
+        self.assertIn("$RKT_NO_SUCH_LAYERMAP", str(cm.exception))
+        self.assertIn("Virtuoso's environment", str(cm.exception))
         with self.assertRaises(rk_common.RkError):
             ctx = make_ctx("/proj/wa", None)
             ctx["dut"] = None
@@ -449,7 +453,7 @@ class ChainTest(unittest.TestCase):
         self.assertEqual(out["state"], "done", out)
         with open(out["dspf_cmd"], encoding="utf-8") as f:
             txt = f.read()
-        self.assertIn('"cbest"', txt)
+        self.assertIn('"CBEST"', txt)
         self.assertIn("              -40\n", txt)
         strm = self.calls()[0]["argv"]
         self.assertEqual(strm[strm.index("-view") + 1], "layout_alt")

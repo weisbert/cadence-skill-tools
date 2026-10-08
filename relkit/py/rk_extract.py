@@ -30,8 +30,14 @@ Chain (cwd = workarea unless noted):
   4. qrc -cmd C.dspf.cmd                               -> qrc/C.dspf
   5. publish: copy lvs/C.calibre.db -> C.gds, move qrc/C.dspf -> C.dspf
 
-Subcommands: extract (start the detached worker), extract-status,
-extract-cancel, extract-run (INTERNAL: the worker itself).
+Parameters (layer map, LVS deck + variant, Quantus deck, tech library and
+name, CDL prelude) are derived from the environment by rk_pdk (Auto_ext's
+rules); the user chooses LVS variant, RC corner, temperature, the Quantus deck
+when several exist, and the LVS power/ground names.
+
+Subcommands: extract-resolve (preview of the derived parameters), extract
+(start the detached worker), extract-status, extract-cancel, extract-run
+(INTERNAL: the worker itself).
 
 Python 3.8+, stdlib only.
 """
@@ -49,6 +55,7 @@ import sys
 import time
 
 import rk_common
+import rk_pdk
 import rk_site
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -62,11 +69,6 @@ LOG_TAIL_LINES = 40
 
 GDS_EXTS = (".gds", ".gds2", ".gdsii", ".gds.gz", ".calibre.db", ".oas", ".oasis")
 DSPF_EXTS = (".dspf", ".spf", ".dspf.gz", ".spf.gz")
-
-# Site keys that must be set (non-empty) before an extraction can start.
-REQUIRED_SITE_KEYS = ["pdk_layer_map", "calibre_lvs_dir", "calibre_lvs_basename",
-                      "lvs_variant", "qrc_query_cmd", "technology_library_file",
-                      "technology_name", "technology_corner"]
 
 # Built-in option defaults = Auto_ext's recipe/catalog defaults (options.yaml).
 # Site `extract.si_options` / `lvs_options` / `qrc_options` override per key.
@@ -99,7 +101,6 @@ SI_DEFAULTS = {
 }
 
 LVS_DEFAULTS = {
-    "rules_file_pattern": "{dir}/{basename}.{variant}.qcilvs",
     "device_filter_options_enabled": False,
     "layout_device_filter_options": "AG RC RE RG",
     "source_device_filter_options": "AG RC RE RG",
@@ -291,10 +292,7 @@ def si_env_values(p):
 
 
 def lvs_rules_file(p):
-    o = p["lvs_options"]
-    return o["rules_file_pattern"].format(dir=p["calibre_lvs_dir"].rstrip("/"),
-                                          basename=p["calibre_lvs_basename"],
-                                          variant=p["lvs_variant"])
+    return p["lvs_rules_file"]
 
 
 def qci_values(p):
@@ -444,9 +442,81 @@ def dirs_from_ctx(ctx, site=None):
     return extract_dirs(_posix(root), _ctx_cell(ctx))
 
 
+def _env_of(ctx):
+    """The environment the rules resolve against: this process (Virtuoso's,
+    inherited by the panel's Python child) overlaid by an optional ctx.env
+    snapshot."""
+    env = dict(os.environ)
+    snap = (ctx or {}).get("env")
+    if isinstance(snap, dict):
+        env.update({str(k): str(v) for k, v in snap.items() if v is not None})
+    return env
+
+
+def _names(v):
+    if isinstance(v, str):
+        v = re.split(r"[\s,;]+", v)
+    return [x for x in (v or []) if x]
+
+
+def _user_choices(ctx):
+    over = ((ctx or {}).get("settings") or {}).get("extract") or {}
+    temp = over.get("temperature")
+    return {"lvs_variant": over.get("lvs_variant") or None,
+            "qrc_deck": over.get("qrc_deck") or None,
+            "technology_corner": over.get("technology_corner") or None,
+            "temperature": temp if temp not in (None, "") else None,
+            "power_names": _names(over.get("power_names")),
+            "ground_names": _names(over.get("ground_names"))}
+
+
+def dut_supply_ports(ctx, site):
+    """DUT ports that look like supplies (rk_yml.classify_port on ctx.dut.terms)."""
+    import rk_yml
+    pw, gn = [], []
+    for t in ((ctx or {}).get("dut") or {}).get("terms") or []:
+        k = rk_yml.classify_port(t, site)
+        if k == "power":
+            pw.append(t)
+        elif k == "ground" and t != "0":
+            gn.append(t)
+    return pw, gn
+
+
+def _union(a, b):
+    out = []
+    for x in list(a or []) + list(b or []):
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def _default_supplies(ctx, site, choices):
+    """No panel list: the site lists plus the DUT's supply-like ports."""
+    if choices["power_names"] or choices["ground_names"]:
+        return choices
+    pw, gn = dut_supply_ports(ctx, site)
+    lists, _w = rk_pdk.migrate_legacy(site.get("extract") or {})
+    choices["power_names"] = _union(lists.get("power_names"), pw)
+    choices["ground_names"] = _union(lists.get("ground_names"), gn)
+    return choices
+
+
+def resolve_preview(ctx, site):
+    """extract-resolve payload: rk_pdk.resolve + DUT-port suggestions."""
+    ext = site.get("extract") or {}
+    choices = _default_supplies(ctx, site, _user_choices(ctx))
+    res = rk_pdk.resolve(ext, _env_of(ctx), choices)
+    p = res.pop("params")
+    res["suggested"] = {"power_names": list(p.get("power_names") or []),
+                        "ground_names": list(p.get("ground_names") or [])}
+    return res
+
+
 def resolve_params(ctx, site):
-    """Everything the chain needs, from ctx (DUT, panel overrides) and the
-    site `extract` section. Raises RkError listing every missing value."""
+    """Everything the chain needs, from ctx (DUT, panel choices) and the site
+    `extract` rules resolved against the environment (rk_pdk). Raises RkError
+    naming every missing environment variable / unresolved choice."""
     ext = site.get("extract") or {}
     dut = ctx.get("dut") or {}
     maestro = ctx.get("maestro") or {}
@@ -454,56 +524,58 @@ def resolve_params(ctx, site):
     cell = _ctx_cell(ctx)
     workarea = _posix(ctx.get("workarea") or rk_site.default_workarea())
     dirs = dirs_from_ctx(ctx, site)
-
-    def pick(key, default=None):
-        v = over.get(key)
-        if v is None or v == "":
-            v = ext.get(key)
-        return default if v is None or v == "" else v
+    choices = _default_supplies(ctx, site, _user_choices(ctx))
+    r = rk_pdk.resolve(ext, _env_of(ctx), choices)
+    rp = r["params"]
 
     p = dict(dirs)
     p.update({
         "cell": cell,
         "library": over.get("layout_lib") or dut.get("lib") or maestro.get("lib"),
-        "layout_view": pick("layout_view", "layout"),
+        "layout_view": over.get("layout_view") or ext.get("layout_view") or "layout",
         "source_view": ext.get("source_view") or "schematic",
         "workarea": workarea,
         "cdslib": _posix(ext.get("cdslib") or _join(workarea, "cds.lib")),
-        "layer_map": ext.get("pdk_layer_map"),
-        "calibre_lvs_dir": ext.get("calibre_lvs_dir"),
-        "calibre_lvs_basename": ext.get("calibre_lvs_basename"),
-        "lvs_variant": ext.get("lvs_variant"),
-        "qrc_query_cmd": ext.get("qrc_query_cmd"),
-        "qrc_preserve_cell_list": ext.get("qrc_preserve_cell_list"),
-        "cdl_include_file": ext.get("cdl_include_file") or "",
-        "technology_library_file": ext.get("technology_library_file"),
-        "technology_name": ext.get("technology_name"),
-        "technology_corner": pick("technology_corner"),
-        "temperature": pick("temperature", 25),
-        "power_nets": list(ext.get("power_nets") or []),
-        "ground_nets": list(ext.get("ground_nets") or []),
+        "layer_map": rp.get("layer_map"),
+        "calibre_lvs_dir": rp.get("lvs_deck_dir"),
+        "calibre_lvs_basename": rp.get("lvs_basename"),
+        "lvs_variant": rp.get("lvs_variant"),
+        "lvs_rules_file": rp.get("lvs_rules_file"),
+        "qrc_deck_dir": rp.get("qrc_deck_dir"),
+        "qrc_query_cmd": rp.get("qrc_query_cmd"),
+        "qrc_preserve_cell_list": rp.get("qrc_preserve_cell_list"),
+        "cdl_include_file": rp.get("cdl_include_file") or "",
+        "technology_library_file": rp.get("technology_library_file"),
+        "technology_name": rp.get("tech_name"),
+        "technology_corner": rp.get("technology_corner"),
+        "temperature": rp.get("temperature"),
+        "power_nets": list(rp.get("power_names") or []),
+        "ground_nets": list(rp.get("ground_names") or []),
         "strmout_args": list(ext.get("strmout_args") or []),
         "si_options": _merged(SI_DEFAULTS, ext.get("si_options")),
         "lvs_options": _merged(LVS_DEFAULTS, ext.get("lvs_options")),
         "qrc_options": _merged(QRC_DEFAULTS, ext.get("qrc_options")),
+        "resolve_warnings": list(r["warnings"]),
+        "resolved": r["resolved"],
     })
     p["qrc_ground_net"] = (ext.get("qrc_ground_net")
                            or (p["ground_nets"][0] if p["ground_nets"] else "vss"))
     tools = ext.get("tools") or {}
     p["tools"] = {n: tool_argv(tools.get(n), n) for n in ("strmout", "si", "calibre", "qrc")}
 
-    missing = []
+    errors = list(r["errors"])
+    if p["lvs_options"].get("run_qrc_query") is False:
+        errors = [e for e in errors if "query command" not in e]
     if not p["library"]:
-        missing.append("layout library (ctx.dut.lib / settings.extract.layout_lib)")
-    for k in REQUIRED_SITE_KEYS:
-        key = "layer_map" if k == "pdk_layer_map" else k
-        if p.get(key) in (None, ""):
-            missing.append("extract.%s" % k)
-    if p["lvs_options"].get("run_qrc_query") is False and "extract.qrc_query_cmd" in missing:
-        missing.remove("extract.qrc_query_cmd")
-    if missing:
-        raise rk_common.RkError("extraction settings missing: %s" % ", ".join(missing),
-                                missing=missing, extract_dir=dirs["extract_dir"])
+        errors.insert(0, "layout library is not set (DUT lib / layout lib field)")
+    if errors:
+        head = "extraction cannot start: "
+        if r["missing_env"]:
+            head += ("environment variable(s) %s not set in Virtuoso's environment "
+                     "(source the PDK setup before starting Virtuoso, or pin the value "
+                     "in the site config); " % ", ".join("$" + m for m in r["missing_env"]))
+        raise rk_common.RkError(head + "; ".join(errors), missing=errors,
+                                missing_env=r["missing_env"], extract_dir=dirs["extract_dir"])
     return p
 
 
@@ -1084,9 +1156,8 @@ def _cmd_extract(args, ctx):
            "calibre_gui_cwd": p["workarea"],
            "commands": {k: shell_join(v["argv"]) for k, v in cmds.items()},
            "warnings": warnings}
-    if not p["qrc_preserve_cell_list"]:
-        out["warnings"].append("extract.qrc_preserve_cell_list is not set; "
-                               "-parasitic_blocking_device_cells_file is empty")
+    out["warnings"].extend(p.get("resolve_warnings") or [])
+    out["resolved"] = {k: v.get("value") for k, v in (p.get("resolved") or {}).items()}
     if getattr(args, "sync", False):
         st = run_worker(p["extract_dir"])
         out.update({"pid": os.getpid(), "state": st.get("state"),
@@ -1095,6 +1166,49 @@ def _cmd_extract(args, ctx):
     out["pid"] = spawn_worker(p["extract_dir"])
     out["state"] = "running"
     return out
+
+
+def _cmd_extract_resolve(args, ctx):
+    site, _path, warnings = rk_site.site_from_ctx(ctx)
+    out = resolve_preview(ctx, site)
+    out["warnings"] = list(warnings) + out["warnings"]
+    if getattr(args, "text", None):
+        _write_text(args.text, preview_text(out))
+        out["text"] = _posix(args.text)
+    return out
+
+
+def preview_text(res):
+    """Human-readable preview (the panel's [Show resolved] window)."""
+    lines = ["relkit extraction parameters (resolved %s)" % _now_iso(), ""]
+    if res.get("missing_env"):
+        lines.append("MISSING environment variables: %s"
+                     % " ".join("$" + m for m in res["missing_env"]))
+        lines.append("  -> source the PDK setup in the shell that starts Virtuoso, or pin")
+        lines.append("     the value in the site config (extract.<key>).")
+        lines.append("")
+    resolved = res.get("resolved") or {}
+    w = max([len(k) for k in resolved] + [8])
+    for k, v in resolved.items():
+        val = v.get("value")
+        if isinstance(val, list):
+            val = " ".join(val)
+        lines.append("%-*s  %-8s %s" % (w, k, v.get("source") or "", "" if val is None else val))
+        if v.get("expr") and v.get("expr") != val:
+            lines.append("%-*s  %-8s   <- %s" % (w, "", "", v["expr"]))
+    ch = res.get("choices") or {}
+    lines += ["", "LVS variants found : %s" % (" ".join(ch.get("variants") or []) or "-"),
+              "Quantus decks found: %d" % len(ch.get("qrc_decks") or [])]
+    lines += ["  " + d for d in ch.get("qrc_decks") or []]
+    lines.append("RC corners         : %s" % " ".join(c["name"] for c in ch.get("corners") or []))
+    sg = res.get("suggested") or {}
+    lines += ["", "LVS power names : %s" % " ".join(sg.get("power_names") or []),
+              "LVS ground names: %s" % " ".join(sg.get("ground_names") or [])]
+    if res.get("errors"):
+        lines += ["", "ERRORS (extraction cannot start):"] + ["  - " + e for e in res["errors"]]
+    if res.get("warnings"):
+        lines += ["", "Warnings:"] + ["  - " + e for e in res["warnings"]]
+    return "\n".join(lines) + "\n"
 
 
 def _cmd_extract_run(args, ctx):
@@ -1113,6 +1227,10 @@ def _cmd_extract_cancel(args, ctx):
 
 
 def register(subparsers):
+    p = rk_common.add_command(subparsers, "extract-resolve", _cmd_extract_resolve,
+                              "preview the extraction parameters derived from the environment",
+                              ctx_required=True)
+    p.add_argument("--text", help="also write a human-readable preview to this file")
     p = rk_common.add_command(subparsers, "extract", _cmd_extract,
                               "start the extraction chain in the background",
                               ctx_required=True)

@@ -68,7 +68,7 @@ output_setup \
               -temporary_directory_name "Design"
 process_technology \
               -technology_corner \
-              "cworst" \
+              "CWORST" \
               -technology_library_file "/proj/pdk/example/quantus/lib.defs" \
               -technology_name "example_tech" \
               -temperature \

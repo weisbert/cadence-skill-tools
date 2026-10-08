@@ -67,24 +67,78 @@
     "totem_flow": null
   },
   "extract": {
-    "tools": {"strmout": "strmout", "si": "si", "calibre": "calibre", "qrc": "qrc"},
+    "tools": {
+      "strmout": "strmout",
+      "si": "si",
+      "calibre": "calibre",
+      "qrc": "qrc"
+    },
     "layout_view": "layout",
     "source_view": "schematic",
     "cdslib": null,
-    "pdk_layer_map": null,
-    "calibre_lvs_dir": null,
-    "calibre_lvs_basename": null,
+    "check_files": true,
+    "layer_map": "$PDK_LAYER_MAP_FILE",
+    "lvs_deck_dir": "$calibre_source_added_place|parent",
+    "lvs_basename": null,
+    "lvs_filename_pattern": "{basename}.{variant}.qcilvs",
     "lvs_variant": null,
-    "technology_library_file": null,
-    "technology_name": null,
+    "lvs_default_variant": "wodio",
+    "cdl_include_file": "$calibre_source_added_place",
+    "technology_library_file": "$SETUP_ROOT/assura_tech.lib",
+    "tech_name": null,
+    "tech_name_env_vars": [
+      "PDK_TECH_FILE",
+      "PDK_LAYER_MAP_FILE",
+      "PDK_DISPLAY_FILE"
+    ],
+    "qrc_deck_dir": null,
+    "qrc_deck_glob": "$VERIFY_ROOT/runset/Calibre_QRC/QRC/*/*/QCI_deck",
+    "qrc_query_cmd_name": "query_cmd",
+    "qrc_preserve_cell_list_name": "preserveCellList.txt",
+    "corners": [
+      {
+        "name": "typical",
+        "technology_corner": "TYPICAL"
+      },
+      {
+        "name": "cbest",
+        "technology_corner": "CBEST"
+      },
+      {
+        "name": "cbest_t",
+        "technology_corner": "CBEST_T"
+      },
+      {
+        "name": "cworst",
+        "technology_corner": "CWORST"
+      },
+      {
+        "name": "cworst_t",
+        "technology_corner": "CWORST_T"
+      },
+      {
+        "name": "rcbest",
+        "technology_corner": "RCBEST"
+      },
+      {
+        "name": "rcbest_t",
+        "technology_corner": "RCBEST_T"
+      },
+      {
+        "name": "rcworst",
+        "technology_corner": "RCWORST"
+      },
+      {
+        "name": "rcworst_t",
+        "technology_corner": "RCWORST_T"
+      }
+    ],
+    "default_corner": "typical",
     "technology_corner": null,
     "temperature": 25,
-    "power_nets": [],
-    "ground_nets": [],
-    "qrc_query_cmd": null,
-    "qrc_preserve_cell_list": null,
+    "power_names": [],
+    "ground_names": [],
     "qrc_ground_net": null,
-    "cdl_include_file": "",
     "strmout_args": [],
     "si_options": {},
     "lvs_options": {},

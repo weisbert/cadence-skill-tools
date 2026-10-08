@@ -36,7 +36,8 @@
 ;   top    rk_gTest rk_gDesign rk_gRsHome rk_gDut rk_gIp rk_gCorners rk_gCornerInfo rk_gTabs rk_gStatus
 ;   aging  rk_gaLife rk_gaUnit rk_gaStart rk_gaStop rk_gaEvalT rk_gaStatus rk_gaRes
 ;   deos   rk_gdLife rk_gdUnit rk_gdStart rk_gdStop rk_gdSimT rk_gdTddb rk_gdStatus rk_gdRes
-;   emir   rk_geDut rk_geDspf rk_geGds rk_geLLib rk_geLView rk_geXCorner rk_geXTemp rk_geXStatus
+;   emir   rk_geDut rk_geDspf rk_geGds rk_geLLib rk_geLView rk_geXCorner rk_geXTemp rk_geXVariant
+;          rk_geXQrc rk_geXPower rk_geXGround rk_geXStatus
 ;          rk_gePower rk_geGround rk_geRc rk_geEmT rk_geRunType rk_geSelfheat rk_geStart rk_geStop
 ;          rk_geStep rk_geLife rk_geLic rk_geLicH rk_geStatus rk_geRes
 ;   runs   rk_grType rk_grTest rk_grSince rk_grUntil rk_grAll rk_grList rk_grNote rk_grTags rk_grStatus rk_grCount
@@ -79,6 +80,11 @@
 (unless (boundp 'rk_guiResults) (setq rk_guiResults (makeTable "rk_guiResults" nil)))
 (unless (boundp 'rk_guiPending) (setq rk_guiPending (makeTable "rk_guiPending" nil)))
 (unless (boundp 'rk_guiExtract) (setq rk_guiExtract nil))
+; last extract-resolve result (parameters derived from Virtuoso's environment)
+(unless (boundp 'rk_guiResolve) (setq rk_guiResolve nil))
+; out file of the newest extract-resolve call: older results arriving late are ignored
+(unless (boundp 'rk_guiResolveOut) (setq rk_guiResolveOut nil))
+(setq rk_guiAuto "(auto)")
 (unless (boundp 'rkGuiSiteWorkarea) (setq rkGuiSiteWorkarea nil))
 ; t once the current panel was closed: no new pollers (timers) are started for
 ; it, and runs submitted before the close are only recorded (the next panel
@@ -332,38 +338,56 @@
   (rk_guiPageResults "deos" 106 330)
   (rk_gTakeEntries))
 
+; RC corner names offered by the site (extract.corners, Quantus RuleSet names)
+(defun rk_guiCornerNames ()
+  (let ((names (mapcar (lambda (c) (if (tablep c) (rkGet c "name") (rk_guiStr c)))
+                       (rk_guiL (rk_guiSite "extract.corners")))))
+    (or (setof n names (stringp n)) (list "typical"))))
+
 (defun rk_guiBuildEmir ()
-  (let ((lic (rk_guiSite "emir.license_policy" "wait_forever")) licC)
+  (let ((lic (rk_guiSite "emir.license_policy" "wait_forever")) licC corners corner)
     (setq licC (nth (or (rk_guiIndexOf lic rk_guiLicValues) 0) rk_guiLicChoices))
+    (setq corners (rk_guiCornerNames))
+    (setq corner (rk_guiStr (or (rk_guiSite "extract.technology_corner") (rk_guiSite "extract.default_corner"))))
+    (unless (member corner corners) (setq corner (car corners)))
     (setq rk_gPage 'page3)
     (rk_gStr 'rk_geDut "DUT" "" 5 5 965 90 t)
     (rk_gFile 'rk_geDspf "DSPF file" "" 5 37 700 90)
     (rk_gBtn 'rk_geBDetect "Use existing (detect)" "(rk_guiDetectCB)" 715 37 170)
     (rk_gFile 'rk_geGds "GDS file" "" 5 69 700 90)
+    ; extraction: parameters come from Virtuoso's environment (extract-resolve);
+    ; the user picks the variant / RC corner / QRC deck and the LVS supply names
     (rk_gStr 'rk_geLLib "Layout lib" "" 5 101 230 90)
     (rk_gStr 'rk_geLView "view" (rk_guiSite "extract.layout_view" "layout") 240 101 160 40)
-    (rk_gStr 'rk_geXCorner "Extract corner" (rk_guiStr (rk_guiSite "extract.technology_corner")) 405 101 250 105)
+    (rk_gCyc 'rk_geXCorner "RC corner" corners corner "(rk_guiXChoiceCB)" 405 101 250 85)
     (rk_gStr 'rk_geXTemp "Extract temp" (rk_guiStr (rk_guiSite "extract.temperature" 25)) 660 101 180 95)
-    (rk_gBtn 'rk_geBExtract "Extract DSPF + GDS" "(rk_guiExtractCB)" 5 133 160)
-    (rk_gBtn 'rk_geBXCancel "Cancel extract" "(rk_guiExtractCancelCB)" 170 133 120)
-    (rk_gBtn 'rk_geBCalibre "Open Calibre GUI" "(rk_guiCalibreCB)" 295 133 140)
-    (rk_gBtn 'rk_geBLvs "LVS report" "(rk_guiLvsReportCB)" 440 133 100)
-    (rk_gStr 'rk_geXStatus "Extract" "" 5 165 965 90 t)
-    (rk_gStr 'rk_gePower "Power nets" "" 5 197 700 90)
-    (rk_gBtn 'rk_geBPorts "Fill from DUT ports" "(rk_guiSuppliesCB)" 715 197 170)
-    (rk_gStr 'rk_geGround "Ground nets" "" 5 229 700 90)
-    (rk_gStr 'rk_geEmT "EM temp" (rk_guiStr (rk_guiDef "emir" "em_temperature" 110)) 5 261 160 70)
-    (rk_gCombo 'rk_geRunType "Run_Type" (list "DYN SEM") (rk_guiDef "emir" "run_type" "DYN SEM") 170 261 210 70)
-    (rk_gBool 'rk_geSelfheat "Self-heat" (and (rk_guiDef "emir" "selfheat") t) 390 261 110)
-    (rk_gStr 'rk_geStart "Start" (rk_guiDef "emir" "start_time" "0n") 505 261 150 45)
-    (rk_gStr 'rk_geStop "Stop" (rk_guiDef "emir" "stop_time" "20n") 660 261 150 45)
-    (rk_gStr 'rk_geStep "Step" (rk_guiDef "emir" "dynamic_time_step" "20p") 815 261 150 45)
-    (rk_gStr 'rk_geRc "Rc_Corner" (rk_guiStr (rk_guiSite "emir.rc_corner" "typical")) 5 293 230 90)
-    (rk_gStr 'rk_geLife "Life" (rk_guiStr (rk_guiDef "emir" "life_time" "10")) 240 293 140 45)
-    (rk_gCyc 'rk_geLic "License" rk_guiLicChoices licC "" 385 293 290 65)
-    (rk_gStr 'rk_geLicH "N hours" (rk_guiStr (rk_guiSite "emir.license_wait_hours" 8)) 680 293 160 70)
-    (rk_guiRunButtons "emir" 325)
-    (rk_guiPageResults "emir" 357 110)
+    (rk_gCyc 'rk_geXVariant "LVS variant" (list rk_guiAuto) rk_guiAuto "(rk_guiXChoiceCB)" 5 133 230 90)
+    (rk_gCyc 'rk_geXQrc "QRC deck" (list rk_guiAuto) rk_guiAuto "(rk_guiXChoiceCB)" 240 133 730 75)
+    (rk_gStr 'rk_geXPower "LVS power" "" 5 165 480 90)
+    (rk_gStr 'rk_geXGround "LVS ground" "" 490 165 480 85)
+    (rk_gBtn 'rk_geBResolve "Resolve / preview" "(rk_guiResolveCB)" 5 197 140)
+    (rk_gBtn 'rk_geBShowRes "Show resolved" "(rk_guiShowResolvedCB)" 150 197 120)
+    (rk_gBtn 'rk_geBExtract "Extract DSPF + GDS" "(rk_guiExtractCB)" 275 197 150)
+    (rk_gBtn 'rk_geBXCancel "Cancel extract" "(rk_guiExtractCancelCB)" 430 197 115)
+    (rk_gBtn 'rk_geBCalibre "Open Calibre GUI" "(rk_guiCalibreCB)" 550 197 130)
+    (rk_gBtn 'rk_geBLvs "LVS report" "(rk_guiLvsReportCB)" 685 197 100)
+    (rk_gStr 'rk_geXStatus "Extract" "" 5 229 965 90 t)
+    ; EMIR run
+    (rk_gStr 'rk_gePower "Power nets" "" 5 261 700 90)
+    (rk_gBtn 'rk_geBPorts "Fill from DUT ports" "(rk_guiSuppliesCB)" 715 261 170)
+    (rk_gStr 'rk_geGround "Ground nets" "" 5 293 700 90)
+    (rk_gStr 'rk_geEmT "EM temp" (rk_guiStr (rk_guiDef "emir" "em_temperature" 110)) 5 325 160 70)
+    (rk_gCombo 'rk_geRunType "Run_Type" (list "DYN SEM") (rk_guiDef "emir" "run_type" "DYN SEM") 170 325 210 70)
+    (rk_gBool 'rk_geSelfheat "Self-heat" (and (rk_guiDef "emir" "selfheat") t) 390 325 110)
+    (rk_gStr 'rk_geStart "Start" (rk_guiDef "emir" "start_time" "0n") 505 325 150 45)
+    (rk_gStr 'rk_geStop "Stop" (rk_guiDef "emir" "stop_time" "20n") 660 325 150 45)
+    (rk_gStr 'rk_geStep "Step" (rk_guiDef "emir" "dynamic_time_step" "20p") 815 325 150 45)
+    (rk_gStr 'rk_geRc "Rc_Corner" (rk_guiStr (rk_guiSite "emir.rc_corner" "typical")) 5 357 230 90)
+    (rk_gStr 'rk_geLife "Life" (rk_guiStr (rk_guiDef "emir" "life_time" "10")) 240 357 140 45)
+    (rk_gCyc 'rk_geLic "License" rk_guiLicChoices licC "" 385 357 290 65)
+    (rk_gStr 'rk_geLicH "N hours" (rk_guiStr (rk_guiSite "emir.license_wait_hours" 8)) 680 357 160 70)
+    (rk_guiRunButtons "emir" 389)
+    (rk_guiPageResults "emir" 421 70)
     (rk_gTakeEntries)))
 
 (defun rk_guiBuildRuns ()
@@ -444,12 +468,12 @@
                    (list "Temp" 55 'right 'string)
                    (list "Overrides" 300 'left 'string)
                    (list "Maestro" 65 'center 'string))
-             5 101 965 150 'extended "(rk_guiCornerToggleCB)" nil)
-    (rk_gBtn 'rk_gBToggle "Toggle selected" "(rk_guiCornerToggleCB)" 5 256 130)
-    (rk_gBtn 'rk_gBAll "All" "(rk_guiCornerSetCB 'all)" 140 256 60)
-    (rk_gBtn 'rk_gBNone "None" "(rk_guiCornerSetCB 'none)" 205 256 60)
-    (rk_gBtn 'rk_gBMae "As in Maestro" "(rk_guiCornerSetCB 'maestro)" 270 256 120)
-    (rk_gStr 'rk_gCornerInfo "" "" 395 256 575 0 t)
+             5 101 965 118 'extended "(rk_guiCornerToggleCB)" nil)
+    (rk_gBtn 'rk_gBToggle "Toggle selected" "(rk_guiCornerToggleCB)" 5 224 130)
+    (rk_gBtn 'rk_gBAll "All" "(rk_guiCornerSetCB 'all)" 140 224 60)
+    (rk_gBtn 'rk_gBNone "None" "(rk_guiCornerSetCB 'none)" 205 224 60)
+    (rk_gBtn 'rk_gBMae "As in Maestro" "(rk_guiCornerSetCB 'maestro)" 270 224 120)
+    (rk_gStr 'rk_gCornerInfo "" "" 395 224 575 0 t)
     (setq top (rk_gTakeEntries))
     (setq p1 (rk_guiBuildAging))
     (setq p2 (rk_guiBuildDeos))
@@ -460,7 +484,7 @@
                                 ?tabPlacement 'top ?fields (list p1 p2 p3 p4)))
     (setarray rk_guiPageOf 'rk_gTabs nil)
     (rk_gStr 'rk_gStatus "Status" "" 5 860 965 55 t)
-    (setq top (append top (cons (list tab (list 5 290) (list 975 565)) (rk_gTakeEntries))))
+    (setq top (append top (cons (list tab (list 5 258) (list 975 597)) (rk_gTakeEntries))))
     (setq form (hiCreateAppForm
                  ?name nm
                  ?formTitle (sprintf nil "RelStudio (relkit %s)" rk_version)
@@ -481,6 +505,7 @@
     (setq rk_guiDuts nil)
     (setq rk_guiRunsRows nil)
     (setq rk_guiExtract nil)
+    (setq rk_guiResolve nil)
     (setq rk_guiRunDir  (makeTable "rk_guiRunDir" nil))
     (setq rk_guiLast    (makeTable "rk_guiLast" nil))
     (setq rk_guiResults (makeTable "rk_guiResults" nil))
@@ -523,6 +548,7 @@
     (rkPut o "last" rk_guiLast)
     (rkPut o "results" rk_guiResults)
     (rkPut o "extract" rk_guiExtract)
+    (rkPut o "resolve" rk_guiResolve)
     (rkPut o "runs" rk_guiRunsRows)
     (rkPut o "pollers" (rkIpcPollActive "gui:"))
     (rkPut o "message" rk_guiMsg)
@@ -577,7 +603,8 @@
                                 (if (rk_guiL (rkGet ctx "warnings"))
                                   (strcat "; warnings: " (rk_guiJoin (rk_guiL (rkGet ctx "warnings")) "; "))
                                   "")))
-            (when first (rk_guiRunsRefresh t))))))
+            (when first (rk_guiRunsRefresh t))
+            (rk_guiResolveExtract)))))
     rk_guiCtx))
 
 (defun rk_guiReloadCB ()
@@ -637,7 +664,8 @@
     (unless quiet
       (when rk_guiDut
         (rk_guiSaveSettings)
-        (rk_guiSay (sprintf nil "DUT: %s" (rk_guiDutLabel rk_guiDut)))))
+        (rk_guiSay (sprintf nil "DUT: %s" (rk_guiDutLabel rk_guiDut))))
+      (rk_guiResolveExtract))
     rk_guiDut))
 
 (defun rk_guiDutCB ()
@@ -782,11 +810,29 @@
         (rkPut s "layout_lib" (rk_guiNullIfBlank (rkGuiGet 'rk_geLLib)))
         (rkPut s "layout_view" (rk_guiNullIfBlank (rkGuiGet 'rk_geLView)))
         (rkPut s "technology_corner" (rk_guiNullIfBlank (rkGuiGet 'rk_geXCorner)))
-        (rkPut s "temperature" (rk_guiNum (rkGuiGet 'rk_geXTemp)))))
+        (rkPut s "temperature" (rk_guiNum (rkGuiGet 'rk_geXTemp)))
+        (rkPut s "lvs_variant" (rk_guiChoiceOrNil (rkGuiGet 'rk_geXVariant)))
+        (rkPut s "qrc_deck" (rk_guiChoiceOrNil (rkGuiGet 'rk_geXQrc)))
+        (rkPut s "power_names" (rk_guiWords (rkGuiGet 'rk_geXPower)))
+        (rkPut s "ground_names" (rk_guiWords (rkGuiGet 'rk_geXGround)))))
     s))
 
 (defun rk_guiSetIf (sym v)
   (when (and v (not (eq v rkJsonFalse))) (rkGuiSet sym (rk_guiStr v))))
+
+; "(auto)" / blank -> nil (let the resolver pick)
+(defun rk_guiChoiceOrNil (v)
+  (if (or (rk_guiBlank v) (equal v rk_guiAuto)) nil (rk_guiTrim v)))
+
+; Set a cyclic field to v, adding v to its choices when it is not offered
+; (a saved choice that the current environment does not list).
+(defun rk_guiSetCyc (sym v)
+  (let ((f (rkGuiField sym)) ch)
+    (when (and f (stringp v) (nequal v ""))
+      (setq ch (get f 'choices))
+      (unless (member v ch) (rk_guiSetChoices sym (append ch (list v))))
+      (rkGuiSet sym v))
+    v))
 
 ; Fill one page from a settings table (saved settings / rerun).
 (defun rk_guiFillPage (type s)
@@ -829,8 +875,14 @@
       ((equal type "extract")
         (rk_guiSetIf 'rk_geLLib (arrayref s "layout_lib"))
         (rk_guiSetIf 'rk_geLView (arrayref s "layout_view"))
-        (rk_guiSetIf 'rk_geXCorner (arrayref s "technology_corner"))
-        (rk_guiSetIf 'rk_geXTemp (arrayref s "temperature")))))
+        (rk_guiSetCyc 'rk_geXCorner (arrayref s "technology_corner"))
+        (rk_guiSetIf 'rk_geXTemp (arrayref s "temperature"))
+        (rk_guiSetCyc 'rk_geXVariant (arrayref s "lvs_variant"))
+        (rk_guiSetCyc 'rk_geXQrc (arrayref s "qrc_deck"))
+        (when (rk_guiL (arrayref s "power_names"))
+          (rkGuiSet 'rk_geXPower (rk_guiJoin (arrayref s "power_names") " ")))
+        (when (rk_guiL (arrayref s "ground_names"))
+          (rkGuiSet 'rk_geXGround (rk_guiJoin (arrayref s "ground_names") " "))))))
   t)
 
 (defun rk_guiApplySaved (saved)
@@ -1275,11 +1327,90 @@
 ; EMIR page: extraction, existing files, supplies
 ; ---------------------------------------------------------------------------
 
+; --- extract-resolve: parameters derived from Virtuoso's environment ---------
+
+(defun rk_guiMissingEnvText (res)
+  (sprintf nil "MISSING environment variable(s) %s -- start Virtuoso from a shell that sourced the PDK setup, or pin extract.<key> in the site config; [Show resolved] for details"
+           (rk_guiJoin (mapcar (lambda (v) (strcat "$" v)) (rk_guiL (rkGet res "missing_env"))) " ")))
+
+; Run extract-resolve (async). Called on panel load, DUT change, choice change
+; and by [Resolve / preview]. The result fills the choices and the status line.
+(defun rk_guiResolveExtract ()
+  (let (ctx out)
+    (when (and rk_guiForm rk_guiCtx (not rk_guiClosed))
+      (setq ctx (rkGuiRunCtx "emir"))
+      (setq out (rkIpcNewOutFile "resolve"))
+      (setq rk_guiResolveOut out)
+      (rkIpcRun "extract-resolve" (rkIpcNewCtxFile ctx "resolve") out 'rk_guiResolved
+                (list "--text" (strcat out ".txt")) 60))))
+
+(defun rk_guiResolveCB ()
+  (cond
+    ((null rk_guiCtx) (rkGuiSet 'rk_geXStatus "no Maestro context"))
+    (t (rkGuiSet 'rk_geXStatus "resolving the extraction parameters...")
+       (rk_guiResolveExtract)
+       t)))
+
+(defun rk_guiXChoiceCB ()
+  (unless rk_guiMute (rk_guiResolveExtract)))
+
+(defun rk_guiResolved (res)
+  (let (ch variants decks errs txt)
+    (cond
+      ((nequal (rkGet res "_out") rk_guiResolveOut) nil)   ; superseded by a newer call
+      ((not (eq (rkGet res "ok") t))
+        (setq rk_guiResolve nil)
+        (rkGuiSet 'rk_geXStatus (sprintf nil "extract-resolve failed: %s" (rkGet res "error" "?"))))
+      (t
+        (setq rk_guiResolve res)
+        (setq ch (rkGet res "choices"))
+        (setq variants (rk_guiL (rkGet ch "variants")))
+        (setq decks (rk_guiL (rkGet ch "qrc_decks")))
+        (rk_guiSyncChoices 'rk_geXVariant variants)
+        (rk_guiSyncChoices 'rk_geXQrc decks)
+        (when (rk_guiBlank (rkGuiGet 'rk_geXPower))
+          (rkGuiSet 'rk_geXPower (rk_guiJoin (rkGet res "suggested.power_names") " ")))
+        (when (rk_guiBlank (rkGuiGet 'rk_geXGround))
+          (rkGuiSet 'rk_geXGround (rk_guiJoin (rkGet res "suggested.ground_names") " ")))
+        (setq errs (rk_guiL (rkGet res "errors")))
+        (cond
+          ((rk_guiL (rkGet res "missing_env"))
+            (rk_guiEnable 'rk_geBExtract nil)
+            (setq txt (rk_guiMissingEnvText res)))
+          (errs
+            (rk_guiEnable 'rk_geBExtract t)
+            (setq txt (sprintf nil "not ready: %s%s" (car errs)
+                               (if (cdr errs) (sprintf nil " (+%d more; [Show resolved])" (length (cdr errs))) ""))))
+          (t
+            (rk_guiEnable 'rk_geBExtract t)
+            (setq txt (sprintf nil "ready: tech %s, LVS %s.%s, corner %s, QRC deck %s"
+                               (rk_guiStr (rkGet res "resolved.tech_name.value"))
+                               (rk_guiStr (rkGet res "resolved.lvs_basename.value"))
+                               (rk_guiStr (rkGet res "resolved.lvs_variant.value"))
+                               (rk_guiStr (rkGet res "resolved.technology_corner.value"))
+                               (rk_guiStr (rkGet res "resolved.qrc_deck_dir.value"))))))
+        (unless (rkIpcPollActive "gui:extract") (rkGuiSet 'rk_geXStatus txt)))))
+  t)
+
+; cyclic choices = (auto) + what the environment offers; keep the current pick
+(defun rk_guiSyncChoices (sym items)
+  (let ((cur (rkGuiGet sym)))
+    (rk_guiSetChoices sym (cons rk_guiAuto (setof x items (stringp x))))
+    (rkGuiSet sym (if (member cur items) cur rk_guiAuto))))
+
+(defun rk_guiShowResolvedCB ()
+  (let ((p (and rk_guiResolve (rkGet rk_guiResolve "text"))))
+    (cond
+      ((and (stringp p) (isFile p)) (rkResultsOpenFile p))
+      (t (rkGuiSet 'rk_geXStatus "nothing resolved yet: press [Resolve / preview]")))))
+
 (defun rk_guiExtractCB ()
   (let (ctx ctxFile)
     (cond
       ((null rk_guiDut) (rkGuiSet 'rk_geXStatus "choose the DUT first"))
       ((rkIpcPollActive "gui:extract") (rkGuiSet 'rk_geXStatus "an extraction is already being followed"))
+      ((rk_guiL (rkGet rk_guiResolve "missing_env"))
+        (rkGuiSet 'rk_geXStatus (rk_guiMissingEnvText rk_guiResolve)))
       (t
         (setq ctx (rkGuiRunCtx "emir"))
         (setq ctxFile (rkIpcNewCtxFile ctx "extract"))
@@ -1292,10 +1423,7 @@
   (cond
     ((not (eq (rkGet res "ok") t))
       (rkGuiSet 'rk_geXStatus
-                (sprintf nil "extraction not started: %s%s" (rkGet res "error" "?")
-                         (if (rkGet res "missing")
-                           (sprintf nil " (site extract keys missing: %s)" (rk_guiJoin (rkGet res "missing") ", "))
-                           ""))))
+                (sprintf nil "extraction not started: %s" (rkGet res "error" "?"))))
     (t
       (setq rk_guiExtract res)
       (rk_guiFollowExtract (rkGet res "extract_dir"))))

@@ -108,8 +108,21 @@ def prepare(scratch):
     })
     site.setdefault("emir", {})["license_retry_minutes"] = 0.05
     ex = site.setdefault("extract", {})
-    if not ex.get("qrc_query_cmd"):   # required by rk_extract; the fake tools ignore it
-        ex["qrc_query_cmd"] = "/opt/fake_pdk/quantus/query_cmd"
+    for k in ("pdk_layer_map", "calibre_lvs_dir", "calibre_lvs_basename", "lvs_variant",
+              "technology_library_file", "technology_name", "qrc_query_cmd",
+              "qrc_preserve_cell_list", "power_nets", "ground_nets", "layer_map",
+              "lvs_deck_dir", "qrc_deck_dir", "tech_name"):
+        ex.pop(k, None)          # the env rules of site_defaults.json apply
+    ex["power_names"] = ["VDD"]
+    ex["ground_names"] = ["VSS"]
+    # a synthetic PDK tree; its variables go to pdk_env.txt (used unless the
+    # Virtuoso under test already has them in its own environment)
+    sys.path.insert(0, os.path.join(RELKIT, "py", "tests"))
+    import fake_pdk
+    env = fake_pdk.make_fake_pdk(os.path.join(scratch, "fakepdk"))
+    with open(os.path.join(scratch, "pdk_env.txt"), "w", encoding="utf-8") as f:
+        for k, v in env.items():
+            f.write("%s=%s\n" % (k, v))
     site.setdefault("gui", {})["status_poll_seconds"] = 2
     write_json(os.path.join(scratch, "wa", ".relkit_site.json"), site)
     write_json(os.path.join(scratch, "fake_rs.json"), {
@@ -141,6 +154,16 @@ def main(argv):
         r = b.ev("(rkGuiT_setup %s)" % q(scratch))
         print("setup:", r)
         b.check("setup ran (%s)" % r, r == "t")
+
+        # --- extract-resolve: env missing, then complete
+        b.ev("(rkGuiT_resolveMissing)")
+        b.wait("rk_guiResolve", "resolve (env missing)", 60)
+        print("resolve 1:", b.ev("(rkGuiGet 'rk_geXStatus)"))
+        b.ev("(rkGuiT_checkMissing)")
+        b.ev("(rkGuiT_resolveFull)")
+        b.wait("rk_guiResolve", "resolve (env complete)", 60)
+        print("resolve 2:", b.ev("(rkGuiGet 'rk_geXStatus)"))
+        b.ev("(rkGuiT_checkReady)")
 
         # --- extraction: LVS fails first
         b.ev("(rkGuiT_extract)")

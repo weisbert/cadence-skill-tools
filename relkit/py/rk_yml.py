@@ -459,8 +459,10 @@ POWER_RE = re.compile(r"^(.*vdd.*|.*vcc.*|vpp.*|vbat.*|.*pwr.*|.*avdd.*|.*dvdd.*
 
 
 def classify_port(name, site):
-    pw = [n.lower() for n in (rk_site.get(site, "extract.power_nets") or [])]
-    gn = [n.lower() for n in (rk_site.get(site, "extract.ground_nets") or [])]
+    pw = [n.lower() for n in (rk_site.get(site, "extract.power_names")
+                              or rk_site.get(site, "extract.power_nets") or [])]
+    gn = [n.lower() for n in (rk_site.get(site, "extract.ground_names")
+                              or rk_site.get(site, "extract.ground_nets") or [])]
     low = name.lower()
     if low in gn:
         return "ground"

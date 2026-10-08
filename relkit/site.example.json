@@ -71,24 +71,30 @@
       "calibre": "calibre",
       "qrc": "qrc"
     },
+    "_doc": "Values are rules resolved against Virtuoso's environment ($X, $env(X), '|parent'; write $X rather than ${X}: the site loader expands ${X} itself and warns when it is unset); a value without '$' is a literal. Omitted keys use site_defaults.json (Auto_ext's rules).",
     "layout_view": "layout",
-    "pdk_layer_map": "/proj/pdk/example/layermap.txt",
-    "calibre_lvs_dir": "/proj/pdk/example/calibre/lvs",
-    "calibre_lvs_basename": "example_lvs.rul",
-    "lvs_variant": "default",
-    "technology_library_file": "/proj/pdk/example/quantus/lib.defs",
-    "technology_name": "example_tech",
-    "technology_corner": "typical",
+    "layer_map": "$PDK_LAYER_MAP_FILE",
+    "lvs_deck_dir": "$calibre_source_added_place|parent",
+    "cdl_include_file": "$calibre_source_added_place",
+    "technology_library_file": "$SETUP_ROOT/assura_tech.lib",
+    "qrc_deck_glob": "$VERIFY_ROOT/runset/Calibre_QRC/QRC/*/*/QCI_deck",
+    "qrc_deck_dir": null,
+    "default_corner": "typical",
     "temperature": 25,
-    "power_nets": ["VDD"],
-    "ground_nets": ["VSS"],
-    "qrc_query_cmd": "/proj/pdk/example/qrc/query_cmd",
-    "qrc_preserve_cell_list": "/proj/pdk/example/qrc/preserveCellList.txt",
-    "qrc_ground_net": null,
-    "cdl_include_file": "",
-    "si_options": {},
-    "lvs_options": {},
-    "qrc_options": {"extract_rules": [{"selection": "all", "type": "rc_coupled"}]}
+    "power_names": [
+      "VDD"
+    ],
+    "ground_names": [
+      "VSS"
+    ],
+    "qrc_options": {
+      "extract_rules": [
+        {
+          "selection": "all",
+          "type": "rc_coupled"
+        }
+      ]
+    }
   },
 
   "defaults": {

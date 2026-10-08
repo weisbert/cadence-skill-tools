@@ -108,7 +108,7 @@ The keys you will normally set:
 | `simulator` | yml `Simulator` block (name, accuracy, threads, options) |
 | `aging_model` | aging `Model_File`, `Relxpert_Uri_Libs` |
 | `emir.*` | `gds_map_file`, `rc_corner`, license policy defaults, `license_keywords` / `license_ignore`, `totem_flow` overrides |
-| `extract.*` | tool paths and PDK files for extraction (see below) |
+| `extract.*` | extraction tools, and the rules that derive the PDK files from the environment (see below) |
 | `defaults.aging/deos/emir` | default values of the panel fields |
 | `gui.*` | panel poll period, `open_dir_cmd` (default `xdg-open`), `relstudio_cmd` |
 
@@ -177,7 +177,9 @@ Page specifics:
 * **DEOS**: life time, window and `Simulation_Time`, TDDB temperature (empty =
   corner temperature).
 * **EMIR**: DSPF and GDS (**Extract DSPF + GDS**, or **Use existing
-  (detect)** / browse), layout lib/view, RC corner and extraction temperature;
+  (detect)** / browse), layout lib/view, RC corner, extraction temperature,
+  LVS variant, Quantus deck and LVS power/ground names (the PDK paths come
+  from the environment, see [extraction](#dspf--gds-extraction));
   power and ground nets as `NET=V` lists (**Fill from DUT ports** prefills
   them from the DUT ports and the testbench's DC sources; a power net without
   a voltage blocks Submit until you type it); EM temperature (110), Run_Type
@@ -285,23 +287,57 @@ Only after all four succeed are `<DUT cell>.gds` and `<DUT cell>.dspf`
 published together in `<artifact_root>/<DUT cell>/`, so a failed run never
 leaves a mismatched pair. Intermediate files stay in `extract/` below it.
 **Use existing (detect)** fills the fields with files already there and warns
-when the DSPF is older than the GDS. The panel can change the RC corner
-(`technology_corner`) and the extraction temperature; everything else comes
-from the site file's `extract` section:
+when the DSPF is older than the GDS.
+
+### Where the PDK values come from
+
+The PDK paths change from project to project, but the PDK setup script
+exports them as environment variables. relkit derives them the way Auto_ext
+does, from **Virtuoso's environment** (start Virtuoso from a shell that sourced
+the PDK setup):
+
+| parameter | rule (site `extract.*` key, default) |
+|---|---|
+| strmout layer map | `layer_map` = `$PDK_LAYER_MAP_FILE` |
+| Calibre LVS deck directory | `lvs_deck_dir` = `$calibre_source_added_place|parent` |
+| LVS rules file | `<deck dir>/<basename>.<variant>.qcilvs`; basename = the deck directory name; the variants are the files found there |
+| CDL prelude (si.env `incFILE`) | `cdl_include_file` = `$calibre_source_added_place` |
+| Quantus technology library | `technology_library_file` = `$SETUP_ROOT/assura_tech.lib` |
+| Quantus technology name | parent directory name of `$PDK_TECH_FILE` (else `$PDK_LAYER_MAP_FILE`, `$PDK_DISPLAY_FILE`) |
+| Quantus (QCI) deck, `query_cmd`, `preserveCellList.txt` | `qrc_deck_glob` = `$VERIFY_ROOT/runset/Calibre_QRC/QRC/*/*/QCI_deck` |
+
+So the variables that must be set are `PDK_LAYER_MAP_FILE`,
+`calibre_source_added_place`, `SETUP_ROOT`, `PDK_TECH_FILE` (or one of the two
+alternatives) and `VERIFY_ROOT`. A value without `$` is a literal: to pin
+something for a project, write the path in the site file (for example
+`"qrc_deck_dir": "/path/to/QCI_deck"`). Expressions accept `$X`, `${X}`,
+`$env(X)` and `|parent` (prefer `$X`: the site loader expands `${X}` itself).
+
+**What you choose in the EMIR page**: the **LVS variant** (`(auto)` = `wodio`
+when present, else the only one), the **RC corner** (from `extract.corners`,
+the Quantus RuleSet names; default `typical`), the **extraction temperature**,
+the **QRC deck** when the glob finds several releases, and the **LVS power /
+ground names** (prefilled from `extract.power_names` / `ground_names` plus the
+DUT ports that look like supplies).
+
+**Resolve / preview** runs automatically when the panel opens, when the DUT
+or a choice changes, and on demand. The status line says *ready* (tech name,
+rules file, corner, QRC deck) or names what is missing; **Show resolved**
+opens the full list with the source of every value. While a variable is
+missing, **Extract DSPF + GDS** is disabled; `extract` itself also refuses up
+front, before it creates anything.
+
+Other `extract` keys:
 
 | key | meaning |
 |---|---|
 | `tools.strmout/si/calibre/qrc` | executables (string, or an argv list) |
-| `pdk_layer_map` | strmout layer map |
-| `calibre_lvs_dir`, `calibre_lvs_basename`, `lvs_variant` | LVS rule file = `<dir>/<basename>.<variant>.qcilvs` (pattern in `lvs_options.rules_file_pattern`) |
-| `qrc_query_cmd` | PDK query command file run as LVS post-trigger |
-| `technology_library_file`, `technology_name`, `technology_corner`, `temperature` | Quantus technology |
-| `power_nets`, `ground_nets`, `qrc_ground_net` | supply names for LVS / Quantus |
-| `qrc_preserve_cell_list`, `cdl_include_file`, `strmout_args`, `cdslib`, `source_view` | optional |
+| `qrc_ground_net`, `strmout_args`, `cdslib`, `source_view`, `layout_view` | optional |
 | `si_options`, `lvs_options`, `qrc_options` | per-key overrides of the built-in recipe |
+| `check_files` | `false` skips the existence checks of the resolved files |
 
-Extraction refuses to start while a required key is unset and lists the
-missing ones.
+The fixed-value keys of relkit 0.1 (`pdk_layer_map`, `calibre_lvs_dir`,
+`qrc_query_cmd`, ...) are still honoured, with a warning.
 
 ---
 
@@ -388,9 +424,10 @@ the real site file. Steps 1-3 need no cluster time.
 6. **Totem license**: when a real license shortage happens, take the end of
    the EMIR job log (`run.json` `license.unmatched_tail` / `failure_tail`) and
    add keywords to `emir.license_keywords` if it was not recognised.
-7. **Extraction**: fill the `extract` section from a known-good Auto_ext run
-   (its rendered `si.env`, Calibre runset, Quantus command file and strmout
-   options), extract one DUT, and diff the DSPF with Auto_ext's.
+7. **Extraction**: open the panel from a Virtuoso started with the PDK
+   setup sourced, press **Resolve / preview** and check that every value is
+   resolved (**Show resolved**) and matches what Auto_ext uses; then extract
+   one DUT and diff the DSPF with Auto_ext's.
 8. **RelStudio GUI history**: open the RelStudio GUI on the same
    `<work_root>/<IP>/<Cell>/<Project>` and check that relkit's runs appear in
    its history list.

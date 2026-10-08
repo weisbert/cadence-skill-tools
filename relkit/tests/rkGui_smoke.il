@@ -30,8 +30,14 @@
     (rkTestBegin "rkGui_smoke")
     (setq rkGuiT_dir scratch)
     (setq rkGuiSiteWorkarea (rkPathJoin scratch "wa"))
-    (rkIpcSetEnv (list (strcat "RELKIT_FAKE_RS_CONFIG=" (rkPathJoin scratch "fake_rs.json"))
-                       (strcat "RELKIT_FAKE_TOOLS_CONFIG=" (rkPathJoin scratch "fake_tools.json"))))
+    (setq rkGuiT_baseEnv (list (strcat "RELKIT_FAKE_RS_CONFIG=" (rkPathJoin scratch "fake_rs.json"))
+                               (strcat "RELKIT_FAKE_TOOLS_CONFIG=" (rkPathJoin scratch "fake_tools.json"))))
+    ; the synthetic PDK: inherited from Virtuoso's own environment when it was
+    ; started with it (relkit_dev/fakepdk/env.csh), else passed to the children
+    (setq rkGuiT_pdkEnv (rkGuiT_readLines (rkPathJoin scratch "pdk_env.txt")))
+    (setq rkGuiT_pdkInherited (and (getShellEnvVar "VERIFY_ROOT")
+                                   (getShellEnvVar "calibre_source_added_place") t))
+    (rkGuiT_envFull)
     (setq rk_guiNoDisplay t)
     (setq r (errset (maeOpenSetup "sim_yusheng" "Test" "maestro" ?mode "r") t))
     (setq rkGuiT_sess (and r (car r)))
@@ -105,6 +111,74 @@
     (rkCheck "ctx unselected written false" (exists c (rkGet r "corners") (eq (rkGet c "selected") rkJsonFalse)))
     (rkCheck "panel did not touch the Maestro corners" (eq (rkGet (car (setof c (rkGet rk_guiCtx "corners") (equal (rkGet c "name") "TT_pvt_tt_VDD2.8"))) "enabled") t))
     t))
+
+; ---------------------------------------------------------------------------
+; Phase 1b: extract-resolve (parameters derived from the environment)
+; ---------------------------------------------------------------------------
+
+(defun rkGuiT_readLines (path)
+  (let (port line out)
+    (when (isFile path)
+      (setq port (infile path))
+      (while (gets line port)
+        (setq line (rk_guiTrim line))
+        (unless (equal line "") (setq out (cons line out))))
+      (close port))
+    (reverse out)))
+
+; the PDK variables as the children see them: Virtuoso's own, or from the file
+(defun rkGuiT_envFull ()
+  (rkIpcSetEnv (if rkGuiT_pdkInherited rkGuiT_baseEnv (append rkGuiT_baseEnv rkGuiT_pdkEnv)))
+  t)
+
+(defun rkGuiT_resolveMissing ()
+  ; blank the PDK variables for the children (empty = unset for the resolver)
+  (rkIpcSetEnv (append rkGuiT_baseEnv
+                       (list "VERIFY_ROOT=" "calibre_source_added_place=" "SETUP_ROOT="
+                             "PDK_TECH_FILE=" "PDK_LAYER_MAP_FILE=" "PDK_DISPLAY_FILE=")))
+  (setq rk_guiResolve nil)
+  (rk_guiResolveCB)
+  t)
+
+(defun rkGuiT_checkMissing ()
+  (rkCheck "resolve: missing env reported"
+           (and (member "VERIFY_ROOT" (rk_guiL (rkGet rk_guiResolve "missing_env")))
+                (member "calibre_source_added_place" (rk_guiL (rkGet rk_guiResolve "missing_env")))))
+  (rkCheck "resolve: status names the variables" (pcreMatchp "^MISSING environment variable.*[$]VERIFY_ROOT" (rkGuiGet 'rk_geXStatus)))
+  (rkCheck "extract button disabled while env missing" (null (get (rkGuiField 'rk_geBExtract) 'enabled)))
+  (rk_guiExtractCB)
+  (rkCheck "extract refused while env missing"
+           (and (pcreMatchp "^MISSING" (rkGuiGet 'rk_geXStatus)) (null (rkIpcPollActive "gui:extract"))))
+  t)
+
+(defun rkGuiT_resolveFull ()
+  (rkGuiT_envFull)
+  (setq rk_guiResolve nil)
+  (rk_guiResolveCB)
+  t)
+
+(defun rkGuiT_checkReady ()
+  (printf "[rkGui_smoke] PDK env %s\n" (if rkGuiT_pdkInherited "inherited from Virtuoso" "passed via rkIpcSetEnv"))
+  (rkCheck "resolve ready" (eq (rkGet rk_guiResolve "ready") t))
+  (rkCheck "no missing env" (null (rk_guiL (rkGet rk_guiResolve "missing_env"))))
+  (rkCheck "status: ready + tech name from the env" (pcreMatchp "^ready: tech demo_tech, LVS DEMO_LVS_R1.wodio" (rkGuiGet 'rk_geXStatus)))
+  (rkCheck "extract button enabled" (get (rkGuiField 'rk_geBExtract) 'enabled))
+  (rkCheck "variant choices from the deck dir"
+           (and (member "wodio" (get (rkGuiField 'rk_geXVariant) 'choices))
+                (member "widio" (get (rkGuiField 'rk_geXVariant) 'choices))))
+  (rkCheck "QRC deck choices" (exists c (get (rkGuiField 'rk_geXQrc) 'choices) (pcreMatchp "QCI_deck$" c)))
+  (rkCheck "RC corner choices" (member "cworst" (get (rkGuiField 'rk_geXCorner) 'choices)))
+  (rkCheck "LVS power prefilled" (pcreMatchp "VDD" (rkGuiGet 'rk_geXPower)))
+  (rkCheck "LVS ground prefilled" (pcreMatchp "VSS" (rkGuiGet 'rk_geXGround)))
+  (rkCheck "preview text written" (isFile (rkGet rk_guiResolve "text")))
+  (rkGuiSet 'rk_geXVariant "widio")
+  (rkCheckEqual "variant choice -> settings" (rkGet (rk_guiPageSettings "extract") "lvs_variant") "widio")
+  (rkGuiSet 'rk_geXVariant rk_guiAuto)
+  (rkCheckEqual "(auto) -> null" (rkGet (rk_guiPageSettings "extract") "lvs_variant") nil)
+  (rkGuiSet 'rk_geXCorner "cworst")
+  (rkCheckEqual "RC corner -> settings" (rkGet (rk_guiPageSettings "extract") "technology_corner") "cworst")
+  (rkCheckEqual "LVS power -> settings list" (car (rkGet (rk_guiPageSettings "extract") "power_names")) "VDD")
+  t)
 
 ; ---------------------------------------------------------------------------
 ; Phase 2: extraction (LVS fail, then pass), supplies
