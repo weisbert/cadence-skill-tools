@@ -1,0 +1,28 @@
+// tb.scs -- shared test bench for calcfn: ideal pulse sources with known answers.
+// T = 1n, VDD = 1, tr = tf = 20p  =>  50% crossing = edge start + 10p.
+// Expected (rise->rise unless noted):
+//   buf      : 0.35n
+//   inv      : in rise -> out fall 0.30n
+//   div2     : clk rise -> div rise 0.12n
+//   div2slow : clk rise -> div rise 1.08n  (> T: needs ?tmin)
+//   rstn     : rstn rise -> first ckg rise 0.47n
+//   diff     : (inp-inn) rise -> (outp-outn) rise 0.20n, CML 0.45..0.55
+//   bufspk   : buf plus a 3 V startup spike at 0..0.1n -> whole-wave mid level is 1.5 V
+simulator lang=spectre
+global 0
+vin      (in 0)       vsource type=pulse val0=0 val1=1 delay=0.1n  rise=20p fall=20p width=0.48n period=1n
+vbuf     (buf 0)      vsource type=pulse val0=0 val1=1 delay=0.45n rise=20p fall=20p width=0.48n period=1n
+vinv     (inv 0)      vsource type=pulse val0=1 val1=0 delay=0.40n rise=20p fall=20p width=0.48n period=1n
+vdiv2    (div2 0)     vsource type=pulse val0=0 val1=1 delay=0.22n rise=20p fall=20p width=0.98n period=2n
+vdiv2s   (div2slow 0) vsource type=pulse val0=0 val1=1 delay=1.18n rise=20p fall=20p width=0.98n period=2n
+vrstn    (rstn 0)     vsource type=pwl wave=[0 0 2.03n 0 2.05n 1]
+vckg     (ckg 0)      vsource type=pulse val0=0 val1=1 delay=2.50n rise=20p fall=20p width=0.48n period=1n
+vinp     (inp 0)      vsource type=pulse val0=0 val1=1 delay=0.1n  rise=20p fall=20p width=0.48n period=1n
+vinn     (inn 0)      vsource type=pulse val0=1 val1=0 delay=0.1n  rise=20p fall=20p width=0.48n period=1n
+voutp    (outp 0)     vsource type=pulse val0=0.45 val1=0.55 delay=0.3n rise=20p fall=20p width=0.48n period=1n
+voutn    (outn 0)     vsource type=pulse val0=0.55 val1=0.45 delay=0.3n rise=20p fall=20p width=0.48n period=1n
+vspk     (bufspk m1)  vsource type=pwl wave=[0 0 0.05n 3 0.1n 0]
+vbuf2    (m1 0)       vsource type=pulse val0=0 val1=1 delay=0.45n rise=20p fall=20p width=0.48n period=1n
+r1 (in 0) resistor r=1k
+tran tran stop=10n maxstep=5p
+save bufspk in buf inv div2 div2slow rstn ckg inp inn outp outn

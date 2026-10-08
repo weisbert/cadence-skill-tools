@@ -1,0 +1,75 @@
+; LOdelay_mae.ocn -- LOdelay as Maestro outputs (run with ../run_gui.sh from this dir's cds.lib).
+; Builds calcfn_tb/LOdelay: four analogLib vpulse sources with known delays, a
+; maestro view with one tran test and LOdelay outputs, runs it and checks the values.
+; Ref (IC6.1.8): dbOpenCellViewByType skdfref.pdf p.900,
+;   dbCreateParamInstByMasterName p.971; schCreateWire skcompref.pdf p.254,
+;   schCreateWireLabel p.256, schCheck p.221; maeOpenSetup maeSKILLref.pdf p.72,
+;   maeCreateTest p.36, maeSetAnalysis p.83, maeAddOutput p.34, maeSaveSetup p.80,
+;   maeRunSimulation p.112, maeGetOutputValue p.131.
+load("../../calcfn.il")
+
+LDT_tn = "calcfn_tb:LOdelay:1"
+; output name, expression, expected value
+LDT_outputs = list(
+  list("d_buf"       "LOdelay(VT(\"/in\") VT(\"/buf\"))"                                 0.35e-9)
+  list("d_inv"       "LOdelay(VT(\"/in\") VT(\"/inv\") ?outEdge \"falling\")"            0.30e-9)
+  list("d_div2_tmin" "LOdelay(VT(\"/in\") VT(\"/div2slow\") ?tmin 0.5n)"                 1.08e-9)
+  list("d_div2_raw"  "LOdelay(VT(\"/in\") VT(\"/div2slow\"))"                            0.08e-9)
+  list("d_clipped"   "LOdelay(clip(VT(\"/in\") 0.3n 9.9n) clip(VT(\"/buf\") 0.3n 9.9n))" 0.35e-9))
+
+let((cv snap w lbl termPt src)
+  snap = 0.0625
+  ; cds.lib here already DEFINEs calcfn_tb as ./calcfn_tb.  Making the library
+  ; directory by hand keeps cds.lib untouched (ddCreateLib / dbCreateLib would
+  ; append an absolute DEFINE to it).
+  unless(isFile("calcfn_tb/cdsinfo.tag")
+    sh("mkdir -p calcfn_tb && printf 'CDSLIBRARY\nDMTYPE none\nNAMESPACE LibraryUnix\n' > calcfn_tb/cdsinfo.tag")
+    ddUpdateLibList())
+  unless(ddGetObj("calcfn_tb") printf("SUMMARY calcfn_tb library not found -- run from test/mae (its cds.lib)\n") exit())
+  cv = dbOpenCellViewByType("calcfn_tb" "LOdelay" "schematic" "schematic" "w")
+  w = lambda((pts) car(schCreateWire(cv "draw" "full" pts snap snap 0.0)))
+  lbl = lambda((wire pt txt) schCreateWireLabel(cv wire pt txt "lowerLeft" "R0" "stick" 0.0625 nil))
+  ; centre of a master terminal's pin, in schematic coordinates (instances are R0)
+  termPt = lambda((inst tname)
+    let((b) b = car(car(setof(x inst~>master~>terminals x~>name == tname))~>pins)~>fig~>bBox
+      list(xCoord(inst~>xy) + (xCoord(car(b)) + xCoord(cadr(b)))/2.0
+           yCoord(inst~>xy) + (yCoord(car(b)) + yCoord(cadr(b)))/2.0)))
+  src = lambda((name x net v1 v2 td pw per)
+    let((i p m)
+      i = dbCreateParamInstByMasterName(cv "analogLib" "vpulse" "symbol" name list(x 0) "R0" 1
+            list(list("v1" "string" v1) list("v2" "string" v2) list("td" "string" td)
+                 list("tr" "string" "20p") list("tf" "string" "20p")
+                 list("pw" "string" pw) list("per" "string" per)))
+      p = funcall(termPt i "PLUS")  m = funcall(termPt i "MINUS")
+      funcall(lbl funcall(w list(p list(car(p) cadr(p)+0.5))) list(car(p) cadr(p)+0.25) net)
+      funcall(w list(m list(car(m) cadr(m)-0.25)))
+      dbCreateParamInstByMasterName(cv "analogLib" "gnd" "symbol" strcat("G" name)
+                                    list(car(m) cadr(m)-0.25) "R0" 1 nil)))
+  funcall(src "V0" 0.0 "in"       "0" "1" "0.1n"  "0.48n" "1n")
+  funcall(src "V1" 1.0 "buf"      "0" "1" "0.45n" "0.48n" "1n")
+  funcall(src "V2" 2.0 "inv"      "1" "0" "0.40n" "0.48n" "1n")
+  funcall(src "V3" 3.0 "div2slow" "0" "1" "1.18n" "0.98n" "2n")
+  printf("CASE %s schematic check+save\n" if(car(schCheck(cv)) == 0 && dbSave(cv) "PASS" "FAIL"))
+  dbClose(cv)
+
+  LDT_sess = maeOpenSetup("calcfn_tb" "LOdelay" "maestro")
+  unless(member(LDT_tn maeGetSetup(?session LDT_sess))
+    maeCreateTest(LDT_tn ?lib "calcfn_tb" ?cell "LOdelay" ?view "schematic" ?simulator "spectre" ?session LDT_sess))
+  maeSetAnalysis(LDT_tn "tran" ?enable t ?session LDT_sess ?options list(list("stop" "10n") list("maxstep" "5p")))
+  foreach(o LDT_outputs
+    maeAddOutput(car(o) LDT_tn ?outputType "point" ?expr cadr(o) ?plot t ?session LDT_sess))
+  maeSaveSetup(?session LDT_sess)
+)
+
+procedure( LDT_after()
+  let((got nFail)
+    nFail = 0
+    maeOpenResults(?history LDT_hist)
+    foreach(o LDT_outputs
+      got = maeGetOutputValue(car(o) LDT_tn)
+      if(numberp(got) && abs(got - caddr(o)) < 0.1e-12
+        then printf("CASE PASS %-12s got=%L\n" car(o) got)
+        else nFail++ printf("CASE FAIL %-12s got=%L want=%L\n" car(o) got caddr(o))))
+    printf("SUMMARY maestro outputs fail=%d\n" nFail)
+    exit()))
+LDT_hist = maeRunSimulation(?session LDT_sess ?callback "LDT_after()")

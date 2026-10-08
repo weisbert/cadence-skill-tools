@@ -16,6 +16,11 @@ IC6.1.8).
   reports with click-to-schematic tables, keeps a run history, extracts
   DSPF/GDS, and builds aged corners in Maestro.
 
+- **[calcfn](calcfn/)** — functions for Maestro outputs and the Calculator
+  (first one: `LOdelay`, edge-to-edge delay along an LO chain — buffer,
+  divider, reset release). Loaded on its own from `.cdsinit`; needs neither
+  `mytool` nor a GUI.
+
 ## Usage
 
 Each tool is self-contained under its own subdirectory. Load by sourcing

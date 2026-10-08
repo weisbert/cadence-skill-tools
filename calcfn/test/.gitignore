@@ -1,0 +1,7 @@
+# simulation / Virtuoso run output
+psf/
+*.log
+.cadence/
+logs_*/
+*.csv
+mae/calcfn_tb/

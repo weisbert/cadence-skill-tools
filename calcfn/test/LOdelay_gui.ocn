@@ -1,0 +1,20 @@
+; LOdelay_gui.ocn -- Calculator path (run with run_gui.sh): the form writes the
+; expected LOdelay(...) call into the Buffer.
+load("../calcfn.il")
+calCalculatorFormCB()
+LOdelay_specialCB()
+f = LOdelay_form()
+f->refNet->value = "/in"
+f->outNet->value = "VT(\"/div2slow\")"
+f->tmin->value = "0.5n"
+f->stat->value = "first"
+procedure( Finish()
+  let((buf want)
+    hiFormDone(f)
+    buf = calGetBuffer()
+    want = "LOdelay(VT(\"/in\") VT(\"/div2slow\") ?tmin 0.5n ?stat \"first\")"
+    printf("CASE %s form -> Buffer   got=%s\n" if(buf == want "PASS" "FAIL") buf)
+    printf("CASE %s form closed\n" if(hiIsFormDisplayed(f) "FAIL" "PASS"))
+    printf("SUMMARY done\n")
+    exit()))
+hiRegTimer("Finish()" 60)
