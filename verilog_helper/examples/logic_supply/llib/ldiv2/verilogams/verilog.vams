@@ -1,0 +1,8 @@
+`timescale 1ps/1ps
+module ldiv2 ( Q, VDD, VPP, VSS, CLK );
+  output Q; reg Q;
+  input wreal VDD; input wreal VPP; input wreal VSS;
+  input CLK;
+  initial Q = 1'b0;
+  always @(posedge CLK) Q <= ~Q;
+endmodule

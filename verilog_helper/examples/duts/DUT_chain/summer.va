@@ -1,0 +1,9 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// Leaf, pure-digital wreal:  out = a + b
+module summer(out, a, b);
+  output out;
+  input  a, b;
+  wreal  out, a, b;
+  assign out = a + b;
+endmodule

@@ -1,0 +1,6 @@
+// behavioral logic leaf
+module nleaf ( i, o );
+  input i;
+  output o;
+  assign o = ~i;
+endmodule

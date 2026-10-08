@@ -1,0 +1,37 @@
+{
+  "schema": "vh_delay/1",
+  "version": "v1",
+  "design": "example (synthetic) -- copy and adapt for your own DUT",
+  "unit": "ps",
+  "scale": 1.0,
+  "scale_macro": "VH_TPD_SCALE",
+  "param_prefix": "VH_TPD_",
+  "notes": [
+    "Synthetic example table: generic class values and generic module names.",
+    "Copy to delays/<dut>_delays.json, map your own leaf modules to classes, and",
+    "set ps values from your library data."
+  ],
+  "classes": {
+    "inv":   {"ps": 12.0, "kind": "tpd",   "rationale": "Inverter, light fan-out."},
+    "nand2": {"ps": 18.0, "kind": "tpd",   "rationale": "2-input NAND."},
+    "nor2":  {"ps": 20.0, "kind": "tpd",   "rationale": "2-input NOR."},
+    "mux":   {"ps": 25.0, "kind": "tpd",   "rationale": "2:1 mux."},
+    "buf":   {"ps": 30.0, "kind": "tpd",   "rationale": "Two-stage buffer."},
+    "dff":   {"ps": 50.0, "kind": "clk2q", "rationale": "DFF clk->Q. Async clear is not delayed."},
+    "tff":   {"ps": 50.0, "kind": "clk2q", "rationale": "Toggle FF clk->Q."},
+    "tspc_div2": {"ps": 28.0, "kind": "clk2q", "rationale": "TSPC divide-by-2 prescaler."}
+  },
+  "modules": {
+    "my_inv_x2":   {"class": "inv"},
+    "my_inv_x4":   {"class": "inv"},
+    "my_nand2":    {"class": "nand2"},
+    "my_nor2":     {"class": "nor2"},
+    "my_mux2":     {"class": "mux"},
+    "my_buf":      {"class": "buf"},
+    "my_dff_r":    {"class": "dff"},
+    "my_tff":      {"class": "tff"},
+    "my_div2_tspc": {"class": "tspc_div2"}
+  },
+  "skip_modules": ["my_top"],
+  "skip_comment": "Structural (netlist-only) modules carry no behaviour -> no delay sites."
+}

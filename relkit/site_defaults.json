@@ -1,0 +1,128 @@
+{
+  "_doc": "relkit built-in defaults. Read by BOTH rkSite.il and py/rk_site.py; a site file is deep-merged over this. Do not put site-specific values here. See docs/CONTRACT.md section 1.",
+  "python": "python3",
+  "relstudio_home": null,
+  "work_root": "${WORKAREA}/relkit_work",
+  "artifact_root": "${WORKAREA}/Reliability",
+  "persist_root": "${WORKAREA}/relkit_runs",
+  "project_name": "relsim1",
+  "submit_strategy": "start",
+  "dry_run": false,
+  "supervise_poll_seconds": 30,
+  "start_wait_minutes": 60,
+  "aging_eval_layout": "entries",
+  "model_root_var": "MODEL_ROOT",
+  "model_file_map": [
+    {"match": "(^|.*/)toplevel\\.scs$", "replace": "$MODEL_ROOT/alps/toplevel.scs"}
+  ],
+  "tool_version_names": ["alps", "calibre", "hspice", "perl", "python3", "spectre", "totem", "virtuoso", "viva"],
+  "tech": {
+    "Foundry": null,
+    "Technology": null,
+    "Tech_Voltage": null,
+    "Tech_Layout": null,
+    "Rel_Tech_Dir": null
+  },
+  "cluster": {
+    "Using_Cluster": true,
+    "Cluster_Type": "donau",
+    "Group": null,
+    "Queue": null,
+    "CPU": 8,
+    "Memory": 12000,
+    "GPU": 4,
+    "Machine_Arch": "x86"
+  },
+  "simulator": {
+    "Name": "alps",
+    "Simulator_Accuracy": "moderate",
+    "Sim_Mt": 8,
+    "Simulation_Options": null,
+    "Flag_Is_Delete_Simulation_Data": false,
+    "Flag_Is_Save_Final_Result": false
+  },
+  "aging_model": {
+    "Model_File": null,
+    "Relxpert_Uri_Libs": null
+  },
+  "emir": {
+    "gds_map_file": null,
+    "rc_corner": "typical",
+    "license_policy": "wait_forever",
+    "license_wait_hours": 8,
+    "license_retry_minutes": 10,
+    "license_keywords": [
+      "license.*(fail|denied|not available|unavailable|cannot check ?out|queued)",
+      "Lic-[0-9]+"
+    ],
+    "license_tail_lines": 50,
+    "license_ignore": [
+      "^ *INFO",
+      "Checking out .*license",
+      "Checkout [0-9]+ ",
+      "Using license file",
+      "Time spent in licensing",
+      "time for checking out license"
+    ],
+    "totem_flow": null
+  },
+  "extract": {
+    "tools": {"strmout": "strmout", "si": "si", "calibre": "calibre", "qrc": "qrc"},
+    "layout_view": "layout",
+    "source_view": "schematic",
+    "cdslib": null,
+    "pdk_layer_map": null,
+    "calibre_lvs_dir": null,
+    "calibre_lvs_basename": null,
+    "lvs_variant": null,
+    "technology_library_file": null,
+    "technology_name": null,
+    "technology_corner": null,
+    "temperature": 25,
+    "power_nets": [],
+    "ground_nets": [],
+    "qrc_query_cmd": null,
+    "qrc_preserve_cell_list": null,
+    "qrc_ground_net": null,
+    "cdl_include_file": "",
+    "strmout_args": [],
+    "si_options": {},
+    "lvs_options": {},
+    "qrc_options": {}
+  },
+  "defaults": {
+    "aging": {
+      "life_time": "10",
+      "life_time_unit": "years",
+      "start_time": "0n",
+      "stop_time": "20n",
+      "eval_temperatures": null
+    },
+    "deos": {
+      "life_time": "10",
+      "life_time_unit": "years",
+      "start_time": "0n",
+      "stop_time": "20n",
+      "simulation_time": "20n",
+      "tddb_temperature": null
+    },
+    "emir": {
+      "run_type": "DYN SEM",
+      "selfheat": true,
+      "em_temperature": 110,
+      "rc_temperature": null,
+      "start_time": "0n",
+      "stop_time": "20n",
+      "dynamic_time_step": "20p",
+      "life_time": "10",
+      "life_time_unit": "years",
+      "layout_view": "layout",
+      "method": "iterated"
+    }
+  },
+  "gui": {
+    "status_poll_seconds": 30,
+    "open_dir_cmd": "xdg-open",
+    "relstudio_cmd": null
+  }
+}

@@ -1,0 +1,7 @@
+#19.2 RHEL6 (fake)
+#Report locations (x, y) with worst voltage_drops/ground_bounces
+#voltage #ideal_volt   #net      #x_y_location     #layer_name
+  0.8787   0.9000      VDD (     13.500,    -40.750)  M1
+  0.8787   0.9000      VDD (     22.500,    -45.250)  M1
+  0.8892   0.9000      VDD (     24.000,    -46.000)  M1
+  0.0148   0.0000    VSS_A (    100.000,     20.000)  M2

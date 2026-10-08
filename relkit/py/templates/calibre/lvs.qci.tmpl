@@ -1,0 +1,53 @@
+## relkit template: Calibre Interactive LVS runset (.qci), run as
+##   calibre -gui -lvs -runset <rendered.qci> -batch
+## Ported from Auto_ext (github.com/weisbert/Auto_ext, commit fd32c80)
+## templates/calibre/calibre_lvs.qci.j2: Jinja2 -> string.Template. Lines
+## starting with "##" are template comments, dropped at render time.
+## The Jinja conditionals/loops are pre-rendered in Python
+## (rk_extract.qci_values): ${connect_by_name_line} is either
+## "*cmnVConnectNamesState: ALL\n" or empty; ${post_triggers} carries the
+## optional "calibre -query_input <query_cmd> -query svdb" trigger.
+## Layout and source paths are relative to *lvsRunDir, as in the source.
+*lvsRulesFile: ${lvs_rules_file}
+*lvsRunDir: ${output_dir}
+*lvsLayoutPaths: ${cell}.calibre.db
+*lvsLayoutPrimary: ${cell}
+*lvsLayoutLibrary: ${library}
+*lvsLayoutView: ${layout_view}
+*lvsLayoutGetFromViewer: 1
+*lvsSourcePath: ${cell}.src.net
+*lvsSourcePrimary: ${cell}
+*lvsSourceLibrary: ${library}
+*lvsSourceView: ${source_view}
+*lvsSourceGetFromViewer: 1
+*lvsSpiceFile: ${cell}.sp
+*lvsDeviceFilterOptionsEnabled: ${device_filter_options_enabled}
+*lvsLayoutDeviceFilterOptions: ${layout_device_filter_options}
+*lvsSourceDeviceFilterOptions: ${source_device_filter_options}
+*lvsPowerNames: ${power_names}
+*lvsGroundNames: ${ground_names}
+*lvsRecognizeGates: ${recognize_gates}
+*lvsERCDatabase: ${cell}.erc.results
+*lvsERCSummaryFile: ${cell}.erc.summary
+*lvsReportFile: ${cell}.lvs.report
+*lvsSVDBcci: ${svdb_cci}
+*lvsReportOptions: ${report_options}
+*lvsPreTriggers: {{rm -rf %d/svdb} process 1}
+*lvsPostTriggers: ${post_triggers}
+*lvsAbortOnSupplyError: ${abort_on_supply_error}
+*cmnWarnLayoutOverwrite: 0
+*cmnWarnSourceOverwrite: 0
+*cmnShowOptions: 1
+${connect_by_name_line}*cmnSpecifyLicenseWaitTime: 1
+*cmnLicenseWaitTime: ${license_wait_time}
+*cmnReleaseLicense: 1
+*cmnNumTurbo: ${num_turbo}
+*cmnRunMT: ${run_mt}
+*cmnRunHyper: ${run_hyper}
+*cmnTemplate_RN: ${output_dir}
+*cmnSlaveHosts: {use {}} {hostName {}} {cpuCount {}} {a32a64 {}} {rsh {}} {maxMem {}} {workingDir {}} {layerDir {}} {mgcLibPath {}} {launchName {}}
+*cmnLSFSlaveTbl: {use 1} {totalCpus 1} {minCpus 1} {architecture {{}}} {minMemory {{}}} {resourceOptions {{}}} {submitOptions {{}}}
+*cmnGridSlaveTbl: {use 1} {totalCpus 1} {minCpus 1} {architecture {{}}} {minMemory {{}}} {resourceOptions {{}}} {submitOptions {{}}}
+*cmnFDILayoutLibrary: ${library}
+*cmnFDILayoutView: ${layout_view}
+*cmnFDIDEFLayoutPath: ${cell}.def

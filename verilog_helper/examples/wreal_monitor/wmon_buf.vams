@@ -1,0 +1,20 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// Synthetic "wreal supply/enable monitor" -- the pattern Stage B (vh_convert) converts.
+// OUT passes IN only when the supplies are nominal AND en is high; en + supplies are
+// declared `wreal` (read as analog LEVELS via threshold comparisons). On a logic design
+// this wreal `en` meets a logic net -> *E,CUNDCM. Pure-digital intent: supplies ideal
+// (their checks -> 1), `(en > k)` -> the logic enable `en`  =>  OUT = en ? IN : 1'b0.
+module wmon_buf ( OUT, IN, en, VDD, VSS, VPP );
+  output OUT;
+  input  IN;
+  input  en;
+  input  VDD;
+  input  VSS;
+  input  VPP;
+  parameter real VNOM = 0.87;
+  wreal VDD, VSS, VPP, en;
+  wire ok;
+  assign ok  = (VDD > VNOM*0.9) && (VPP > VNOM*0.9) && (VSS < 0.1) && (en > VNOM*0.9);
+  assign OUT = ok ? IN : 1'b0;
+endmodule

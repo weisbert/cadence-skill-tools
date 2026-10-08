@@ -1,0 +1,8 @@
+`timescale 1s/1fs
+// USER-supplied test for widget (o = i + 5).
+module tb; real d; wreal i, o; assign i = d;
+  widget u(.i(i), .o(o));
+  initial begin d = 2.0; #1;
+    if (o == 7.0) $display("=== TB PASS  (widget user test) ==="); else $display("=== TB FAIL o=%g ===", o);
+    $finish; end
+endmodule

@@ -1,0 +1,4 @@
+{
+  "_comment": "Golden when offset1 is RESOLVED to ams_models/ext_lib.v (o=i+1) instead of stubbed. Then n2=in2+1 and out = n1 + n2 = 2*in1 + in2 + 1.",
+  "out": "2.0*in1 + in2 + 1.0"
+}

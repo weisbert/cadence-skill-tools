@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Drive tests/rkGui_smoke.il (relkit panel + IPC) in the live Virtuoso.
+
+    python3 relkit/tests/rkGui_smoke.py [--keep] [--no-display] [--bridge ID]
+
+Run on the dev VM after `bash relkit/tools/sync_vm.sh`. Needs skillbridge
+(found like run_skill_test.py does) and the VM dev site
+<workarea>/.relkit_site.json (fake RelStudio + fake extraction tools).
+
+The panel is built headless; asynchronous steps (subprocesses, pollers) need
+Virtuoso's event loop, which runs between bridge calls, so this driver calls
+one phase function at a time and waits with one-line probes in between.
+
+Scratch: <workarea>/relkit_dev/tmp/gui_smoke/ (own site file with fast
+polling, own work/persist/artifact roots); removed at the end unless --keep.
+The Maestro view is opened read-only; the per-cell settings directory the
+panel writes (<lib>/Test/relkit/) is removed again if it did not exist before.
+--bridge ID: skillbridge server id (default "default", or $SB_ID). Running it
+against a dedicated Virtuoso keeps a shared one out of harm's way: its .cdsinit
+loads skillbridge/python_server.il and calls pyStartServer(?id ID) -- guarded
+like skillbridge/sbStart.il, because the Maestro session the test opens starts
+an axl worker Virtuoso that runs the same .cdsinit and would take the socket.
+Prints rkTestReport(); exit 0 only on PASS.
+"""
+import hashlib
+import json
+import os
+import shutil
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RELKIT = os.path.dirname(HERE)
+SKILL_TOOLS = os.path.dirname(RELKIT)
+WORKAREA = os.environ.get("RELKIT_WORKAREA") or os.path.dirname(SKILL_TOOLS)
+
+for p in (os.environ.get("SKILLBRIDGE_PATH"), os.path.join(SKILL_TOOLS, "skillbridge")):
+    if p and os.path.isdir(p) and p not in sys.path:
+        sys.path.insert(0, p)
+
+from skillbridge import Workspace  # noqa: E402
+
+LIB, CELL = "sim_yusheng", "Test"
+
+
+def q(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+class Bridge(object):
+    def __init__(self, ident=None):
+        self.ws = Workspace.open(ident) if ident else Workspace.open()
+
+    def ev(self, expr):
+        """Evaluate one line of SKILL; returns the %L text of the value
+        ("ERR: ..." when it raised). Clears errset.errset (CONTRACT 8)."""
+        s = ('(let ((rkE (errset %s t)) rkR) (setq rkR (if rkE (sprintf nil "%%L" (car rkE)) '
+             '(sprintf nil "ERR: %%L" errset.errset))) (putprop (quote errset) nil (quote errset)) rkR)'
+             % expr)
+        return self.ws["evalstring"](s)
+
+    def load(self, path):
+        r = self.ev("(load %s)" % q(path))
+        if r != "t":
+            raise RuntimeError("load %s failed: %s" % (path, r))
+
+    def check(self, label, ok):
+        self.ev("(rkCheck %s %s)" % (q(label), "t" if ok else "nil"))
+
+    def wait(self, expr, label, timeout=120.0, every=1.0, watch=None):
+        """Wait until expr evaluates to non-nil. watch(bridge) runs every tick."""
+        t0 = time.time()
+        last = None
+        while time.time() - t0 < timeout:
+            last = self.ev(expr)
+            if watch:
+                watch(self)
+            if last not in ("nil", None) and not last.startswith("ERR"):
+                return last
+            time.sleep(every)
+        self.check("%s (timed out after %ds; last %s)" % (label, timeout, last), False)
+        return None
+
+
+def md5(path):
+    with open(path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
+def write_json(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+
+
+def prepare(scratch):
+    if os.path.isdir(scratch):
+        shutil.rmtree(scratch)
+    os.makedirs(os.path.join(scratch, "wa"))
+    with open(os.path.join(WORKAREA, ".relkit_site.json"), encoding="utf-8") as f:
+        site = json.load(f)
+    site.update({
+        "work_root": os.path.join(scratch, "work"),
+        "persist_root": os.path.join(scratch, "runs"),
+        "artifact_root": os.path.join(scratch, "Reliability"),
+        "supervise_poll_seconds": 1,
+        "start_wait_minutes": 1,
+        "dry_run": False,
+    })
+    site.setdefault("emir", {})["license_retry_minutes"] = 0.05
+    ex = site.setdefault("extract", {})
+    if not ex.get("qrc_query_cmd"):   # required by rk_extract; the fake tools ignore it
+        ex["qrc_query_cmd"] = "/opt/fake_pdk/quantus/query_cmd"
+    site.setdefault("gui", {})["status_poll_seconds"] = 2
+    write_json(os.path.join(scratch, "wa", ".relkit_site.json"), site)
+    write_json(os.path.join(scratch, "fake_rs.json"), {
+        "mode": "license_fail", "license_fail_times": 2, "job_seconds": 1,
+        "deos_violation": True,
+        "instances": ["I7.PIN5", "I7.PIN1", "I7.MP0", "I7.MN0"]})
+    write_json(os.path.join(scratch, "fake_tools.json"), {"lvs": "fail"})
+
+
+def main(argv):
+    keep = "--keep" in argv
+    display = "--no-display" not in argv
+    ident = os.environ.get("SB_ID")
+    if "--bridge" in argv:
+        ident = argv[argv.index("--bridge") + 1]
+    scratch = os.path.join(WORKAREA, "relkit_dev", "tmp", "gui_smoke")
+    libdir = os.path.join(WORKAREA, LIB)
+    settings_dir = os.path.join(libdir, CELL, "relkit")
+    had_settings = os.path.isdir(settings_dir)
+    mae = os.path.join(libdir, CELL, "maestro")
+    before = {f: md5(os.path.join(mae, f)) for f in ("maestro.sdb", "active.state", "data.dm")}
+    prepare(scratch)
+
+    b = Bridge(ident)
+    b.load(os.path.join(RELKIT, "relkit.il"))
+    b.load(os.path.join(HERE, "rk_testlib.il"))
+    b.load(os.path.join(HERE, "rkGui_smoke.il"))
+    try:
+        r = b.ev("(rkGuiT_setup %s)" % q(scratch))
+        print("setup:", r)
+        b.check("setup ran (%s)" % r, r == "t")
+
+        # --- extraction: LVS fails first
+        b.ev("(rkGuiT_extract)")
+        st = b.wait('(member (rkGuiT_extractState) (list "lvs_failed" "failed" "done" "cancelled" "not_started"))',
+                    "extract finishes (lvs fail)", 90)
+        print("extract 1:", b.ev("(rkGuiT_extractState)"), b.ev("(rkGuiGet 'rk_geXStatus)"))
+        if st:
+            b.ev("(rkGuiT_checkLvsFail)")
+        # then passes
+        write_json(os.path.join(scratch, "fake_tools.json"), {"lvs": "pass"})
+        b.ev("(rkGuiT_extract)")
+        b.wait('(member (rkGuiT_extractState) (list "lvs_failed" "failed" "done" "cancelled" "not_started"))',
+               "extract finishes (pass)", 90)
+        print("extract 2:", b.ev("(rkGuiT_extractState)"), b.ev("(rkGuiGet 'rk_geXStatus)"))
+        b.ev("(rkGuiT_checkExtractDone)")
+        b.wait('(pcreMatchp "dspf$" (rkGuiGet (quote rk_geDspf)))', "detect existing", 60)
+        b.ev("(rkGuiT_checkDetect)")
+        b.wait('(pcreMatchp "supplies filled|failed" (rkGuiGet (quote rk_geStatus)))', "emir-inputs", 60)
+        print("supplies:", b.ev("(rkGuiGet 'rk_geStatus)"), b.ev("(rkGuiGet 'rk_gePower)"),
+              b.ev("(rkGuiGet 'rk_geGround)"))
+        b.ev("(rkGuiT_checkSupplies)")
+
+        # --- submit all three, follow to the end
+        print("submit:", b.ev("(rkGuiT_submit)"))
+        seen = {"license": False}
+
+        def watch(br):
+            s = br.ev("(rkGuiGet 'rk_geStatus)") or ""
+            if "waiting for a Totem license" in s:
+                if not seen["license"]:
+                    print("  EMIR status:", s)
+                seen["license"] = True
+        b.wait("(rkGuiT_allFinal)", "all three runs final", 600, 2.0, watch)
+        print("states:", b.ev("(rkGuiT_states)"))
+        for ty in ("aging", "deos", "emir"):
+            print("  %s:" % ty, b.ev("(rkGuiGet '%s)" % {"aging": "rk_gaStatus", "deos": "rk_gdStatus",
+                                                           "emir": "rk_geStatus"}[ty]))
+        b.check("EMIR status line showed 'waiting for a Totem license (retry N)'", seen["license"])
+        b.ev("(rkGuiT_checkRuns)")
+        b.ev("(rkGuiT_drill)")
+
+        # --- Runs page
+        b.ev("(rkGuiT_runsRefresh)")
+        b.wait("rk_guiRunsRows", "runs list", 60)
+        b.ev("(rkGuiT_checkRunsList)")
+        b.ev("(rkGuiT_runsActions)")
+        b.wait('(pcreMatchp "^compare " (rkGuiGet (quote rk_grStatus)))', "compare", 60)
+        print("compare:", b.ev("(rkGuiGet 'rk_grStatus)"))
+        b.wait('(equal (rkGet (nth (rkGuiT_runsIdx (car (rkGuiT_ids))) rk_guiRunsRows) "note") "smoke note")',
+               "note listed", 60)
+        b.ev("(rkGuiT_checkNote)")
+        b.ev("(rkGuiT_rerun)")
+        b.wait('(pcreMatchp "^panel filled|rerun settings failed" rk_guiMsg)', "rerun fill", 60)
+        print("rerun:", b.ev("rk_guiMsg"))
+        b.ev("(rkGuiT_checkRerun)")
+        b.ev("(rkGuiT_aged)")
+        b.wait('(pcreMatchp "aged corner|corner\\\\(s\\\\) in Maestro|failed|not available" (rkGuiGet (quote rk_gaStatus)))',
+               "R1 button", 60)
+        print("R1:", b.ev("(rkGuiGet 'rk_gaStatus)"))
+        b.ev("(rkGuiT_checkAged)")
+        b.ev("(rkGuiT_agedKeepFalse)")
+
+        # --- reopen (resume) before deleting, so every page has its last run
+        b.ev("(rkGuiT_reopen)")
+        b.wait('(and (get (rkGuiField (quote rk_geRes)) (quote choices)) (get (rkGuiField (quote rk_gdRes)) (quote choices)))',
+               "resume loads the last results", 60)
+        b.ev("(rkGuiT_checkResume)")
+        b.ev("(rkGuiT_runsRefresh)")
+        b.wait("rk_guiRunsRows", "runs list (2)", 60)
+        b.ev("(rkGuiT_delete)")
+        b.wait('(pcreMatchp "deleted record|delete failed" (rkGuiGet (quote rk_grStatus)))', "delete", 60)
+        b.wait("(null (rkGuiT_runsIdx (car (rkGuiT_ids))))", "deleted run leaves the list", 60)
+        b.ev("(rkGuiT_checkDeleted)")
+
+        # --- the real window: displayed from a timer, then closed
+        if display:
+            b.ev("(rkGuiT_displayLater)")
+            b.wait("rkGuiT_shown", "panel displayed", 30)
+            b.ev("(rkGuiT_closeShown)")
+            b.ev("(rkGuiT_closedNoPollers)")
+    finally:
+        b.ev("(rkGuiT_cleanup)")
+        rep = b.ev("(rkTestReport)")
+    after = {f: md5(os.path.join(mae, f)) for f in before}
+    if not had_settings and os.path.isdir(settings_dir):
+        shutil.rmtree(settings_dir)
+    ok_mae = before == after and (had_settings or not os.path.isdir(settings_dir))
+    if not keep:
+        shutil.rmtree(scratch, ignore_errors=True)
+    print(rep)
+    print("maestro view unchanged: %s; settings dir restored: %s" % (before == after,
+                                                                     not os.path.isdir(settings_dir) or had_settings))
+    return 0 if (": PASS " in rep and ok_mae) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

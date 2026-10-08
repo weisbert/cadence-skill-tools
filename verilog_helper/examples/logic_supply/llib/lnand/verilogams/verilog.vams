@@ -1,0 +1,2 @@
+`timescale 1ps/1ps
+module lnand ( Y, A, B, VDD, VPP, VSS ); output Y; input A,B,VDD,VPP,VSS; assign Y = ~(A&B); endmodule

@@ -1,0 +1,8 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+module subgain (x, y);
+  input  x;
+  output y;
+  wreal  x, y;
+  assign y = 2.0 * x;
+endmodule

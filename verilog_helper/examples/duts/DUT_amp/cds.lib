@@ -1,0 +1,3 @@
+# Fixture cds.lib for the schematic-nested Stage-A example.
+# DEFINE maps the design library name to its on-disk path (relative to this file).
+DEFINE demolib ./demolib

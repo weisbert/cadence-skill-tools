@@ -1,0 +1,4 @@
+{
+  "_comment": "Per top-output expected-value expressions, in terms of the top INPUT port names. Valid here because the auto-generated ext_sensor stub is an ideal 1-in/1-out buffer, so y = preproc.out = 2*x + 3*bias.",
+  "y": "2.0*x + 3.0*bias"
+}

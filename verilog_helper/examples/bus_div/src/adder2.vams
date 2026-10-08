@@ -1,0 +1,8 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+module adder2(x, y, z);
+  input  x, y;
+  output z;
+  wreal  x, y, z;
+  assign z = x + y;
+endmodule

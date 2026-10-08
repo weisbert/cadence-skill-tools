@@ -1,0 +1,5 @@
+# EM MODE is AVG
+# For wires: #layer #end-to-end_coordinates #EM_Ratio #net #width #current #limit #direction
+# For vias: #via_name #x-y_coordinates #EM_Ratio #net #current #limit #direction
+M2 ( 10.000 20.000 ) ( 12.500 20.000 ) 135.20% net_out 0.100 4.1e-03 3.0e-03 H
+VIA1 ( 11.000 20.000 ) 112.00% net_out 2.0e-03 1.8e-03 V

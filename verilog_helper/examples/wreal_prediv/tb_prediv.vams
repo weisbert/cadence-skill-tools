@@ -1,0 +1,41 @@
+`timescale 1ps/1ps
+// Period-ratio TB for the /4 prescaler: drive fromVCO, assert CLKOUT = fromVCO/4.
+// raw  -> CLKOUT dead (supply gate false)        -> === TB FAIL ===
+// Stage-B converted -> CLKOUT = VCO/4 (gate -> 1) -> === TB PASS ===
+module tb_prediv;
+  localparam integer TVCO = 200;             // fromVCO period [ps] (=5GHz)
+  reg  fromVCO, VDD, VPP, VSS;
+  wire CLKOUT;
+  integer fails, pn, ed;
+  real    lr, ps, ratio;
+
+  sdiv2_top dut ( .CLKOUT(CLKOUT), .fromVCO(fromVCO), .VDD(VDD), .VPP(VPP), .VSS(VSS) );
+
+  initial fromVCO = 1'b0;
+  always #(TVCO/2) fromVCO = ~fromVCO;
+
+  initial begin lr = -1.0; ps = 0.0; pn = 0; ed = 0; end
+  always @(posedge CLKOUT) begin
+    ed = ed + 1;
+    if (lr >= 0.0) begin ps = ps + ($realtime - lr); pn = pn + 1; end
+    lr = $realtime;
+  end
+
+  initial begin
+    fails = 0; VDD = 1; VPP = 1; VSS = 0;
+    #(2000 * TVCO);
+    if (pn == 0) begin
+      $display("  FAIL: CLKOUT dead (prediv gated off -- supplies float, gate false)");
+      fails = fails + 1;
+    end else begin
+      ratio = (ps / pn) / TVCO;
+      if ((ratio > 4.05) || (ratio < 3.95)) begin
+        $display("  FAIL: CLKOUT = VCO/%0.2f, expected VCO/4", ratio); fails = fails + 1;
+      end else
+        $display("  PASS: CLKOUT = VCO/4 (measured VCO/%0.2f)", ratio);
+    end
+    if (fails == 0) $display("=== TB PASS ===");
+    else            $display("=== TB FAIL (%0d) ===", fails);
+    $finish;
+  end
+endmodule

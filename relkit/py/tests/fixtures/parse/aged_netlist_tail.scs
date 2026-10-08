@@ -1,0 +1,16 @@
+subckts info what=subckts where=rawfile
+save OUT IN VDD \
+    VSS
+saveOptions options save=selected
+
+simulator lang=spectre
+
+include "/opt/pdk/models/alps/macro_model_usage.scs" section=AGEING_MACRO
+option1 options hrmiflag=0.1 hrmiage=yes close_all_feature=yes
+option2 options hrmiagemodel="/opt/pdk/models/alps/aging_model_x.scs"
+option3 options hrmiageso="/opt/pdk/models/alps/aging_model_x.so"
+option4 options hrmiinput="/scratch/jdoe/reliability/tb_top/amp_core/relsim1/2/analog_aging/sim1/10y_point/Stress_1/amp_core_Stress_1/amp_core_Stress_1.hrmiage0"
+
+simulator lang=spice
+.option dagetime=10y
+

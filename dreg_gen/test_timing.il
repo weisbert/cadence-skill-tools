@@ -1,0 +1,287 @@
+;; test_timing.il -- self-tests for dgenTiming.il (transient timing incl.
+;; expressions / timing variables) and the spec plumbing it relies on (pin
+;; kinds, plist put, timing equality).
+;; Pure functions only: no forms, no db writes, no DUT needed (needs the
+;; whole dreg_gen loaded -- a few cases call dgenCDF.il / dgenGui.il helpers).
+;;
+;; In CIW (after skill_tools / dreg_gen is loaded):
+;;   load("<skill_tools>/dreg_gen/test_timing.il")
+;;   dgenTestTiming()
+;;
+;; Waveform correctness (edge timing in Spectre) is verified separately by
+;; simulating a generated .va -- see dreg_gen/README.md "Transient timing".
+
+procedure( dgenT_tAssertEq(label expected actual stats)
+  if( equal(expected actual) then
+    printf("  PASS: %s\n" label)
+    setarray(stats 0 stats[0]+1)
+  else
+    printf("  FAIL: %s\n        expected: %L\n        actual:   %L\n"
+           label expected actual)
+    setarray(stats 1 stats[1]+1)
+  )
+)
+
+;; TRUE iff `needle` occurs in `hay` (plain substring).
+procedure( dgenT_tHas(hay needle)
+  if( index(hay needle) then t else nil)
+)
+
+;; Minimal spec: EN (1-bit), D<3:0> (bus), VDD (scalar pin set Analog),
+;; X (disabled) + analog customVar VB.
+procedure( dgenT_tSpec(timing)
+  list(nil
+    'source list(nil 'lib "L" 'cell "DUT" 'view "symbol")
+    'target list(nil 'lib "L" 'cell "dreg_DUT" 'view "veriloga")
+    'dvddDefault "0.9" 'defaultMode "literal" 'defaultPattern "d_*"
+    'pins list(
+      list(nil 'name "EN"  'isBus nil 'srcDirection "input" 'enabled t 'default "0" 'kind "digital")
+      list(nil 'name "D"   'isBus t 'busHi 3 'busLo 0 'srcDirection "input" 'enabled t 'default "5" 'kind "analog")
+      list(nil 'name "VDD" 'isBus nil 'srcDirection "inputOutput" 'enabled t 'default "0" 'kind "analog")
+      list(nil 'name "X"   'isBus nil 'srcDirection "input" 'enabled nil 'default "0"))
+    'customVars list(list(nil 'name "VB" 'kind "analog" 'isBus nil 'default "0.3"))
+    'timing timing)
+)
+
+procedure( dgenTestTiming()
+  let( (stats spec items va rows res txt rt en d vdd vars)
+    stats = makeVector(2 0)
+
+    printf("\n=== time literals ===\n")
+    dgenT_tAssertEq("5ns -> 5n"      "5n"   dgen_timeNorm("5ns") stats)
+    dgenT_tAssertEq("50PS -> 50p"    "50p"  dgen_timeNorm("50PS") stats)
+    dgenT_tAssertEq("trim 1.2u"      "1.2u" dgen_timeNorm(" 1.2u ") stats)
+    dgenT_tAssertEq("0 ok"           "0"    dgen_timeNorm("0") stats)
+    dgenT_tAssertEq("exponent ok"    "1e-9" dgen_timeNorm("1e-9") stats)
+    dgenT_tAssertEq("5ms -> 5m"      "5m"   dgen_timeNorm("5ms") stats)
+    dgenT_tAssertEq("garbage -> nil" nil    dgen_timeNorm("abc") stats)
+    dgenT_tAssertEq("space inside"   nil    dgen_timeNorm("5 n") stats)
+    dgenT_tAssertEq("suffix+exp"     nil    dgen_timeNorm("1e-9n") stats)
+    dgenT_tAssertEq("val 50p"        t      abs(dgen_timeVal("50p") - 5e-11) < 1e-20 stats)
+    dgenT_tAssertEq("val 1.2u"       t      abs(dgen_timeVal("1.2u") - 1.2e-6) < 1e-16 stats)
+    dgenT_tAssertEq("analog 900m"    t      dgen_tmAnalogValueP("900m") stats)
+    dgenT_tAssertEq("analog 1.8V"    nil    dgen_tmAnalogValueP("1.8V") stats)
+
+    printf("\n=== pin kinds in the emit list ===\n")
+    spec = dgenT_tSpec(nil)
+    items = dgen_specEmitList(spec)
+    dgenT_tAssertEq("disabled X dropped" list("EN" "D" "VDD" "VB")
+                    mapcar(lambda((it) get(it 'name)) items) stats)
+    dgenT_tAssertEq("bus forced digital" "digital" get(dgen_tmFindItem(items "D") 'kind) stats)
+    dgenT_tAssertEq("scalar analog kept" "analog"  get(dgen_tmFindItem(items "VDD") 'kind) stats)
+    dgenT_tAssertEq("analog param name"  "v_VDD"   dgen_emitParamName(dgen_tmFindItem(items "VDD")) stats)
+
+    printf("\n=== validation ===\n")
+    spec = dgenT_tSpec(list(dgen_tmRow("EN" "5n" "50p" "") dgen_tmRow("X" "1n" "1p" "")))
+    res = dgen_validateTiming(spec)
+    dgenT_tAssertEq("good rows -> no error" nil car(res) stats)
+    dgenT_tAssertEq("disabled signal -> warning" 1 length(cadr(res)) stats)
+    en = dgen_tmFindItem(items "EN")
+    d  = dgen_tmFindItem(items "D")
+    vdd = dgen_tmFindItem(items "VDD")
+    dgenT_tAssertEq("bad time"    t  stringp(dgen_tmRowError(dgen_tmRow("EN" "5x" "1p" "") en)) stats)
+    dgenT_tAssertEq("zero edge"   t  stringp(dgen_tmRowError(dgen_tmRow("EN" "5n" "0" "") en)) stats)
+    dgenT_tAssertEq("bus 15 ok"   nil dgen_tmRowError(dgen_tmRow("D" "5n" "1p" "15") d) stats)
+    dgenT_tAssertEq("bus 16 bad"  t  stringp(dgen_tmRowError(dgen_tmRow("D" "5n" "1p" "16") d)) stats)
+    dgenT_tAssertEq("analog bad"  t  stringp(dgen_tmRowError(dgen_tmRow("VDD" "5n" "1p" "1.8V") vdd)) stats)
+    res = dgen_validateTiming(dgenT_tSpec(list(dgen_tmRow("EN" "5n" "1p" "") dgen_tmRow("EN" "5ns" "1p" ""))))
+    dgenT_tAssertEq("duplicate time -> error" t stringp(car(res)) stats)
+    res = dgen_validateTiming(dgenT_tSpec(list(dgen_tmRow("EN" "5n" "1n" "") dgen_tmRow("EN" "5.5n" "1p" ""))))
+    dgenT_tAssertEq("overlap -> warning only" list(nil 1) list(car(res) length(cadr(res))) stats)
+
+    printf("\n=== toggle display (After column) ===\n")
+    rows = dgen_tmRowsFor(list(dgen_tmRow("EN" "50n" "1p" "") dgen_tmRow("EN" "5n" "1p" "")
+                               dgen_tmRow("EN" "120n" "1p" "")) "EN")
+    dgenT_tAssertEq("sorted by time" list("5n" "50n" "120n") mapcar(lambda((r) get(r 'time)) rows) stats)
+    dgenT_tAssertEq("init 0 toggles" list("1" "0" "1") dgen_tmAfterList(en rows "0") stats)
+    dgenT_tAssertEq("init 1 toggles" list("0" "1" "0") dgen_tmAfterList(en rows "1") stats)
+    dgenT_tAssertEq("variable init"  list("!EN" "EN" "!EN") dgen_tmAfterList(en rows "EN") stats)
+    dgenT_tAssertEq("summary"        "3 edges 5n..120n" dgen_tmSummary(rows) stats)
+    dgenT_tAssertEq("summary DC"     "DC" dgen_tmSummary(nil) stats)
+    dgenT_tAssertEq("init display bus literal" "5" dgen_tmInitDisplay(spec d) stats)
+
+    printf("\n=== Verilog-A emission ===\n")
+    spec = dgenT_tSpec(list(
+      dgen_tmRow("EN" "5ns" "50ps" "") dgen_tmRow("EN" "50n" "100p" "")
+      dgen_tmRow("D" "30n" "50p" "10")
+      dgen_tmRow("VDD" "0" "10n" "1.8") dgen_tmRow("VB" "60n" "1n" "900m")))
+    va = dgen_buildVAText(spec "dreg_DUT")
+    dgenT_tAssertEq("EN toggle line"   t dgenT_tHas(va "@(timer(5n)) if (timing_en != 0) begin lvl_EN = !lvl_EN; edge_EN = 50p; nedge_EN = nedge_EN + 1; end") stats)
+    dgenT_tAssertEq("EN follows DC until 1st edge" t dgenT_tHas(va "if (nedge_EN == 0) lvl_EN = (d_EN != 0);") stats)
+    dgenT_tAssertEq("EN counter reset" t dgenT_tHas(va "@(initial_step) begin nedge_EN = 0; edge_EN = 50p; end") stats)
+    dgenT_tAssertEq("EN counter decl" t dgenT_tHas(va "integer nedge_EN;") stats)
+    dgenT_tAssertEq("EN 2nd edge time" t dgenT_tHas(va "edge_EN = 100p; nedge_EN = nedge_EN + 1; end") stats)
+    dgenT_tAssertEq("EN init from d_EN" t dgenT_tHas(va "lvl_EN = (d_EN != 0)") stats)
+    dgenT_tAssertEq("EN transition"    t dgenT_tHas(va "V(EN) <+ transition(lvl_EN * DVDD, 0, edge_EN, edge_EN);") stats)
+    dgenT_tAssertEq("bus value"        t dgenT_tHas(va "lvl_D = 10;") stats)
+    dgenT_tAssertEq("bus bit 3"        t dgenT_tHas(va "V(D[3]) <+ transition(((lvl_D >> 3) & 1) * DVDD") stats)
+    dgenT_tAssertEq("t=0 -> timer(1f)" t dgenT_tHas(va "@(timer(1f)) if (timing_en != 0) begin lvl_VDD = 1.8;") stats)
+    dgenT_tAssertEq("analog decl real" t dgenT_tHas(va "real    lvl_VDD;") stats)
+    dgenT_tAssertEq("customVar timed"  t dgenT_tHas(va "lvl_VB = 900m;") stats)
+    dgenT_tAssertEq("header table"     t dgenT_tHas(va "//   EN             5n") stats)
+    va = dgen_buildVAText(dgenT_tSpec(nil) "dreg_DUT")
+    dgenT_tAssertEq("no timing -> pure DC" nil dgenT_tHas(va "transition(") stats)
+    dgenT_tAssertEq("no timing -> DC line" t dgenT_tHas(va "V(EN) <+ d_EN * DVDD;") stats)
+
+    printf("\n=== text import/export + equality ===\n")
+    txt = dgen_tmToText(get(spec 'timing))
+    rt = car(dgen_tmFromText(txt))
+    dgenT_tAssertEq("round trip equal" t dgen_tmTimingEqual(rt get(spec 'timing)) stats)
+    dgenT_tAssertEq("5ns == 5n" t dgen_tmTimingEqual(list(dgen_tmRow("EN" "5ns" "50p" ""))
+                                                    list(dgen_tmRow("EN" "5n" "50ps" ""))) stats)
+    dgenT_tAssertEq("edge differs" nil dgen_tmTimingEqual(list(dgen_tmRow("EN" "5n" "50p" ""))
+                                                         list(dgen_tmRow("EN" "5n" "60p" ""))) stats)
+    res = dgen_tmFromText("# c\nEN 5n 50p\n\nbad line\nD<3:0>, 30n, 50p, 10\n")
+    dgenT_tAssertEq("import rows"   2 length(car(res)) stats)
+    dgenT_tAssertEq("bus suffix stripped" "D" get(cadr(car(res)) 'signal) stats)
+    dgenT_tAssertEq("bad line numbered" t dgenT_tHas(car(cadr(res)) "line 4") stats)
+    dgenT_tAssertEq("plistPut replace" list(nil 'a 1 'b 3) dgen_plistPut(list(nil 'a 1 'b 2) 'b 3) stats)
+
+    printf("\n=== expressions + variables ===\n")
+    dgenT_tAssertEq("norm spaces+unit" "T1+70n"  dgen_tmExprNorm(" T1 + 70ns " "time") stats)
+    dgenT_tAssertEq("exponent not op"  "1e-9+T0" dgen_tmExprNorm("1e-9+T0" "time") stats)
+    dgenT_tAssertEq("leading minus"    "-VNEG"   dgen_tmExprNorm("-VNEG" "analog") stats)
+    dgenT_tAssertEq("double operator"  nil       dgen_tmExprNorm("T0+-5n" "time") stats)
+    dgenT_tAssertEq("trailing operator" nil      dgen_tmExprNorm("T0+" "time") stats)
+    dgenT_tAssertEq("bus rejects real" nil       dgen_tmExprNorm("1.5" "bus") stats)
+    dgenT_tAssertEq("VA prefix"        "tv_T1+70n" dgen_tmExprVA("T1+70n") stats)
+    vars = list(dgen_tmVar("T0" "5ns") dgen_tmVar("T1" "50n") dgen_tmVar("TR" "50p")
+                dgen_tmVar("VDDH" "1.8") dgen_tmVar("BV" "10"))
+    dgenT_tAssertEq("eval at defaults" t abs(dgen_tmExprVal("T1+70n" vars) - 120e-9) < 1e-18 stats)
+    dgenT_tAssertEq("undefined -> nil" nil dgen_tmExprVal("T9" vars) stats)
+    dgenT_tAssertEq("display"          "T1+70n = 120n" dgen_tmExprDisplay("T1+70n" vars "time") stats)
+    dgenT_tAssertEq("timer clamps var" "max(tv_T0, 1f)" dgen_tmTimerLit("T0") stats)
+    dgenT_tAssertEq("edge clamps var"  "max(tv_TR, 1f)" dgen_tmEdgeLit("TR") stats)
+    dgenT_tAssertEq("reserved name"    t stringp(dgen_tmVarsError(list(dgen_tmVar("time" "1")))) stats)
+    dgenT_tAssertEq("bad default"      t stringp(dgen_tmVarsError(list(dgen_tmVar("T0" "abc")))) stats)
+    dgenT_tAssertEq("vars text round trip" t dgen_tmVarsEqual(car(dgen_tmVarsFromText(dgen_tmVarsToText(vars))) vars) stats)
+    dgenT_tAssertEq("undefined var ok"  nil dgen_tmRowError(dgen_tmRow("EN" "T9" "1p" "") en nil) stats)
+    dgenT_tAssertEq("var skips range"   nil dgen_tmRowError(dgen_tmRow("EN" "T9-50n" "TR-1n" "") en nil) stats)
+    dgenT_tAssertEq("reserved in cell"  t dgenT_tHas(dgen_tmRowError(dgen_tmRow("EN" "time" "1p" "") en nil) "reserved") stats)
+    dgenT_tAssertEq("unset var sorts 0" 0.0 dgen_tmSortVal("T9" vars) stats)
+    dgenT_tAssertEq("sort val mixed"    t abs(dgen_tmSortVal("T9+T0" vars) - 5e-9) < 1e-18 stats)
+    dgenT_tAssertEq("unset first" list("T9" "1n")
+                    mapcar(lambda((r) get(r 'time)) dgen_tmRowsFor(list(dgen_tmRow("EN" "1n" "1p" "") dgen_tmRow("EN" "T9" "1p" "")) "EN" vars)) stats)
+    dgenT_tAssertEq("time var names" list("T9" "T0") dgen_tmTimeVarNames(list(dgen_tmRow("EN" "T9" "TR" "") dgen_tmRow("D" "T0+1n" "1p" "BV"))) stats)
+    dgenT_tAssertEq("all var names"  list("T9" "TR" "T0" "BV") dgen_tmTimingVarNames(list(dgen_tmRow("EN" "T9" "TR" "") dgen_tmRow("D" "T0+1n" "1p" "BV"))) stats)
+    dgenT_tAssertEq("bus var ok"        nil dgen_tmRowError(dgen_tmRow("D" "T0" "TR" "BV+5") d vars) stats)
+    dgenT_tAssertEq("bus literal too big" t stringp(dgen_tmRowError(dgen_tmRow("D" "T0" "TR" "16") d vars)) stats)
+    dgenT_tAssertEq("analog var ok"     nil dgen_tmRowError(dgen_tmRow("VDD" "0" "10n" "VDDH-0.1") vdd vars) stats)
+    spec = dgen_plistPut(dgenT_tSpec(list(
+             dgen_tmRow("EN" "T0" "TR" "") dgen_tmRow("EN" "T1+70n" "110p" "")
+             dgen_tmRow("D" "T0+25n" "50p" "BV")
+             dgen_tmRow("VDD" "0" "10n" "VDDH")))
+           'timingVars vars)
+    res = dgen_validateTiming(spec)
+    dgenT_tAssertEq("var spec valid" nil car(res) stats)
+    dgenT_tAssertEq("used var not warned" t dgenT_tHas(buildString(cadr(res) "|") "T1 is") == nil stats)
+    dgenT_tAssertEq("used vars (first use)" list("T0" "TR" "T1" "BV" "VDDH")
+                    mapcar(lambda((v) get(v 'name)) dgen_tmUsedVars(spec)) stats)
+    va = dgen_buildVAText(spec "dreg_DUT")
+    dgenT_tAssertEq("param decl"      t dgenT_tHas(va "parameter real    tv_T1 = 50n;") stats)
+    dgenT_tAssertEq("relative timer"  t dgenT_tHas(va "@(timer(max(tv_T1+70n, 1f)))") stats)
+    dgenT_tAssertEq("var edge"        t dgenT_tHas(va "edge_EN = max(tv_TR, 1f);") stats)
+    dgenT_tAssertEq("var bus value"   t dgenT_tHas(va "lvl_D = tv_BV;") stats)
+    dgenT_tAssertEq("var analog value" t dgenT_tHas(va "lvl_VDD = tv_VDDH;") stats)
+    dgenT_tAssertEq("header vars"     t dgenT_tHas(va "//   T1             fallback 50n") stats)
+    res = dgen_validateTiming(dgen_plistPut(dgenT_tSpec(list(
+            dgen_tmRow("EN" "T0" "1p" "") dgen_tmRow("EN" "5n" "1p" ""))) 'timingVars vars))
+    dgenT_tAssertEq("var vs literal: no clash check" list(nil nil) res stats)
+    spec = dgenT_tSpec(list(dgen_tmRow("EN" "T_1" "TR" "") dgen_tmRow("EN" "T_1+70n" "110p" "")))
+    res = dgen_validateTiming(spec)
+    dgenT_tAssertEq("no values needed" nil car(res) stats)
+    dgenT_tAssertEq("unset var -> fallback 0" list("0" nil)
+                    list(get(car(dgen_tmUsedVars(spec)) 'default) get(car(dgen_tmUsedVars(spec)) 'given)) stats)
+    va = dgen_buildVAText(spec "dreg_DUT")
+    dgenT_tAssertEq("unset var param 0" t dgenT_tHas(va "parameter real    tv_T_1 = 0;") stats)
+    dgenT_tAssertEq("table summary vars" "2 edges on 1 signal, 2 variables" dgen_tmTableSummary(get(spec 'timing)) stats)
+    res = dgen_tmFromText("T0 = 5n\nEN T0+45n 100p\n")
+    dgenT_tAssertEq("import vars"  "T0" get(car(caddr(res)) 'name) stats)
+    dgenT_tAssertEq("import expr"  "T0+45n" get(car(car(res)) 'time) stats)
+
+    ; Instance Properties (q) extras: read-only summary + button display
+    spec = dgenT_tSpec(list(dgen_tmRow("EN" "5n" "50p" "") dgen_tmRow("EN" "50n" "1n" "")
+                            dgen_tmRow("X" "7n" "1n" "")))
+    dgenT_tAssertEq("cdf summary (enabled rows only)" "2 edges on 1 signal" dgen_cdfTimingSummary(spec) stats)
+    dgenT_tAssertEq("cdf summary DC" "DC (no edges)" dgen_cdfTimingSummary(dgenT_tSpec(nil)) stats)
+    let( (cdfgForm)
+      dgenT_tAssertEq("edit button hidden w/o form" nil dgenCdfEditTimingShow() stats)
+      cdfgForm = list(nil 'hiFormSym 'schObjPropForm 'objType "instance")
+      dgenT_tAssertEq("edit button in q form" t dgenCdfEditTimingShow() stats)
+      cdfgForm = list(nil 'hiFormSym 'schCreateInstForm 'objType "instance")
+      dgenT_tAssertEq("edit button hidden in Add Instance" nil dgenCdfEditTimingShow() stats)
+    )
+
+    ; Timing views: union declarations, view spec, compat check, banner
+    spec = dgenT_tSpec(list(dgen_tmRow("EN" "T_A" "50p" "")))
+    dgenT_tAssertEq("viewVars extra decl" list("T_A" "T_B")
+                    mapcar(lambda((v) get(v 'name)) dgen_tmUsedVars(dgen_plistPut(spec 'viewVars list("T_A" "T_B")))) stats)
+    dgenT_tAssertEq("viewVars marks other view" list(nil t)
+                    mapcar(lambda((v) get(v 'otherView)) dgen_tmUsedVars(dgen_plistPut(spec 'viewVars list("T_B")))) stats)
+    va = dgen_buildVAText(dgen_plistPut(spec 'viewVars list("T_B")) "dreg_DUT")
+    dgenT_tAssertEq("other-view var declared" t dgenT_tHas(va "parameter real    tv_T_B = 0;") stats)
+    dgenT_tAssertEq("other-view var header" t dgenT_tHas(va "(used by another timing view)") stats)
+    vspec = dgen_viewSpec(spec list(nil 'view "veriloga_RX" 'timing list(dgen_tmRow("EN" "9n" "1n" "")) 'timingVars nil))
+    dgenT_tAssertEq("view spec target" "veriloga_RX" get(get(vspec 'target) 'view) stats)
+    dgenT_tAssertEq("view spec timing" "9n" get(car(get(vspec 'timing)) 'time) stats)
+    dgenT_tAssertEq("view spec keeps pins" get(spec 'pins) get(vspec 'pins) stats)
+    va = dgen_buildVAText(vspec "dreg_DUT")
+    dgenT_tAssertEq("view banner" t dgenT_tHas(va "// Timing view veriloga_RX of dreg_DUT.") stats)
+    dgenT_tAssertEq("main view no banner" nil dgenT_tHas(dgen_buildVAText(spec "dreg_DUT") "Timing view") stats)
+    dgenT_tAssertEq("compat: timing only" nil dgen_viewCompatErr(vspec spec) stats)
+    dgenT_tAssertEq("compat: pin kind differs" t
+      stringp(dgen_viewCompatErr(dgen_plistPut(spec 'pins
+        mapcar(lambda((p) if(get(p 'name)=="EN" dgen_plistPut(p 'kind "analog") p)) get(spec 'pins))) spec)) stats)
+    dgenT_tAssertEq("compat: DC differs" t
+      dgenT_tHas(dgen_viewCompatErr(dgen_plistPut(spec 'dvddDefault "1.2") spec) "DC values") stats)
+
+    ; Init lines (transient start) + 1-bit values + DC keyword
+    spec = dgenT_tSpec(list(dgen_tmRow("EN" "init" "" "0") dgen_tmRow("EN" "50n" "50p" "DC")
+                            dgen_tmRow("D" "init" "" "dc") dgen_tmRow("D" "5n" "1n" "3")
+                            dgen_tmRow("VDD" "init" "" "VDDH") dgen_tmRow("VDD" "1u" "10n" "DC")))
+    dgenT_tAssertEq("init spec valid" nil car(dgen_validateTiming(spec)) stats)
+    va = dgen_buildVAText(spec "dreg_DUT")
+    dgenT_tAssertEq("tran starts at init" t
+      dgenT_tHas(va "if (nedge_EN == 0) lvl_EN = (analysis(\"tran\") && timing_en != 0) ? 0 : (d_EN != 0);") stats)
+    dgenT_tAssertEq("edge to DC value" t dgenT_tHas(va "begin lvl_EN = (d_EN != 0); edge_EN = 50p;") stats)
+    dgenT_tAssertEq("init DC keeps DC form" t dgenT_tHas(va "if (nedge_D == 0) lvl_D = d_D;") stats)
+    dgenT_tAssertEq("analog init variable" t
+      dgenT_tHas(va "if (nedge_VDD == 0) lvl_VDD = (analysis(\"tran\") && timing_en != 0) ? tv_VDDH : v_VDD;") stats)
+    dgenT_tAssertEq("init var is a timing var" list("VDDH")
+      mapcar(lambda((v) get(v 'name)) dgen_tmUsedVars(spec)) stats)
+    dgenT_tAssertEq("header init line" t dgenT_tHas(va "//   EN             init         -          0") stats)
+    dgenT_tAssertEq("summary counts edges only" "3 edges on 3 signals, 1 variable"
+      dgen_tmTableSummary(get(spec 'timing)) stats)
+    dgenT_tAssertEq("var names skip init/DC" list("VDDH") dgen_tmTimingVarNames(get(spec 'timing)) stats)
+    va = dgen_buildVAText(dgenT_tSpec(list(dgen_tmRow("EN" "5n" "1n" "1"))) "dreg_DUT")
+    dgenT_tAssertEq("1-bit explicit value" t dgenT_tHas(va "begin lvl_EN = 1; edge_EN = 1n;") stats)
+    dgenT_tAssertEq("1-bit value 2 rejected" t
+      stringp(car(dgen_validateTiming(dgenT_tSpec(list(dgen_tmRow("EN" "5n" "1n" "2")))))) stats)
+    dgenT_tAssertEq("empty init rejected" t
+      stringp(car(dgen_validateTiming(dgenT_tSpec(list(dgen_tmRow("EN" "init" "" "") dgen_tmRow("EN" "5n" "1n" "")))))) stats)
+    dgenT_tAssertEq("two init lines rejected" t
+      stringp(car(dgen_validateTiming(dgenT_tSpec(list(dgen_tmRow("EN" "init" "" "0") dgen_tmRow("EN" "init" "" "1")
+                                                     dgen_tmRow("EN" "5n" "1n" "")))))) stats)
+    dgenT_tAssertEq("init without edges warns" t
+      dgenT_tHas(buildString(cadr(dgen_validateTiming(dgenT_tSpec(list(dgen_tmRow("EN" "init" "" "1"))))) "|") "stays DC") stats)
+    dgenT_tAssertEq("After from init + DC" list("1" "rx_en")
+      dgen_tmAfterList(dgen_tmFindItem(dgen_specEmitList(spec) "EN")
+        list(dgen_tmRow("EN" "5n" "1n" "") dgen_tmRow("EN" "9n" "1n" "DC")) "0" "rx_en") stats)
+    res = dgen_tmFromText("EN init - 0\nEN 50n 50p DC\n")
+    dgenT_tAssertEq("import init line" list("init" "0") list(get(car(car(res)) 'time) get(car(car(res)) 'value)) stats)
+    dgenT_tAssertEq("export init line" t dgenT_tHas(dgen_tmToText(car(res)) "init         -") stats)
+
+    ; timing_en master switch
+    dgenT_tAssertEq("switch declared when timed" t dgenT_tHas(va "parameter real    timing_en = 1;") stats)
+    dgenT_tAssertEq("no switch without timing" nil dgenT_tHas(dgen_buildVAText(dgenT_tSpec(nil) "dreg_DUT") "timing_en") stats)
+    dgenT_tAssertEq("switch from another timing view" t
+      dgenT_tHas(dgen_buildVAText(dgen_plistPut(dgenT_tSpec(nil) 'viewTimed t) "dreg_DUT") "parameter real    timing_en = 1;") stats)
+    dgenT_tAssertEq("switch netlisted" t
+      and(member('timing_en get(get(dgen_buildSimInfo(spec "dreg_DUT") 'spectre) 'instParameters)) t) stats)
+    dgenT_tAssertEq("switch not netlisted w/o timing" nil
+      and(member('timing_en get(get(dgen_buildSimInfo(dgenT_tSpec(nil) "dreg_DUT") 'spectre) 'instParameters)) t) stats)
+
+    printf("\n=== %d passed, %d failed ===\n" stats[0] stats[1])
+    stats[1] == 0
+  )
+)

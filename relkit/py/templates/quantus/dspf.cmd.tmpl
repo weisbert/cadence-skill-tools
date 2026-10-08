@@ -1,0 +1,74 @@
+## relkit template: Quantus command file producing a DSPF, run as
+##   qrc -cmd <rendered.cmd>
+## Ported from Auto_ext (github.com/weisbert/Auto_ext, commit fd32c80)
+## templates/quantus/dspf.cmd.j2: Jinja2 -> string.Template. Lines starting
+## with "##" are template comments, dropped at render time.
+## Pre-rendered in Python (rk_extract.qrc_values): ${extract_blocks} (one
+## "extract -selection ... -type ..." block per rule, last one wins per net),
+## ${blocking_type_line} (optional -parasitic_blocking_device_cells_type line)
+## and ${output_xy_block} (optional -output_xy list).
+## Kept from the source: the metal_fill line (a no-op for LVS-based input,
+## present in every deck the owner has run).
+#--------------------------------------------------------------------------------------
+
+#OPTION COMMAND FILE created by Cadence Extraction Quantus UI Version 18.21-s340
+
+#--------------------------------------------------------------------------------------
+
+capacitance \
+              -decoupling_factor ${decoupling_factor} \
+              -ground_net "${ground_net}"
+${extract_blocks}extraction_setup \
+              -array_vias_spacing ${array_vias_spacing} \
+              -max_fracture_length ${max_fracture_length} \
+              -max_fracture_length_unit "${max_fracture_length_unit}" \
+              -max_via_array_size "${max_via_array_size}" \
+              -parasitic_blocking_device_cells_file "${preserve_cell_list}" \
+${blocking_type_line}              -net_name_space "${extraction_net_name_space}"
+filter_cap \
+              -exclude_self_cap ${exclude_self_cap} \
+              -exclude_floating_nets ${exclude_floating_nets} \
+              -exclude_floating_nets_limit ${exclude_floating_nets_limit}
+filter_coupling_cap \
+              -coupling_cap_threshold_absolute ${coupling_cap_threshold_absolute} \
+              -coupling_cap_threshold_relative ${coupling_cap_threshold_relative}
+filter_res \
+              -merge_parallel_res ${merge_parallel_res} \
+              -min_res ${min_res} \
+              -remove_dangling_res ${remove_dangling_res}
+input_db -type calibre \
+              -device_property_value 7 \
+              -run_name "Design" \
+              -directory_name "${output_dir}/query_output" \
+              -hierarchy_delimiter "${input_db_hierarchy_delimiter}" \
+              -instance_property_value 6 \
+              -layer_map_file "${output_dir}/query_output/Design.gds.map" \
+              -net_property_value 5
+metal_fill \
+              -type ${metal_fill_type}
+output_db -type dspf \
+              -subtype ${dspf_subtype} \
+              -device_finger_delimiter "${device_finger_delimiter}" \
+              -busbit_delimiter "${busbit_delimiter}" \
+              -disable_instances ${disable_instances} \
+              -hierarchy_delimiter "${output_hierarchy_delimiter}" \
+              -include_cap_model "${include_cap_model}" \
+              -include_parasitic_cap_model "${include_parasitic_cap_model}" \
+              -include_res_model "${include_res_model}" \
+              -include_parasitic_res_model "${include_parasitic_res_model}" \
+${output_xy_block}              -netlist_coupling_values "${netlist_coupling_values}" \
+              -add_bulk_terminal ${add_bulk_terminal} \
+              -sub_node_char "${sub_node_char}"
+output_setup \
+              -directory_name "${output_dir}/query_output" \
+              -file_name "${dspf_out_path}" \
+              -net_name_space "${output_net_name_space}" \
+              -unique_qrctemp_name true \
+              -temporary_directory_name "Design"
+process_technology \
+              -technology_corner \
+              "${technology_corner}" \
+              -technology_library_file "${technology_library_file}" \
+              -technology_name "${technology_name}" \
+              -temperature \
+              ${temperature}

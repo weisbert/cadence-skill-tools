@@ -1,0 +1,16 @@
+# Editor backups
+*~
+.#*
+\#*\#
+*.swp
+*.swo
+
+# Cadence
+*.cdslck
+.cdslck
+CDS.log*
+panic*.log
+
+# Deploy pipeline (deploy/pack.ps1 output + red-zone runtime workspace)
+dist/
+.deploy/

@@ -1,0 +1,43 @@
+*lvsRulesFile: /proj/pdk/example/calibre/lvs/example_lvs.rul.default.qcilvs
+*lvsRunDir: /proj/wa/Reliability/amp_core/extract/lvs
+*lvsLayoutPaths: amp_core.calibre.db
+*lvsLayoutPrimary: amp_core
+*lvsLayoutLibrary: mylib
+*lvsLayoutView: layout
+*lvsLayoutGetFromViewer: 1
+*lvsSourcePath: amp_core.src.net
+*lvsSourcePrimary: amp_core
+*lvsSourceLibrary: mylib
+*lvsSourceView: schematic
+*lvsSourceGetFromViewer: 1
+*lvsSpiceFile: amp_core.sp
+*lvsDeviceFilterOptionsEnabled: 0
+*lvsLayoutDeviceFilterOptions: AG RC RE RG
+*lvsSourceDeviceFilterOptions: AG RC RE RG
+*lvsPowerNames: VDD AVDD
+*lvsGroundNames: VSS AVSS
+*lvsRecognizeGates: NONE
+*lvsERCDatabase: amp_core.erc.results
+*lvsERCSummaryFile: amp_core.erc.summary
+*lvsReportFile: amp_core.lvs.report
+*lvsSVDBcci: 1
+*lvsReportOptions: S
+*lvsPreTriggers: {{rm -rf %d/svdb} process 1}
+*lvsPostTriggers: {{rm -rf %d/query_output} process 1} {{mkdir %d/query_output} process 1} {{calibre -query_input /proj/pdk/example/qrc/query_cmd -query svdb } process 1}
+*lvsAbortOnSupplyError: 0
+*cmnWarnLayoutOverwrite: 0
+*cmnWarnSourceOverwrite: 0
+*cmnShowOptions: 1
+*cmnSpecifyLicenseWaitTime: 1
+*cmnLicenseWaitTime: 10
+*cmnReleaseLicense: 1
+*cmnNumTurbo: 2
+*cmnRunMT: 1
+*cmnRunHyper: 1
+*cmnTemplate_RN: /proj/wa/Reliability/amp_core/extract/lvs
+*cmnSlaveHosts: {use {}} {hostName {}} {cpuCount {}} {a32a64 {}} {rsh {}} {maxMem {}} {workingDir {}} {layerDir {}} {mgcLibPath {}} {launchName {}}
+*cmnLSFSlaveTbl: {use 1} {totalCpus 1} {minCpus 1} {architecture {{}}} {minMemory {{}}} {resourceOptions {{}}} {submitOptions {{}}}
+*cmnGridSlaveTbl: {use 1} {totalCpus 1} {minCpus 1} {architecture {{}}} {minMemory {{}}} {resourceOptions {{}}} {submitOptions {{}}}
+*cmnFDILayoutLibrary: mylib
+*cmnFDILayoutView: layout
+*cmnFDIDEFLayoutPath: amp_core.def

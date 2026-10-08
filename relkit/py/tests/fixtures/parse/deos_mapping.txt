@@ -1,0 +1,3 @@
+#index;pvt_index;pvt_key;test_name;mode_name;corner_name;sim_temp;params;simulator
+1;sim1;FF125_test0_FF125;test0;FF125;FF125;125;VSET=10,fin=5G;alps
+2;sim2;SS_t-40_test0_SS_t-40;test0;SS_t-40;SS_t-40;-40;VSET=10,fin=5G;alps

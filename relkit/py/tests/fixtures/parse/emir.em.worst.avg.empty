@@ -1,0 +1,7 @@
+# 19.2 RHEL6 (fake)
+# EM MODE is AVG
+# This file reports the EM violations, i.e. EM_Ratio = Actual_Current_Density/Current_Density_Limit > 100% (default or from "em_report_percentage") for wire pieces and vias in decreasing order. Unit used for coordinates and dimensions is um.
+
+# For wires: #layer #end-to-end_coordinates #EM_Ratio #net #width #blech_length #current
+# For vias: #via_name #x-y_coordinates #EM_Ratio #net #blech_length
+

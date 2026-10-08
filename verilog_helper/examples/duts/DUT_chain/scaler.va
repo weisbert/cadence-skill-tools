@@ -1,0 +1,10 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// Leaf, pure-digital wreal:  out = k * in
+module scaler(out, in);
+  output out;
+  input  in;
+  wreal  out, in;
+  parameter real k = 1.0;
+  assign out = k * in;
+endmodule

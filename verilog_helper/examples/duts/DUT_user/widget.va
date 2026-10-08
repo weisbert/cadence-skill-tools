@@ -1,0 +1,6 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+module widget(i, o);
+  input  i; output o; wreal i, o;
+  assign o = i + 5.0;
+endmodule

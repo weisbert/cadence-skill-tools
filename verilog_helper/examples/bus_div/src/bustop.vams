@@ -1,0 +1,31 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// BUS/ARRAY fixture for Stage C -- written the way Stage A's oa2verilog netlist comes
+// out (packed-logic buses left as `wire`, scalar nets wreal-ized). Exercises every
+// construct the real PLL N-divider uses:
+//   - logic bus INPUT  port  sel[3:0]   (a control word -> packed logic, NOT wreal)
+//   - logic bus OUTPUT port  selcopy[3:0]
+//   - bus SLICES        sel[0], sel[1], sel[1:0], sel[3:2]   in instance connections
+//   - CONCATENATION     {sel[1:0], sel[3:2]}                 in an instance connection
+//   - ARRAY INSTANCE    dbuf Ub[3:0] (...)                   distributing a logic bus
+//   - scalar wreal signal path  a,b -> m0,m1 -> y
+module bustop(a, b, sel, y, selcopy);
+  input         a;
+  input         b;
+  input  [3:0]  sel;
+  output        y;
+  output [3:0]  selcopy;
+  wreal         a;
+  wreal         b;
+  wire   [3:0]  sel;
+  wreal         y;
+  wire   [3:0]  selcopy;
+
+  wreal  m0, m1;
+  // slices of the logic bus feed the scalar real selects
+  selbit U0 (.a(a), .b(b), .s(sel[0]), .y(m0));
+  selbit U1 (.a(a), .b(b), .s(sel[1]), .y(m1));
+  adder2 U2 (.x(m0), .y(m1), .z(y));
+  // array instance distributing a CONCAT of two SLICES into a buffered logic bus out
+  dbuf   Ub[3:0] (.i({sel[1:0], sel[3:2]}), .o(selcopy));
+endmodule

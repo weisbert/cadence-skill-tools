@@ -1,0 +1,10 @@
+age_data_file	1	/scratch/jdoe/reliability/tb_top/amp_core/relsim1/2/analog_aging/sim1/10y_point/Stress_1/amp_core_Stress_1/amp_core_Stress_1.hrmiage0.dat
+age_mapping_file	1	/opt/pdk/models/alps/agemapping.txt
+sorting_level	-1
+sorting_num	10000000
+tr_start	0.000000e+00
+tr_end	2.000000e-08
+ageunit	0
+agetime	0.000000e+00
+integrate_temper	125.000000
+tddb_fail_percentage	1.000000e-03

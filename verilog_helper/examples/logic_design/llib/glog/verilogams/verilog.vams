@@ -1,0 +1,11 @@
+`timescale 1ps/1ps
+// a DIGITAL leaf modeled in LOGIC (4-state), not wreal -- like a real std-ish cell.
+// (power pins VPP/VSS present like real cells; reconcile drops them if a parent lacks one.)
+module glog ( a, b, y, VDD, VSS );
+  input  a;
+  input  b;
+  input  VDD;
+  input  VSS;
+  output y;
+  assign y = ~(a & b);
+endmodule

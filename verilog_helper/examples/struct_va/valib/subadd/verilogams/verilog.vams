@@ -1,0 +1,8 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+module subadd (a, b, o);
+  input  a, b;
+  output o;
+  wreal  a, b, o;
+  assign o = a + b;
+endmodule

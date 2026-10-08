@@ -1,0 +1,27 @@
+Violation_Type: Vgs/Vgd
+Device_Name: I0.X1.I8.MP0
+DPM_EOS: 2.783440e-08
+Durations: 0.000000e+00
+Max_Volt: under_limit
+Vol_Limit: -1.98
+Model: pch_a
+
+#vds
+No violation!
+
+#vdb
+No violation!
+
+#vbs
+No violation!
+
+#vgb
+No violation!
+
+Total_Mos_Number              : 55
+Vgs_Vgd_Violation_Number      : 0
+Vds_Violation_Number          : 1
+Vdb_Violation_Number          : 0
+Vbs_Violation_Number          : 0
+Vgb_Violation_Number          : 0
+Total_DPM_Value               : 5.197822e-08

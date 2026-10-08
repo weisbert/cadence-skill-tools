@@ -1,0 +1,4 @@
+{
+  "_note": "scalar output golden; bus bits sel[0]/sel[1] referenced directly against the TB's reg sel. selcopy (bus output) is display-only.",
+  "y": "(sel[0] ? b : a) + (sel[1] ? b : a)"
+}

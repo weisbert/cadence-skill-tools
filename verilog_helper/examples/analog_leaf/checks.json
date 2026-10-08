@@ -1,0 +1,4 @@
+{
+  "_comment": "ana_gain is analog V(o)<+k*V(i) with k=3; Stage B converts -> assign o=k*i. So out = 3*in.",
+  "out": "3.0*in"
+}

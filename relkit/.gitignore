@@ -1,0 +1,8 @@
+# relkit: site config with real values never enters the public repo
+site.json
+__pycache__/
+*.pyc
+!py/tests/fake_relstudio/**/*.pyc
+# local fake-tool behaviour switches (tests only)
+py/tests/fake_relstudio/fake_config.json
+py/tests/fake_tools/fake_config.json

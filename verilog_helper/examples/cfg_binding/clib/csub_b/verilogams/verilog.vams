@@ -1,0 +1,6 @@
+// behavioral logic leaf (inverter)
+module csub_b ( i, o );
+  input i;
+  output o;
+  assign o = ~i;
+endmodule

@@ -1,0 +1,19 @@
+# generated per-run artifacts and python caches
+examples/*/build/
+examples/*/build*/
+# Stage-B generated digital candidates (review then copy onto veriloga.va; never source)
+veriloga_wreal.va
+# per-DUT generated outputs (vh_dut)
+_vh/
+# proprietary real-design netlists kept locally for reference (never committed)
+_ref/
+__pycache__/
+*.pyc
+xcelium.d/
+INCA_libs/
+.simvision/
+*.shm
+xrun.log
+xr.log
+*.history
+xrun.key

@@ -1,0 +1,101 @@
+{
+  "_doc": "relkit site configuration EXAMPLE (fake values). Copy to <workarea>/.relkit_site.json, or point $RELKIT_SITE at a copy, or save as relkit/site.json (git-ignored). Only keys you set override relkit/site_defaults.json. ${WORKAREA}, ${USER}, ${RELKIT_DIR} and any ${ENV_VAR} are expanded; a bare $NAME is kept literally. Full key reference: docs/CONTRACT.md section 1.",
+
+  "python": "/opt/python/3.11/bin/python3",
+  "relstudio_home": null,
+  "work_root": "/scratch/${USER}/reliability",
+  "artifact_root": "${WORKAREA}/Reliability",
+  "persist_root": "${WORKAREA}/relkit_runs",
+  "project_name": "relsim1",
+
+  "submit_strategy": "start",
+  "dry_run": false,
+  "supervise_poll_seconds": 30,
+  "start_wait_minutes": 60,
+  "aging_eval_layout": "entries",
+
+  "model_root_var": "MODEL_ROOT",
+  "model_file_map": [
+    {"match": "(^|.*/)toplevel\\.scs$", "replace": "$MODEL_ROOT/alps/toplevel.scs"}
+  ],
+  "tool_version_names": ["alps", "calibre", "hspice", "perl", "python3", "spectre", "totem", "virtuoso", "viva"],
+
+  "tech": {
+    "Foundry": "x",
+    "Technology": 999,
+    "Tech_Voltage": "0.9V_1.5V",
+    "Tech_Layout": "1P5M_EXAMPLE",
+    "Rel_Tech_Dir": "/opt/rel_tech_lib/tech/foundry"
+  },
+
+  "cluster": {
+    "Using_Cluster": true,
+    "Cluster_Type": "donau",
+    "Group": "example_group",
+    "Queue": "normal",
+    "CPU": 8,
+    "Memory": 12000,
+    "GPU": 4,
+    "Machine_Arch": "x86"
+  },
+
+  "simulator": {
+    "Name": "alps",
+    "Simulator_Accuracy": "moderate",
+    "Sim_Mt": 8,
+    "Simulation_Options": null
+  },
+
+  "aging_model": {
+    "Model_File": "/opt/rel_tech_lib/tech/foundry/x/999/0.9V_1.5V/reliability_model/aging/hrmiagefile.scs",
+    "Relxpert_Uri_Libs": "/opt/rel_tech_lib/tech/foundry/x/999/0.9V_1.5V/reliability_model/aging/hrmiaging.so"
+  },
+
+  "emir": {
+    "gds_map_file": "/opt/rel_tech_lib/tech/foundry/x/999/1P5M_EXAMPLE/em/gds/gds.map",
+    "rc_corner": "typical",
+    "license_policy": "wait_forever",
+    "license_wait_hours": 8,
+    "license_retry_minutes": 10,
+    "license_keywords": [
+      "license.*(fail|denied|not available|unavailable|cannot check ?out|queued)",
+      "Lic-[0-9]+"
+    ],
+    "license_tail_lines": 50
+  },
+
+  "extract": {
+    "tools": {
+      "strmout": "strmout",
+      "si": "si",
+      "calibre": "calibre",
+      "qrc": "qrc"
+    },
+    "layout_view": "layout",
+    "pdk_layer_map": "/proj/pdk/example/layermap.txt",
+    "calibre_lvs_dir": "/proj/pdk/example/calibre/lvs",
+    "calibre_lvs_basename": "example_lvs.rul",
+    "lvs_variant": "default",
+    "technology_library_file": "/proj/pdk/example/quantus/lib.defs",
+    "technology_name": "example_tech",
+    "technology_corner": "typical",
+    "temperature": 25,
+    "power_nets": ["VDD"],
+    "ground_nets": ["VSS"],
+    "qrc_query_cmd": "/proj/pdk/example/qrc/query_cmd",
+    "qrc_preserve_cell_list": "/proj/pdk/example/qrc/preserveCellList.txt",
+    "qrc_ground_net": null,
+    "cdl_include_file": "",
+    "si_options": {},
+    "lvs_options": {},
+    "qrc_options": {"extract_rules": [{"selection": "all", "type": "rc_coupled"}]}
+  },
+
+  "defaults": {
+    "aging": {"life_time": "10", "life_time_unit": "years", "start_time": "0n", "stop_time": "20n"},
+    "deos": {"life_time": "10", "life_time_unit": "years", "start_time": "0n", "stop_time": "20n", "simulation_time": "20n"},
+    "emir": {"run_type": "DYN SEM", "selfheat": true, "em_temperature": 110}
+  },
+
+  "gui": {"status_poll_seconds": 30, "open_dir_cmd": "xdg-open", "relstudio_cmd": null}
+}

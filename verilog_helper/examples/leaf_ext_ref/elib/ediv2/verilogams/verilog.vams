@@ -1,0 +1,9 @@
+// ediv2's verilogams IS the behavioral leaf, but it instantiates STDBUF whose definition
+// lives in an external -v library. With ext_index passed, STDBUF is recognized as an
+// EXTERNAL LEAF REFERENCE -> ediv2 stays a leaf (NOT descended into its cmos_sch trap);
+// xrun resolves STDBUF via -v.
+module ediv2 ( clk, q );
+  input clk;
+  output q;
+  STDBUF Ub ( .a(clk), .y(q) );
+endmodule

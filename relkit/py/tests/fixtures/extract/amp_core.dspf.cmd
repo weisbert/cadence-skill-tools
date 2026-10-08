@@ -1,0 +1,75 @@
+#--------------------------------------------------------------------------------------
+
+#OPTION COMMAND FILE created by Cadence Extraction Quantus UI Version 18.21-s340
+
+#--------------------------------------------------------------------------------------
+
+capacitance \
+              -decoupling_factor 1.0 \
+              -ground_net "VSS"
+extract \
+              -selection "all" \
+              -type "rc_coupled"
+extraction_setup \
+              -array_vias_spacing auto \
+              -max_fracture_length infinite \
+              -max_fracture_length_unit "MICRONS" \
+              -max_via_array_size "auto" \
+              -parasitic_blocking_device_cells_file "/proj/pdk/example/qrc/preserveCellList.txt" \
+              -net_name_space "SCHEMATIC"
+filter_cap \
+              -exclude_self_cap true \
+              -exclude_floating_nets true \
+              -exclude_floating_nets_limit 5000
+filter_coupling_cap \
+              -coupling_cap_threshold_absolute 0.01 \
+              -coupling_cap_threshold_relative 0.001
+filter_res \
+              -merge_parallel_res true \
+              -min_res 0.001 \
+              -remove_dangling_res true
+input_db -type calibre \
+              -device_property_value 7 \
+              -run_name "Design" \
+              -directory_name "/proj/wa/Reliability/amp_core/extract/lvs/query_output" \
+              -hierarchy_delimiter "/" \
+              -instance_property_value 6 \
+              -layer_map_file "/proj/wa/Reliability/amp_core/extract/lvs/query_output/Design.gds.map" \
+              -net_property_value 5
+metal_fill \
+              -type virtual
+output_db -type dspf \
+              -subtype extended \
+              -device_finger_delimiter "@" \
+              -busbit_delimiter "[]" \
+              -disable_instances false \
+              -hierarchy_delimiter "/" \
+              -include_cap_model "false" \
+              -include_parasitic_cap_model "false" \
+              -include_res_model "false" \
+              -include_parasitic_res_model "comment" \
+              -output_xy \
+              "CANONICAL_RES" \
+              "PARASITIC_RES" \
+              "CANONICAL_CAP" \
+              "PARASITIC_CAP" \
+              "DIODE" \
+              "MOS" \
+              "BIPOLAR" \
+              "GENERIC" \
+              -netlist_coupling_values "double" \
+              -add_bulk_terminal false \
+              -sub_node_char "#"
+output_setup \
+              -directory_name "/proj/wa/Reliability/amp_core/extract/lvs/query_output" \
+              -file_name "/proj/wa/Reliability/amp_core/extract/qrc/amp_core.dspf" \
+              -net_name_space "SCHEMATIC" \
+              -unique_qrctemp_name true \
+              -temporary_directory_name "Design"
+process_technology \
+              -technology_corner \
+              "cworst" \
+              -technology_library_file "/proj/pdk/example/quantus/lib.defs" \
+              -technology_name "example_tech" \
+              -temperature \
+              55

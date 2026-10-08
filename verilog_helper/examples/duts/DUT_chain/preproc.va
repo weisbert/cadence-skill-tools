@@ -1,0 +1,12 @@
+`include "disciplines.vams"
+`timescale 1s/1fs
+// Hierarchical (existing) block: out = 2*x + 3*bias, built from two scalers + a summer.
+module preproc(out, x, bias);
+  output out;
+  input  x, bias;
+  wreal  out, x, bias;
+  wreal  s1o, s2o;
+  scaler #(.k(2.0)) s1 (.out(s1o), .in(x));
+  scaler #(.k(3.0)) s2 (.out(s2o), .in(bias));
+  summer            u1 (.out(out), .a(s1o), .b(s2o));
+endmodule

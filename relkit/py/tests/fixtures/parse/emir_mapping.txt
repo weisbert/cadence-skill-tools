@@ -1,0 +1,2 @@
+#index;pvt_index;pvt_key;test_name;mode_name;top_cell;corner_name;sim_temp;params;states;analysis_type;flow_type;simulator
+1;sim1;FF125_test0_FF125_0;test0;FF125;amp_core;FF125;125;VSET=10,fin=5G;State_1;DYN,SEM,SH;Totem;alps

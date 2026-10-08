@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Fake `calibre` for relkit extraction tests (see fake_tool_impl.py)."""
+import sys
+
+from fake_tool_impl import main
+
+if __name__ == "__main__":
+    sys.exit(main("calibre"))

@@ -1,0 +1,15 @@
+
+Recommended dynamic simulation time, 20000psec ,to include 100.0000%
+of total power for DYNAMIC_SIMULATION_TIME in GSR
+
+Power of different frequency (MHz) domain in Watt:
+
+Frequency    total_pwr   leakage_pwr   internal_pwr   switching_pwr  %_total_pwr
+5.0000e+01   4.2731e-04  0.0000e+00    4.2731e-04     0.0000e+00     1.0000e+02
+
+Power of different Vdd domain in Watt:
+
+Vdd_domain      total_pwr   leakage_pwr  internal_pwr  switching_pwr   %_total_pwr
+VDD (0.9V)     4.2731e-04  0.0000e+00   4.2731e-04    0.0000e+00      1.0000e+02
+
+For NA domain, the instance is not connected to power nets or instance power pins connected to non-Vdd nets

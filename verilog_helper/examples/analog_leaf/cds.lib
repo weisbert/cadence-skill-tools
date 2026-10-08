@@ -1,0 +1,2 @@
+# Fixture cds.lib for the analog-leaf Stage-B example.
+DEFINE alib ./alib

@@ -1,0 +1,344 @@
+; dgenCDF.il -- Step 4 of Dreg Generator: attach a cell-level base CDF so the
+; instance Properties dialog (`q`) shows DVDD + per-pin d_<PIN> input fields
+; without the user having to select a view from a dropdown.
+;
+; CDF FLAVOR. We use cell-level base CDF (cdfCreateBaseCellCDF), not the
+; view-level CDF that Cadence's VA-import flow generates. Cell-level applies
+; regardless of which view is being used; it's cleaner for single-purpose
+; cells like Dreg where symbol + veriloga share the same parameter set.
+; Trade-off: if a future variant of this cell needs view-specific params,
+; this base CDF will conflict with it -- not a concern for Dreg.
+
+; CDF prompt + defValue helpers live in dgenStore.il as dgen_emitPrompt /
+; dgen_emitDefaultStr (shared with the symbol/.va emitters so the digital/
+; analog branching is in one place). The legacy dgen_pinPrompt / dgen_pinDefaultStr
+; names that used to live here have been deleted; callers in this file go
+; through the dgen_emit* helpers below.
+
+; Substitute every '*' in a pattern with pinName. Returns pattern unchanged
+; if no '*' is present. Walks char-by-char rather than using parseString
+; (which drops empty tokens around leading/trailing '*' so "*_ls" becomes
+; "_ls" instead of "<pin>_ls") or rex (whose patternIndex API is awkward).
+; Ref: sklangref.pdf strlen, substring, strcat.
+(defun dgen_substStar (pattern pinName "tt")
+  (let ((i 0) (n (strlen pattern)) (out "") ch)
+    (while (lessp i n)
+      (setq ch (substring pattern (add1 i) 1))
+      (cond
+        ((equal ch "*") (setq out (strcat out pinName)))
+        (t              (setq out (strcat out ch))))
+      (setq i (add1 i)))
+    out))
+
+; Resolve the defValue string for one CDF parameter under the configured
+; defaultMode. paramName is "DVDD" or "d_<PIN>"; pinName is the underlying
+; DUT pin name (or "DVDD" for the DVDD param). isDVDD is t for DVDD.
+; literalDefault is the numeric literal used when mode="literal".
+;   "empty"        -> ""
+;   "literal"      -> literalDefault
+;   "variable"     -> paramName (DVDD, d_EN, d_D, ...)
+;   "variable_pin" -> pinName for d_<PIN>; "DVDD" for DVDD
+;   "custom"       -> "DVDD" for DVDD; pattern with * replaced by pinName
+;                     for d_<PIN>. Errors if pattern is nil under "custom".
+;   anything else  -> falls through to literal (back-compat).
+(defun dgen_resolveDefValue (mode pattern paramName pinName isDVDD literalDefault "ggttgg")
+  (cond
+    ((equal mode "empty")        "")
+    ((equal mode "variable")     paramName)
+    ((equal mode "variable_pin")
+      (cond (isDVDD "DVDD") (t pinName)))
+    ((equal mode "custom")
+      (cond
+        (isDVDD "DVDD")
+        ((null pattern)
+          (error "dgen_resolveDefValue: defaultMode='custom' but spec~>defaultPattern is missing"))
+        (t (dgen_substStar pattern pinName))))
+    (t literalDefault)))
+
+; Build the simInfo plist that registers a Verilog-A cell as a Spectre
+; primitive on the OSS netlister side. Without this, OSS netlister treats
+; the veriloga view as a switch view, finds no sub-instances inside it,
+; and skips the cell entirely (warning OSSHNL-117). Verified against
+; ahdlLib/trans_channel structure on 2026-05-09.
+;
+; Shape:
+;   (nil
+;     spectre  (nil current port componentName "<cell>" namePrefix "ahdl"
+;                  termOrder (...) instParameters (...)
+;                  netlistProcedure ansSpectreSubcktCall)
+;     spectreS (nil ... netlistProcedure ansSpiceSubcktCall))
+;
+; termOrder is the list of port names in .va port order (bus pins use
+; <hi:lo> syntax via dgen_emitTermName -- same shape as written into the
+; .va port list by dgenSymbol.il / dgenVerilogA.il). instParameters is the
+; matching symbol list of CDF parameter names, DVDD then d_<PIN> for digital
+; items and v_<NAME> for analog customVars (via dgen_emitParamName), in the
+; same port order produced by dgen_specEmitList.
+(defun dgen_buildSimInfo (spec cellName "gt")
+  (let (items termOrder instParams)
+    ; Unified emit list: enabled pins (digital) + customVars (own kind).
+    (setq items (dgen_specEmitList spec))
+
+    (setq termOrder (mapcar 'dgen_emitTermName items))
+
+    ; DVDD, then one d_/v_ per item, then tv_<NAME> per used timing
+    ; variable -- the same set dgenWriteCDF creates.
+    (setq instParams (cons (stringToSymbol "DVDD")
+      (append
+        (mapcar
+          (lambda (it) (stringToSymbol (dgen_emitParamName it)))
+          items)
+        (append
+          (mapcar
+            (lambda (v) (stringToSymbol (strcat "tv_" (get v 'name))))
+            (dgen_tmUsedVars spec))
+          (cond
+            ((dgen_tmCellTimed spec) (list (stringToSymbol dgen_tmEnName)))
+            (t nil))))))
+
+    ; spectre and spectreS sub-plists are identical except for the
+    ; netlistProcedure symbol (Spectre vs SPICE backend).
+    (list nil
+      'spectre (list nil
+        'current 'port
+        'componentName cellName
+        'namePrefix "ahdl"
+        'termOrder termOrder
+        'instParameters instParams
+        'netlistProcedure 'ansSpectreSubcktCall)
+      'spectreS (list nil
+        'current 'port
+        'componentName cellName
+        'namePrefix "ahdl"
+        'termOrder termOrder
+        'instParameters instParams
+        'netlistProcedure 'ansSpiceSubcktCall))))
+
+; Drop the target cell's base CDF just before the Verilog-A text-view
+; update (dgenRun). amsUpdateTextviews reconciles an EXISTING CDF with the
+; .va parameters and, for each CDF parameter the .va lacks -- our
+; dgenTiming / dgenEditTiming fields, or pins dropped since the last run --
+; pops a modal "CDFParamDeleted" question. With no CDF there is nothing to
+; reconcile; dgenWriteCDF rebuilds the CDF right after, so the answer
+; never mattered anyway. Soft: returns t, never errors.
+; Ref: skartistref.pdf p.964 (cdfDeleteCDF), cdfGetBaseCellCDF.
+(defun dgen_dropBaseCDF (spec "g")
+  (let ((target (get spec 'target)) cellId cdf)
+    (setq cellId (and target (ddGetObj (get target 'lib) (get target 'cell))))
+    (setq cdf (and cellId (car (errset (cdfGetBaseCellCDF cellId) nil))))
+    (when cdf
+      (errset (cdfDeleteCDF cdf) t))
+    t))
+
+; Short summary of the timing that is actually generated (rows of enabled
+; signals only) for the read-only "Timing" CDF field -- the q form shows
+; about 24 characters; the variables are listed as tv_ fields above it.
+(defun dgen_cdfTimingSummary (spec "g")
+  (let ((n 0) (s 0))
+    (foreach pr (dgen_tmTimedPairs spec)
+      (setq s (add1 s))
+      (setq n (plus n (length (cadr pr)))))
+    (cond
+      ((zerop n) "DC (no edges)")
+      (t (sprintf nil "%d edge%s on %d signal%s"
+           n (cond ((equal n 1) "") (t "s"))
+           s (cond ((equal s 1) "") (t "s")))))))
+
+; Public entry point.
+;   spec       -- plist as produced by step 1 (see README)
+;   outputLib  -- string, overrides spec~>target~>lib if non-nil
+;   outputCell -- string, overrides spec~>target~>cell if non-nil
+;
+; defaultMode (read from spec~>defaultMode):
+;   "empty"        -- DVDD and all d_<PIN> defValue = "". User must type
+;                     a value when adding the instance.
+;   "literal"      -- DVDD = spec~>dvddDefault (e.g. "0.9");
+;                     d_<PIN> = pin's `default` field (e.g. "0").
+;   "variable"     -- DVDD = "DVDD"; d_<PIN> = "d_<PIN>". Cadence treats
+;                     these as design-variable references at netlist time.
+;                     Caveat: if the variable is undefined upstream, sim
+;                     fails with "undefined variable".
+;   "variable_pin" -- DVDD = "DVDD"; d_<PIN> = "<PIN>" (no d_ prefix).
+;                     Same caveat as "variable". Useful when TB already
+;                     uses pin names directly as design variables.
+;   "custom"       -- DVDD = "DVDD"; d_<PIN> = spec~>defaultPattern with
+;                     '*' replaced by the pin name. E.g. pattern "d_*_ls"
+;                     gives d_EN -> "d_EN_ls", d_D -> "d_D_ls".
+;                     spec~>defaultPattern is REQUIRED in this mode.
+;   missing/unknown -- treated as "literal" for backwards compat.
+;
+; Side effect: replaces the cell's base CDF with one that exposes
+;   - DVDD          : string, default per defaultMode
+;   - d_<PIN>       : string, default per defaultMode, one per ENABLED pin
+;   - tv_<NAME>     : one per timing variable (default = design variable)
+;   - dgenTiming    : read-only timing summary; dgenEditTiming : button
+;   - dgenViews     : read-only list of the other timing views (if any)
+; If a base CDF already exists on the cell, it is deleted first so this
+; function is idempotent across regenerations.
+; Returns t on success, nil on failure.
+;
+; Ref: skartistref.pdf p.952 (cdfCreateBaseCellCDF), p.955 (cdfCreateParam),
+;      p.963 (cdfSaveCDF), p.964 (cdfDeleteCDF), p.957 (?display/?editable),
+;      p.1760 (ddGetObj).
+(defun dgenWriteCDF (spec outputLib outputCell "ggg")
+  (let (target libName cellName cellId existing cdfId
+        modeStr pattern dvddDefVal items itemDefVal itemName paramName)
+    (setq target (get spec 'target))
+    (setq libName  (or outputLib  (get target 'lib)))
+    (setq cellName (or outputCell (get target 'cell)))
+
+    ; Resolve defaultMode + optional pattern.
+    (setq modeStr (or (get spec 'defaultMode) "literal"))
+    (setq pattern (get spec 'defaultPattern))
+
+    (cond
+      ((or (null libName) (null cellName))
+        (error "dgenWriteCDF: missing target lib/cell (lib=%L cell=%L)"
+          libName cellName))
+      (t
+        (setq cellId (ddGetObj libName cellName))
+        (cond
+          ((null cellId)
+            (error "dgenWriteCDF: cell %s/%s does not exist; create symbol/veriloga first"
+              libName cellName))
+          (t
+            (setq existing (cdfGetBaseCellCDF cellId))
+            (when existing (cdfDeleteCDF existing))
+
+            (setq cdfId (cdfCreateBaseCellCDF cellId))
+            (unless cdfId (error "dgenWriteCDF: cdfCreateBaseCellCDF returned nil"))
+
+            ; DVDD parameter.
+            ; ?parseAsCEL/?parseAsNumber=t makes ADE treat the value as a
+            ; CDF Expression Language expression rather than an opaque
+            ; literal string. This is what lets Maestro's "Copy from
+            ; cellview" identify free symbols like "DVDD"/"EN" as design
+            ; variable references and auto-add them to the design vars
+            ; table. Without these flags, the value reaches Spectre fine
+            ; (Spectre evaluates it anyway), but the ADE UI doesn't know
+            ; to surface it. Per skartistref.pdf p.959, parseAsNumber
+            ; MUST be set when parseAsCEL is set.
+            (setq dvddDefVal
+              (dgen_resolveDefValue modeStr pattern "DVDD" "DVDD" t
+                (or (get spec 'dvddDefault) "0.9")))
+            (cdfCreateParam cdfId
+              ?name     "DVDD"
+              ?type     "string"
+              ?defValue dvddDefVal
+              ?parseAsCEL    "yes"
+              ?parseAsNumber "yes"
+              ?prompt   "DVDD"
+              ?display  "t"
+              ?editable "t")
+
+            ; One CDF param per emitted item (enabled pins + customVars).
+            ; paramName is d_<name> for digital, v_<name> for analog (via
+            ; dgen_emitParamName). The defValue resolution still respects
+            ; the spec's defaultMode (literal / empty / variable_pin /
+            ; custom); analog items pass through the same code path so a
+            ; "variable_pin" mode produces v_VDD1P8 default = "VDD1P8",
+            ; mirroring the digital behaviour.
+            (setq items (dgen_specEmitList spec))
+            (foreach it items
+              (setq itemName  (get it 'name))
+              (setq paramName (dgen_emitParamName it))
+              (setq itemDefVal
+                (dgen_resolveDefValue modeStr pattern paramName itemName nil
+                  (dgen_emitDefaultStr it)))
+              (cdfCreateParam cdfId
+                ?name     paramName
+                ?type     "string"
+                ?defValue itemDefVal
+                ?parseAsCEL    "yes"
+                ?parseAsNumber "yes"
+                ?prompt   (dgen_emitPrompt it)
+                ?display  "t"
+                ?editable "t"))
+
+            ; ---- Timing block of the q form -----------------------------
+            ; CDF has no separator / label parameter type (IC6.1.8 rejects
+            ; "separator" and "label"), so a read-only string row acts as
+            ; the section header -- its value is the timing summary. Below
+            ; it, in this order: the master switch timing_en (the one that
+            ; changes the whole stimulus, so it comes first), the other
+            ; timing views, the timing variables, the [Edit timing...]
+            ; button. DC values (DVDD, d_ / v_) stay above the header.
+            ; Header / views / button are not in simInfo instParameters
+            ; (never netlisted) and not stored on instances (read-only /
+            ; a button); their text is plain (?parseAsCEL "no") so Copy
+            ; From Cellview ignores it. The button's display + callback
+            ; are guarded with isCallable, so where dreg_gen isn't loaded
+            ; it simply doesn't show (dgenGui.il dgenCdfEditTimingCB).
+            (cdfCreateParam cdfId
+              ?name     "dgenTiming"
+              ?type     "string"
+              ?defValue (dgen_cdfTimingSummary spec)
+              ?parseAsCEL "no"
+              ?prompt   (cond ((get spec 'viewNames) (strcat "===== Timing (" dgen_mainView ") ====="))
+                              (t "========== Timing =========="))
+              ?display  "t"
+              ?editable "nil"
+              ?storeDefault "no")
+
+            ; Master switch of a timed dreg (dgenTiming.il dgen_tmEnName):
+            ; 1 = timing on, 0 = DC values in transient too. A number on
+            ; purpose -- 0 / 1 typed in q, or a design variable to flip it
+            ; from Maestro / corners. Default 1 so existing testbenches
+            ; keep running unchanged.
+            (when (dgen_tmCellTimed spec)
+              (cdfCreateParam cdfId
+                ?name     dgen_tmEnName
+                ?type     "string"
+                ?defValue "1"
+                ?parseAsCEL    "yes"
+                ?parseAsNumber "yes"
+                ?prompt   (sprintf nil ">> %s: 1 = ON, 0 = OFF" dgen_tmEnName)
+                ?display  "t"
+                ?editable "t"))
+
+            ; Other timing views of this cell (dgenStore.il), so whoever
+            ; uses the symbol sees which views exist.
+            (when (get spec 'viewNames)
+              (cdfCreateParam cdfId
+                ?name     "dgenViews"
+                ?type     "string"
+                ?defValue (buildString (get spec 'viewNames) ", ")
+                ?parseAsCEL "no"
+                ?prompt   "Other timing views"
+                ?display  "t"
+                ?editable "nil"
+                ?storeDefault "no"))
+
+            ; Timing variables (dgenTiming.il): one tv_<NAME> per variable
+            ; the timing rows use (any identifier typed in a cell). The
+            ; default is ALWAYS the bare design-variable reference "<NAME>"
+            ; (whatever defaultMode says) -- the point of a timing variable
+            ; is to be set / swept in ADE or Maestro, and "Copy From
+            ; Cellview" picks the free symbol up from this CEL default. A
+            ; per-instance override is still possible by typing a value
+            ; into the instance property.
+            (foreach v (dgen_tmUsedVars spec)
+              (cdfCreateParam cdfId
+                ?name     (strcat "tv_" (get v 'name))
+                ?type     "string"
+                ?defValue (get v 'name)
+                ?parseAsCEL    "yes"
+                ?parseAsNumber "yes"
+                ?prompt   (sprintf nil "%s (timing variable)" (get v 'name))
+                ?display  "t"
+                ?editable "t"))
+
+            (cdfCreateParam cdfId
+              ?name     "dgenEditTiming"
+              ?type     "button"
+              ?prompt   "Edit timing..."
+              ?callback "when(isCallable('dgenCdfEditTimingCB) dgenCdfEditTimingCB())"
+              ?display  "isCallable('dgenCdfEditTimingShow) && dgenCdfEditTimingShow()")
+
+            ; Register as a Spectre primitive via the simInfo block. Without
+            ; this, OSS netlister treats the veriloga view as a switch view
+            ; with no sub-instances and skips the cell (OSSHNL-117). See
+            ; dgen_buildSimInfo header for the shape derivation.
+            (putpropq cdfId (dgen_buildSimInfo spec cellName) simInfo)
+
+            (cdfSaveCDF cdfId)))))))

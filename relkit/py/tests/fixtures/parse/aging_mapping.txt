@@ -1,0 +1,5 @@
+#index;pvt_index;pvt_key;sim_type;test_name;mode_name;corner_name;sim_temp;analysis_type;life_time;params;simulator
+1;sim1;FF125_test0_FF125,1;Stress_1;test0;FF125;FF125;125;multi_age_points;10y;VSET=10,fin=5G,EN2=1,VDDA=VSET*0.0125+0.7;alps
+2;sim1;FF125_test0_FF125,0;Aged_1;test0;FF125;FF125;125;multi_age_points;10y;VSET=10,fin=5G,EN2=1,VDDA=VSET*0.0125+0.7;alps
+3;sim2;SS_t-40_test0_SS_t-40,1;Stress_1;test0;SS_t-40;SS_t-40;-40;multi_age_points;10y;VSET=10,fin=5G,EN2=1,VDDA=VSET*0.0125+0.7;alps
+4;sim2;SS_t-40_test0_SS_t-40,0;Aged_1;test0;SS_t-40;SS_t-40;-40;multi_age_points;10y;VSET=10,fin=5G,EN2=1,VDDA=VSET*0.0125+0.7;alps
