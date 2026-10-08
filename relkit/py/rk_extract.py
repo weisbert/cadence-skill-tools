@@ -422,6 +422,8 @@ def extract_dirs(artifact_root, cell):
         "qrc_dspf": _join(xdir, "qrc", "%s.dspf" % cell),
         "gds": _join(adir, "%s.gds" % cell),
         "dspf": _join(adir, "%s.dspf" % cell),
+        # what the published pair was extracted from (freshness check)
+        "manifest": _join(adir, "%s.extract.json" % cell),
     }
 
 
@@ -560,6 +562,10 @@ def resolve_params(ctx, site):
     })
     p["qrc_ground_net"] = (ext.get("qrc_ground_net")
                            or (p["ground_nets"][0] if p["ground_nets"] else "vss"))
+    # view directories of the layout / source schematic (freshness): the panel
+    # passes them (ddGetObjReadPath); else they come from cds.lib
+    p["layout_dir"] = _posix(over.get("layout_dir") or "") or None
+    p["schematic_dir"] = _posix(over.get("schematic_dir") or "") or None
     tools = ext.get("tools") or {}
     p["tools"] = {n: tool_argv(tools.get(n), n) for n in ("strmout", "si", "calibre", "qrc")}
 
@@ -703,6 +709,233 @@ def find_artifacts(artifact_dir, cell):
             res[kind] = cands[0]
     if res["gds"] and res["dspf"] and res["dspf"]["mtime"] < res["gds"]["mtime"]:
         res["warning"] = "%s.dspf is older than %s.gds" % (cell, cell)
+    return res
+
+
+# --------------------------------------------------------------------------
+# freshness of the published pair (EMIR auto-extract)
+# --------------------------------------------------------------------------
+#
+# A successful extraction writes <artifact_root>/<cell>/<cell>.extract.json:
+# the identity of the layout and source-schematic cellviews it read (view dir,
+# master .oa file, size, mtime, md5) at the START of the run, the extraction
+# settings (fingerprint) and the published files. The pair is "fresh" when
+# both files exist, the manifest exists, the cellviews and the settings are
+# unchanged and nobody replaced the files since. Limitation: only the TOP
+# cellviews are compared (an edit inside a sub-cell is not seen; [Extract
+# only] / the stale reasons say so).
+
+FINGERPRINT_KEYS = ["library", "cell", "layout_view", "source_view", "layer_map",
+                    "lvs_rules_file", "lvs_variant", "technology_corner", "temperature",
+                    "technology_library_file", "qrc_deck_dir", "power_nets", "ground_nets"]
+MASTER_OA = ("layout.oa", "sch.oa", "schematic.oa")
+MD5_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _expand_env(text, env):
+    return re.sub(r"\$\{(\w+)\}|\$(\w+)",
+                  lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
+
+
+def cdslib_libs(path, env=None, _seen=None):
+    """{lib: dir} from a cds.lib (DEFINE / SOFTDEFINE / UNDEFINE / INCLUDE /
+    SOFTINCLUDE; relative paths are relative to the file; $VAR / ${VAR}
+    expanded). The FIRST definition of a library wins. Only a fallback: the
+    panel passes the real view directories (ddGetObjReadPath)."""
+    env = os.environ if env is None else env
+    seen = _seen if _seen is not None else set()
+    out = {}
+    path = os.path.abspath(path)
+    if path in seen or not os.path.isfile(path):
+        return out
+    seen.add(path)
+    base = os.path.dirname(path)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        line = re.sub(r"(^|\s)(#|--).*$", "", line).strip()
+        if not line:
+            continue
+        tok = line.split()
+        kw = tok[0].upper()
+        if kw in ("DEFINE", "SOFTDEFINE") and len(tok) >= 3:
+            d = _expand_env(tok[2], env)
+            if not (os.path.isabs(d) or d.startswith("/")):
+                d = os.path.join(base, d)
+            if tok[1] not in out:
+                out[tok[1]] = _posix(os.path.normpath(d))
+        elif kw == "UNDEFINE" and len(tok) >= 2:
+            out.pop(tok[1], None)
+        elif kw in ("INCLUDE", "SOFTINCLUDE") and len(tok) >= 2:
+            inc = _expand_env(tok[1], env)
+            if not (os.path.isabs(inc) or inc.startswith("/")):
+                inc = os.path.join(base, inc)
+            for k, v in cdslib_libs(inc, env, seen).items():
+                out.setdefault(k, v)
+    return out
+
+
+def view_dir(p, kind, libs=None):
+    """Directory of the layout ("layout") or source schematic ("schematic")."""
+    d = p.get("%s_dir" % kind)
+    if d:
+        return _posix(d)
+    view = p["layout_view"] if kind == "layout" else p["source_view"]
+    if libs is None:
+        libs = cdslib_libs(p["cdslib"])
+    lib_dir = libs.get(p["library"])
+    return _join(lib_dir, p["cell"], view) if lib_dir else None
+
+
+def _md5(path):
+    import hashlib
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def view_identity(vdir):
+    """{dir, file, size, mtime, md5} of a cellview's master .oa file, or None."""
+    if not vdir or not os.path.isdir(vdir):
+        return None
+    names = sorted(n for n in os.listdir(vdir) if n.endswith(".oa"))
+    pick = [n for n in MASTER_OA if n in names] or names
+    if not pick:
+        return None
+    f = os.path.join(vdir, pick[0])
+    try:
+        st = os.stat(f)
+    except OSError:
+        return None
+    return {"dir": _posix(vdir), "file": pick[0], "size": st.st_size,
+            "mtime": round(st.st_mtime, 3),
+            "md5": _md5(f) if st.st_size <= MD5_MAX_BYTES else None}
+
+
+def same_identity(a, b):
+    if not a or not b:
+        return False
+    if a.get("md5") and b.get("md5"):
+        return a["md5"] == b["md5"]
+    return a.get("size") == b.get("size") and a.get("mtime") == b.get("mtime")
+
+
+def fingerprint(p):
+    fp = {}
+    for k in FINGERPRINT_KEYS:
+        v = p.get(k)
+        if isinstance(v, list):
+            v = sorted(str(x) for x in v)
+        elif v is not None and not isinstance(v, (str, bool)):
+            v = str(v)
+        fp[k] = v
+    return fp
+
+
+def source_identities(p):
+    libs = None if (p.get("layout_dir") and p.get("schematic_dir")) else cdslib_libs(p["cdslib"])
+    out = {}
+    for kind in ("layout", "schematic"):
+        d = view_dir(p, kind, libs)
+        out[kind] = view_identity(d)
+        if out[kind] is None:
+            out[kind + "_dir"] = d
+    return out
+
+
+def _product_info(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return {"path": _posix(path), "size": st.st_size, "mtime": round(st.st_mtime, 3)}
+
+
+def write_manifest(p, sources):
+    m = {"schema": 1, "created": _now_iso(), "cell": p["cell"],
+         "layout": sources.get("layout"), "schematic": sources.get("schematic"),
+         "settings": fingerprint(p),
+         "gds": _product_info(p["gds"]), "dspf": _product_info(p["dspf"]),
+         "extract_dir": p["extract_dir"]}
+    rk_common.write_json(p["manifest"], m)
+    return m
+
+
+def _fmt(v):
+    return " ".join(v) if isinstance(v, list) else str(v)
+
+
+def freshness(ctx, site=None):
+    """Is <artifact_root>/<DUT>/<DUT>.gds/.dspf a fresh extraction of the
+    current layout + schematic with the current settings?
+
+    -> {state: fresh | stale | missing | running | unresolved, reasons[],
+        gds, dspf, manifest, extract_dir, extracted (manifest time), layout,
+        schematic, missing_env[] (unresolved only)}"""
+    if site is None:
+        site, _path, _w = rk_site.site_from_ctx(ctx)
+    dirs = dirs_from_ctx(ctx, site)
+    res = {"state": None, "reasons": [], "gds": dirs["gds"], "dspf": dirs["dspf"],
+           "manifest": dirs["manifest"], "extract_dir": dirs["extract_dir"],
+           "extracted": None, "layout": None, "schematic": None, "missing_env": []}
+    st = read_status(dirs["extract_dir"])
+    if st and st.get("state") not in FINAL_STATES and worker_alive(st):
+        res["state"] = "running"
+        res["reasons"].append("an extraction of %s is running (step %s)"
+                              % (st.get("cell"), st.get("step")))
+        return res
+    have = [k for k in ("gds", "dspf") if os.path.isfile(dirs[k])]
+    try:
+        p = resolve_params(ctx, site)
+    except rk_common.RkError as e:
+        res["state"] = "unresolved"
+        res["reasons"].append(str(e))
+        res["missing_env"] = list(e.fields.get("missing_env") or [])
+        res["files_present"] = have
+        return res
+    if len(have) < 2:
+        res["state"] = "missing"
+        res["reasons"].append("no %s yet" % " / ".join(
+            "%s.%s" % (p["cell"], k) for k in ("gds", "dspf") if k not in have))
+        return res
+    man = None
+    if os.path.isfile(dirs["manifest"]):
+        try:
+            man = rk_common.read_json(dirs["manifest"])
+        except (ValueError, OSError):
+            man = None
+    cur = source_identities(p)
+    res["layout"], res["schematic"] = cur.get("layout"), cur.get("schematic")
+    if man is None:
+        res["state"] = "stale"
+        res["reasons"].append("no relkit extraction record for these files (made outside "
+                              "relkit?): re-extract, or tick 'Use my own DSPF/GDS files'")
+        return res
+    res["extracted"] = man.get("created")
+    for kind, label in (("layout", "layout"), ("schematic", "schematic")):
+        now_id = cur.get(kind)
+        if now_id is None:
+            res["reasons"].append("%s view not found (%s)" % (label, cur.get(kind + "_dir")))
+        elif not same_identity(now_id, man.get(kind)):
+            res["reasons"].append("%s changed since the extraction (%s %s)"
+                                  % (label, now_id["file"],
+                                     datetime.datetime.fromtimestamp(now_id["mtime"])
+                                     .strftime("%Y-%m-%d %H:%M:%S")))
+    old = man.get("settings") or {}
+    new = fingerprint(p)
+    for k in FINGERPRINT_KEYS:
+        if old.get(k) != new.get(k):
+            res["reasons"].append("setting %s: %s -> %s" % (k, _fmt(old.get(k)), _fmt(new.get(k))))
+    for k in ("gds", "dspf"):
+        info, rec = _product_info(dirs[k]), man.get(k) or {}
+        if not info or info["size"] != rec.get("size") or info["mtime"] != rec.get("mtime"):
+            res["reasons"].append("%s was replaced after the extraction" % os.path.basename(dirs[k]))
+    res["state"] = "stale" if res["reasons"] else "fresh"
     return res
 
 
@@ -973,6 +1206,7 @@ class _Worker(object):
             shutil.copyfile(p["layout_db"], tmp)
             os.replace(tmp, p["gds"])
             shutil.move(p["qrc_dspf"], p["dspf"])
+            write_manifest(p, p.get("sources") or {})
             self.log("done: %s, %s" % (p["gds"], p["dspf"]))
             self.save(state="done", step=None, message="done", ended=_now_iso(),
                       gds=p["gds"], dspf=p["dspf"], child_pid=None,
@@ -1025,6 +1259,8 @@ def prepare(ctx, site=None):
     for d in (p["extract_dir"], p["si_dir"], p["output_dir"], p["qrc_dir"], p["logs_dir"]):
         if not os.path.isdir(d):
             os.makedirs(d)
+    # what this run reads (recorded in <cell>.extract.json when it succeeds)
+    p["sources"] = source_identities(p)
     render_all(p)
     cmds = build_commands(p)
     rk_common.write_json(p["request"], {"schema": 1, "created": _now_iso(),
@@ -1211,6 +1447,13 @@ def preview_text(res):
     return "\n".join(lines) + "\n"
 
 
+def _cmd_extract_check(args, ctx):
+    site, _path, warnings = rk_site.site_from_ctx(ctx)
+    out = freshness(ctx, site)
+    out["warnings"] = list(warnings)
+    return out
+
+
 def _cmd_extract_run(args, ctx):
     st = run_worker(_posix(os.path.abspath(args.dir)))
     return {"state": st.get("state"), "message": st.get("message")}
@@ -1236,6 +1479,10 @@ def register(subparsers):
                               ctx_required=True)
     p.add_argument("--sync", action="store_true",
                    help="run the chain in the foreground (debug/tests)")
+    rk_common.add_command(subparsers, "extract-check", _cmd_extract_check,
+                          "are the DUT's DSPF/GDS a fresh extraction of the current "
+                          "layout/schematic with the current settings?",
+                          ctx_required=True)
     p = rk_common.add_command(subparsers, "extract-status", _cmd_extract_status,
                               "report extraction progress",
                               ctx_required=False)

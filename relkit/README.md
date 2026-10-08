@@ -104,7 +104,11 @@ The keys you will normally set:
 | `dry_run` | `true`: only `run_relsim -m submit` (scripts generated, nothing submitted) |
 | `model_file_map` | regex rules mapping a Maestro corner model file to the yml `Model_File` (e.g. `.../toplevel.scs` -> `$MODEL_ROOT/alps/toplevel.scs`) |
 | `tech` | `Foundry, Technology, Tech_Voltage, Tech_Layout, Rel_Tech_Dir` |
-| `cluster` | yml `Cluster` block (type, group, queue, CPU, memory ...) |
+| `cluster` | yml `Cluster` block (type, group, queue, CPU, memory ...); without `donau_profiles` it is the single profile `default` |
+| `donau_profiles` | named Donau settings, each listing only what differs from `cluster`, e.g. `{"std": {"Queue": "normal"}, "emir": {"Queue": "long", "CPU": 16, "Memory": 64000}}`; each page offers them in a **Donau profile** drop-down |
+| `donau_default` | default profile per run type, e.g. `{"aging": "std", "deos": "std", "emir": "emir"}` |
+| `donau_query_cmd` | optional command that reports a cluster job (`{job_id}` is replaced), shown in the progress window; `null` = not queried |
+| `donau_job_id_regex` | how to read the job id from the submit output (default: dsub's `Job <123> ...`) |
 | `simulator` | yml `Simulator` block (name, accuracy, threads, options) |
 | `aging_model` | aging `Model_File`, `Relxpert_Uri_Libs` |
 | `emir.*` | `gds_map_file`, `rc_corner`, license policy defaults, `license_keywords` / `license_ignore`, `totem_flow` overrides |
@@ -148,9 +152,11 @@ The DUT, IP_Name and page fields are saved per Maestro cell (see
 One row per corner after sweep expansion (a corner sweeping temperature
 `-40 125` becomes `SS_t-40`, `SS_t125`), with sections, temperature and
 overridden variables. The **Use** column starts as checked in Maestro.
-Double-click a row or use **Toggle selected / All / None / As in Maestro** to
+Double-click a row or use **Toggle Use / All / None / As in Maestro** to
 change it for this panel only: relkit never writes corner selection back to
-Maestro.
+Maestro. The **Corners** drop-down above the table filters what is shown:
+*All*, *Selected only* or *Unselected only* (display only; the choice is
+remembered per cell), next to the count `N of M selected`.
 
 ### Aging / DEOS / EMIR pages
 
@@ -161,7 +167,12 @@ your site file), a status line, a results table and these buttons:
   record and starts RelStudio in the background. You can close the panel or
   even Virtuoso; the run goes on, and the next panel picks it up.
 * **Cancel run**, **Official report** (RelStudio's report), **Aux report**
-  (relkit's HTML report).
+  (relkit's HTML report), **Progress...** (the [progress window](#progress-window)
+  of the page's run; also on a right-click of the results table).
+* **Donau profile**: which cluster settings (queue, CPU, memory ...) this run
+  type uses, with a one-line summary; the default per type comes from the site
+  `donau_default`. The choice is saved per cell and recorded in the run, so
+  **Rerun with these settings** uses it again.
 * Results: one row per corner (aging: per Stress). **Open device table** (or
   double-click) shows the per-device table: aging degradation (dfr0), DEOS
   violations sorted by DPM with failing rows flagged, EMIR EM/IR worst
@@ -176,10 +187,15 @@ Page specifics:
   (fresh/aged)**.
 * **DEOS**: life time, window and `Simulation_Time`, TDDB temperature (empty =
   corner temperature).
-* **EMIR**: DSPF and GDS (**Extract DSPF + GDS**, or **Use existing
-  (detect)** / browse), layout lib/view, RC corner, extraction temperature,
+* **EMIR**: the DSPF and GDS are **automatic**: **Submit EMIR** checks
+  `<artifact_root>/<DUT>/<DUT>.dspf/.gds` and, when they are missing or stale,
+  extracts them first and then submits EMIR, all in the background (see
+  [extraction](#dspf--gds-extraction)). The line next to the check box says
+  whether they are *FRESH*, *STALE* (and why) or *MISSING*. Tick **Use my own
+  DSPF/GDS files** to give your own files instead (browse or **Use existing
+  (detect)**). Also: layout lib/view, RC corner, extraction temperature,
   LVS variant, Quantus deck and LVS power/ground names (the PDK paths come
-  from the environment, see [extraction](#dspf--gds-extraction));
+  from the environment);
   power and ground nets as `NET=V` lists (**Fill from DUT ports** prefills
   them from the DUT ports and the testbench's DC sources; a power net without
   a voltage blocks Submit until you type it); EM temperature (110), Run_Type
@@ -191,6 +207,23 @@ Page specifics:
 ### Runs page
 
 See [Run history](#run-history).
+
+### Progress window
+
+**Progress...** (on each page, on the Runs page, or **Show progress** in the
+right-click menu) opens a window with one row per step of the run: the
+extraction steps (`strmout`, `si`, `lvs`, `qrc`) when an EMIR run extracts
+first, then one row per RelStudio job (`sim1`, `sim2`, ...) with its corner /
+mode, state (queued, running, done, failed, waiting for a license), cluster
+job id when known, start time, elapsed time and the last line of its log.
+It refreshes every `gui.status_poll_seconds` while open and the run is not
+finished; closing it stops the refresh. **Open log of the row** (or
+double-click) opens that job's `job.out` / that step's log.
+
+**Right-click menus**: the results table of each page (acts on that page's
+run) and the Runs list (acts on the selected run: click it first, a
+right-click does not change the selection) have a menu **Show progress /
+Refresh status / Open log / Open Work_Dir / Cancel run**.
 
 ---
 
@@ -220,7 +253,8 @@ status**, **Rerun with these settings** (fills the panel with the old run's
 settings and corners; review and Submit), **Compare two** (condition diff +
 metric diff, e.g. before/after a circuit change, or FF vs SS), **Cancel run**,
 **Save note** (note + tags such as `sign-off`), **Delete record** (click twice
-within 15 s; deletes the record only, never the RelStudio Work_Dir).
+within 15 s; deletes the record only, never the RelStudio Work_Dir),
+**Progress...** and the right-click menu (see [Progress window](#progress-window)).
 
 The same operations are available from a shell:
 
@@ -272,9 +306,22 @@ longer need them.
 
 ## DSPF / GDS extraction
 
-EMIR needs a DSPF and a GDS of the DUT. **Extract DSPF + GDS** runs, on the
-login machine in the background (same method as Auto_ext, ported; Auto_ext
-itself is not needed):
+EMIR needs a DSPF and a GDS of the DUT; relkit makes them. **Submit EMIR**
+first checks whether `<artifact_root>/<DUT>/<DUT>.dspf` and `.gds` are a fresh
+extraction of the current design: both files exist, the record
+`<DUT>.extract.json` written by the extraction exists, the layout and the
+source schematic cellviews are unchanged (their `.oa` file: size, time, md5),
+the extraction settings (LVS variant and rules file, RC corner, temperature,
+Quantus deck, layer map, tech library, LVS power/ground names) are the same,
+and nobody replaced the files. If so EMIR reuses them; if not, the extraction
+runs first and EMIR follows automatically, inside the same background
+supervisor (closing the panel or Virtuoso does not stop it). The run record's
+timeline shows the extraction steps, then the EMIR states; if LVS is not
+clean the run ends `lvs_failed` and the EMIR page offers **Open Calibre GUI**
+and **LVS report**. **Extract only** runs the same chain without EMIR.
+
+The chain runs on the login machine in the background (same method as
+Auto_ext, ported; Auto_ext itself is not needed):
 
 1. `strmout` the DUT layout to GDS;
 2. `si` netlists the schematic (source netlist for LVS);
@@ -284,10 +331,14 @@ itself is not needed):
 4. `qrc` (Quantus) writes the DSPF.
 
 Only after all four succeed are `<DUT cell>.gds` and `<DUT cell>.dspf`
-published together in `<artifact_root>/<DUT cell>/`, so a failed run never
-leaves a mismatched pair. Intermediate files stay in `extract/` below it.
-**Use existing (detect)** fills the fields with files already there and warns
-when the DSPF is older than the GDS.
+published together in `<artifact_root>/<DUT cell>/` (with `<DUT
+cell>.extract.json`), so a failed run never leaves a mismatched pair.
+Intermediate files stay in `extract/` below it. With **Use my own DSPF/GDS
+files**, **Use existing (detect)** fills the fields with files already there
+and warns when the DSPF is older than the GDS.
+
+From a shell: `python3 relkit.py extract-check --ctx <ctx.json> --out o.json`
+reports `fresh` / `stale` (with the reasons) / `missing`.
 
 ### Where the PDK values come from
 
@@ -324,8 +375,8 @@ DUT ports that look like supplies).
 or a choice changes, and on demand. The status line says *ready* (tech name,
 rules file, corner, QRC deck) or names what is missing; **Show resolved**
 opens the full list with the source of every value. While a variable is
-missing, **Extract DSPF + GDS** is disabled; `extract` itself also refuses up
-front, before it creates anything.
+missing, **Extract only** is disabled and **Submit EMIR** refuses (as do
+`extract` and `submit` themselves, before they create anything).
 
 Other `extract` keys:
 
@@ -346,7 +397,7 @@ The fixed-value keys of relkit 0.1 (`pdk_layer_map`, `calibre_lvs_dir`,
 | what | where |
 |---|---|
 | exported netlist | `<artifact_root>/<DUT cell>/<maestro cell>_<test>.scs` (+ `.rewrite.log`: relative includes made absolute) |
-| DSPF / GDS | `<artifact_root>/<DUT cell>/<DUT cell>.dspf/.gds`, intermediates in `extract/` |
+| DSPF / GDS | `<artifact_root>/<DUT cell>/<DUT cell>.dspf/.gds` + `<DUT cell>.extract.json` (what they were extracted from), intermediates in `extract/` |
 | RelStudio Work_Dir | `<work_root>/<IP>/<DUT cell>/<project>/<History>/<type>/` (aging, DEOS and EMIR of the same design share a History, like the GUI) |
 | run records | `<persist_root>/<lib>/<cell>/<run id>/` |
 | per-cell panel settings | `<maestro lib>/<maestro cell>/relkit/relkit_settings.json` (a directory, so a Library Manager copy of the cell carries it; Library Manager shows it as a view named `relkit`) |
@@ -367,8 +418,15 @@ relkit never writes to `/tmp`.
 * **`run_relsim -m start`**: whether it blocks until the jobs end differs
   between installations; relkit handles both. If submission does not work
   with `start`, set `submit_strategy` to `submit_batch`.
-* **Cancel** stops relkit's supervisor and `run_relsim`. Jobs already handed
-  to the cluster keep running; kill them with your cluster's tools.
+* **Cancel** stops relkit's supervisor and `run_relsim` (and a running
+  extraction). Jobs already handed to the cluster keep running; kill them
+  with your cluster's tools.
+* **DSPF/GDS freshness** compares the TOP layout and schematic cellviews only:
+  an edit inside a sub-cell is not seen. After such an edit press **Extract
+  only** (or change a setting) before Submit EMIR.
+* **Cluster job ids** are known when `submit_strategy` is `submit_batch`
+  (relkit runs the submit lines and reads `Job <id>` from their output); with
+  `start` RelStudio submits itself and the progress window shows no id.
 * **Totem license detection** uses `emir.license_keywords` (minus
   `emir.license_ignore`). When a failed EMIR job matches nothing, the end of
   its log is stored in run.json (`license.unmatched_tail`) so the keywords
@@ -427,7 +485,14 @@ the real site file. Steps 1-3 need no cluster time.
 7. **Extraction**: open the panel from a Virtuoso started with the PDK
    setup sourced, press **Resolve / preview** and check that every value is
    resolved (**Show resolved**) and matches what Auto_ext uses; then extract
-   one DUT and diff the DSPF with Auto_ext's.
+   one DUT and diff the DSPF with Auto_ext's. Submit EMIR on a DUT without
+   DSPF/GDS and check that the run extracts first (timeline / **Progress...**),
+   then that a second Submit EMIR reports the pair FRESH and skips it.
+9. **Donau profiles**: set `donau_profiles` / `donau_default` (e.g. a bigger
+   queue for EMIR); check the yml `Cluster` blocks of an aging and an EMIR run
+   (`<run dir>/input/*.yml`). With `submit_strategy: submit_batch`, check that
+   the progress window shows the cluster job ids; set `donau_query_cmd` if
+   you want their cluster state there.
 8. **RelStudio GUI history**: open the RelStudio GUI on the same
    `<work_root>/<IP>/<Cell>/<Project>` and check that relkit's runs appear in
    its history list.

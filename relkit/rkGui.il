@@ -33,11 +33,12 @@
 ;
 ; Field symbols (tests set them through rkGuiSet, then call the button
 ; callbacks rk_gui*CB directly -- see tests/rkGui_smoke.il):
-;   top    rk_gTest rk_gDesign rk_gRsHome rk_gDut rk_gIp rk_gCorners rk_gCornerInfo rk_gTabs rk_gStatus
-;   aging  rk_gaLife rk_gaUnit rk_gaStart rk_gaStop rk_gaEvalT rk_gaStatus rk_gaRes
-;   deos   rk_gdLife rk_gdUnit rk_gdStart rk_gdStop rk_gdSimT rk_gdTddb rk_gdStatus rk_gdRes
-;   emir   rk_geDut rk_geDspf rk_geGds rk_geLLib rk_geLView rk_geXCorner rk_geXTemp rk_geXVariant
-;          rk_geXQrc rk_geXPower rk_geXGround rk_geXStatus
+;   top    rk_gTest rk_gDesign rk_gRsHome rk_gDut rk_gIp rk_gCornerShow rk_gCorners rk_gCornerInfo
+;          rk_gTabs rk_gStatus
+;   aging  rk_gaLife rk_gaUnit rk_gaStart rk_gaStop rk_gaEvalT rk_gaDonau rk_gaDonauInfo rk_gaStatus rk_gaRes
+;   deos   rk_gdLife rk_gdUnit rk_gdStart rk_gdStop rk_gdSimT rk_gdTddb rk_gdDonau rk_gdDonauInfo rk_gdStatus rk_gdRes
+;   emir   rk_geDut rk_geOwn rk_geAuto rk_geDspf rk_geGds rk_geLLib rk_geLView rk_geXCorner rk_geXTemp
+;          rk_geXVariant rk_geXQrc rk_geXPower rk_geXGround rk_geXStatus rk_geDonau rk_geDonauInfo
 ;          rk_gePower rk_geGround rk_geRc rk_geEmT rk_geRunType rk_geSelfheat rk_geStart rk_geStop
 ;          rk_geStep rk_geLife rk_geLic rk_geLicH rk_geStatus rk_geRes
 ;   runs   rk_grType rk_grTest rk_grSince rk_grUntil rk_grAll rk_grList rk_grNote rk_grTags rk_grStatus rk_grCount
@@ -50,7 +51,10 @@
 ;   hiCreateComboField, hiCreateStringField, hiCreateBooleanButton,
 ;   hiCreateFileSelectorField (?mode 'existingFile), hiCreateButton,
 ;   hiInstantiateForm, hiDisplayForm, hiIsFormDisplayed p.769, hiFormCancel,
-;   hiRegTimer p.84. adexlSKILLref.pdf: none directly (rkMae does Maestro).
+;   hiRegTimer p.84, "Creating Context Menus for Fields" p.476-477 (field->hiContextMenu =
+;   menu from hiCreateSimpleMenu p.206; every field type but cyclic/frame/separator),
+;   hiCreateSimpleMenu. skdfref.pdf: ddGetObj, ddGetObjReadPath p.1781 (view dirs for the
+;   DSPF/GDS freshness check). adexlSKILLref.pdf: none directly (rkMae does Maestro).
 ;
 ; SKILL rules (memory feedback_skill_gotchas): no let*, no prefix arithmetic,
 ; no defvar, identifiers [A-Za-z0-9_], no setq on slots (putprop / setarray),
@@ -72,7 +76,9 @@
 (setq rk_guiPrefix (list (list "aging" "rk_ga") (list "deos" "rk_gd") (list "emir" "rk_ge")))
 (setq rk_guiLicChoices (list "wait forever" "wait N hours" "fail"))
 (setq rk_guiLicValues  (list "wait_forever" "wait_hours" "fail"))
-(setq rk_guiFinal (list "done" "failed" "cancelled" "dry_run_done"))
+(setq rk_guiFinal (list "done" "failed" "cancelled" "dry_run_done" "lvs_failed"))
+; corners table filter (display only; Use toggles act on the full list)
+(setq rk_guiShowChoices (list "All" "Selected only" "Unselected only"))
 (setq rk_guiNoDut "(choose the DUT)")
 
 (unless (boundp 'rk_guiRunDir)  (setq rk_guiRunDir  (makeTable "rk_guiRunDir" nil)))
@@ -84,6 +90,16 @@
 (unless (boundp 'rk_guiResolve) (setq rk_guiResolve nil))
 ; out file of the newest extract-resolve call: older results arriving late are ignored
 (unless (boundp 'rk_guiResolveOut) (setq rk_guiResolveOut nil))
+; last extract-check result (are the DUT's DSPF/GDS fresh?) and its newest out file
+(unless (boundp 'rk_guiFresh) (setq rk_guiFresh nil))
+(unless (boundp 'rk_guiFreshOut) (setq rk_guiFreshOut nil))
+; progress window (one at a time; poller "rkprog:progress", independent of the panel)
+(unless (boundp 'rk_guiProgForm) (setq rk_guiProgForm nil))
+(unless (boundp 'rk_guiProgCounter) (setq rk_guiProgCounter 0))
+(unless (boundp 'rk_guiProgRun) (setq rk_guiProgRun nil))
+(unless (boundp 'rk_guiProgRes) (setq rk_guiProgRes nil))
+(unless (boundp 'rk_guiProgLogs) (setq rk_guiProgLogs nil))
+(unless (boundp 'rk_guiProgFails) (setq rk_guiProgFails 0))
 (setq rk_guiAuto "(auto)")
 (unless (boundp 'rkGuiSiteWorkarea) (setq rkGuiSiteWorkarea nil))
 ; t once the current panel was closed: no new pollers (timers) are started for
@@ -312,7 +328,57 @@
              (sprintf nil "(rkGuiSubmit %L)" type) 5 y 140)
     (rk_gBtn (stringToSymbol (strcat p "BCancel")) "Cancel run" (sprintf nil "(rk_guiCancelRunCB %L)" type) 150 y 110)
     (rk_gBtn (stringToSymbol (strcat p "BOff")) "Official report" (sprintf nil "(rk_guiOfficialCB %L)" type) 265 y 130)
-    (rk_gBtn (stringToSymbol (strcat p "BAux")) "Aux report" (sprintf nil "(rk_guiAuxCB %L)" type) 400 y 110)))
+    (rk_gBtn (stringToSymbol (strcat p "BAux")) "Aux report" (sprintf nil "(rk_guiAuxCB %L)" type) 400 y 110)
+    (rk_gBtn (stringToSymbol (strcat p "BProg")) "Progress..." (sprintf nil "(rk_guiPageProgressCB %L)" type) 515 y 95)))
+
+; --- Donau profiles (site donau_profiles / donau_default; CONTRACT 1) -------
+
+; profile name -> table of its cluster keys (site `cluster` merged under it)
+(defun rk_guiDonauTable ()
+  (let ((profs (rkSiteGet "donau_profiles")) (base (rkSiteGet "cluster")) out names)
+    (setq out (makeTable "rk_guiDonau" nil))
+    (when (tablep profs)
+      (foreach k (rkKeys profs)
+        (when (and (stringp k) (not (pcreMatchp "^_" k)) (tablep (arrayref profs k)))
+          (setq names (cons k names)))))
+    (foreach k (or names (list "default"))
+      (let ((t2 (makeTable k nil)) (p (and (tablep profs) (arrayref profs k))))
+        (when (tablep base) (foreach kk (rkKeys base) (setarray t2 kk (arrayref base kk))))
+        (when (tablep p) (foreach kk (rkKeys p) (setarray t2 kk (arrayref p kk))))
+        (setarray out k t2)))
+    out))
+
+(defun rk_guiDonauNames ()
+  (sort (rkKeys (rk_guiDonauTable)) 'alphalessp))
+
+(defun rk_guiDonauDefault (type)
+  (let ((names (rk_guiDonauNames)) (d (rkSiteGet "donau_default")) want)
+    (setq want (and (tablep d) (arrayref d type)))
+    (cond
+      ((member want names) want)
+      ((member "default" names) "default")
+      (t (car names)))))
+
+(defun rk_guiDonauSummary (name)
+  (let ((p (arrayref (rk_guiDonauTable) name)))
+    (if (tablep p)
+      (sprintf nil "Group %s, Queue %s, CPU %s, Memory %s, GPU %s%s"
+               (rk_guiStr (arrayref p "Group")) (rk_guiStr (arrayref p "Queue"))
+               (rk_guiStr (arrayref p "CPU")) (rk_guiStr (arrayref p "Memory"))
+               (rk_guiStr (arrayref p "GPU"))
+               (if (eq (arrayref p "Using_Cluster") rkJsonFalse) "  (cluster OFF: local run)" ""))
+      (sprintf nil "(profile %s is not in the site config)" (rk_guiStr name)))))
+
+(defun rk_guiDonauRow (type y)
+  (let ((p (rk_guiPrefixOf type)) (names (rk_guiDonauNames)) dflt)
+    (setq dflt (rk_guiDonauDefault type))
+    (rk_gCyc (stringToSymbol (strcat p "Donau")) "Donau profile" names dflt
+             (sprintf nil "(rk_guiDonauCB %L)" type) 5 y 270 100)
+    (rk_gStr (stringToSymbol (strcat p "DonauInfo")) "" (rk_guiDonauSummary dflt) 280 y 690 0 t)))
+
+(defun rk_guiDonauCB (type)
+  (rkGuiSet (rk_guiTF type "DonauInfo") (rk_guiDonauSummary (rkGuiGet (rk_guiTF type "Donau"))))
+  t)
 
 (defun rk_guiBuildAging ()
   (setq rk_gPage 'page1)
@@ -321,10 +387,11 @@
            5 37 500 130)
   (rk_gPut (hiCreateLabel ?name 'rk_gaEvalHint ?labelText "(blank = each corner's own temperature)")
            'rk_gaEvalHint 515 42 330 24 nil)
-  (rk_guiRunButtons "aging" 72)
-  (rk_gBtn 'rk_gaBAged "Create aged corners (R1)" "(rk_guiAgedCB)" 515 72 190)
-  (rk_gBtn 'rk_gaBDelta "Delta table (fresh/aged)" "(rk_guiDeltaCB)" 710 72 180)
-  (rk_guiPageResults "aging" 106 330)
+  (rk_guiDonauRow "aging" 69)
+  (rk_guiRunButtons "aging" 101)
+  (rk_gBtn 'rk_gaBAged "Create aged corners (R1)" "(rk_guiAgedCB)" 615 101 180)
+  (rk_gBtn 'rk_gaBDelta "Delta table (fresh/aged)" "(rk_guiDeltaCB)" 800 101 170)
+  (rk_guiPageResults "aging" 135 330)
   (rk_gTakeEntries))
 
 (defun rk_guiBuildDeos ()
@@ -334,8 +401,9 @@
   (rk_gStr 'rk_gdTddb "TDDB temperature" (rk_guiStr (rk_guiDef "deos" "tddb_temperature")) 265 37 250 120)
   (rk_gPut (hiCreateLabel ?name 'rk_gdTddbHint ?labelText "(blank = corner temperature)")
            'rk_gdTddbHint 525 42 250 24 nil)
-  (rk_guiRunButtons "deos" 72)
-  (rk_guiPageResults "deos" 106 330)
+  (rk_guiDonauRow "deos" 69)
+  (rk_guiRunButtons "deos" 101)
+  (rk_guiPageResults "deos" 135 330)
   (rk_gTakeEntries))
 
 ; RC corner names offered by the site (extract.corners, Quantus RuleSet names)
@@ -352,9 +420,15 @@
     (unless (member corner corners) (setq corner (car corners)))
     (setq rk_gPage 'page3)
     (rk_gStr 'rk_geDut "DUT" "" 5 5 965 90 t)
-    (rk_gFile 'rk_geDspf "DSPF file" "" 5 37 700 90)
-    (rk_gBtn 'rk_geBDetect "Use existing (detect)" "(rk_guiDetectCB)" 715 37 170)
-    (rk_gFile 'rk_geGds "GDS file" "" 5 69 700 90)
+    ; DSPF + GDS are made automatically (EMIR [Submit] extracts first when they
+    ; are missing or stale); own files only behind the check box
+    (rk_gPut (hiCreateBooleanButton ?name 'rk_geOwn ?buttonText "Use my own DSPF/GDS files"
+                                    ?value nil ?buttonLocation 'left ?callback "(rk_guiOwnCB)")
+             'rk_geOwn 5 37 230 30 nil)
+    (rk_gStr 'rk_geAuto "" "auto: checking..." 240 37 580 0 t)
+    (rk_gBtn 'rk_geBDetect "Use existing (detect)" "(rk_guiDetectCB)" 825 37 145)
+    (rk_gFile 'rk_geDspf "DSPF" "" 5 69 480 45)
+    (rk_gFile 'rk_geGds "GDS" "" 490 69 480 40)
     ; extraction: parameters come from Virtuoso's environment (extract-resolve);
     ; the user picks the variant / RC corner / QRC deck and the LVS supply names
     (rk_gStr 'rk_geLLib "Layout lib" "" 5 101 230 90)
@@ -367,27 +441,28 @@
     (rk_gStr 'rk_geXGround "LVS ground" "" 490 165 480 85)
     (rk_gBtn 'rk_geBResolve "Resolve / preview" "(rk_guiResolveCB)" 5 197 140)
     (rk_gBtn 'rk_geBShowRes "Show resolved" "(rk_guiShowResolvedCB)" 150 197 120)
-    (rk_gBtn 'rk_geBExtract "Extract DSPF + GDS" "(rk_guiExtractCB)" 275 197 150)
-    (rk_gBtn 'rk_geBXCancel "Cancel extract" "(rk_guiExtractCancelCB)" 430 197 115)
-    (rk_gBtn 'rk_geBCalibre "Open Calibre GUI" "(rk_guiCalibreCB)" 550 197 130)
-    (rk_gBtn 'rk_geBLvs "LVS report" "(rk_guiLvsReportCB)" 685 197 100)
+    (rk_gBtn 'rk_geBExtract "Extract only" "(rk_guiExtractCB)" 275 197 110)
+    (rk_gBtn 'rk_geBXCancel "Cancel extract" "(rk_guiExtractCancelCB)" 390 197 115)
+    (rk_gBtn 'rk_geBCalibre "Open Calibre GUI" "(rk_guiCalibreCB)" 510 197 130)
+    (rk_gBtn 'rk_geBLvs "LVS report" "(rk_guiLvsReportCB)" 645 197 100)
     (rk_gStr 'rk_geXStatus "Extract" "" 5 229 965 90 t)
     ; EMIR run
-    (rk_gStr 'rk_gePower "Power nets" "" 5 261 700 90)
-    (rk_gBtn 'rk_geBPorts "Fill from DUT ports" "(rk_guiSuppliesCB)" 715 261 170)
-    (rk_gStr 'rk_geGround "Ground nets" "" 5 293 700 90)
-    (rk_gStr 'rk_geEmT "EM temp" (rk_guiStr (rk_guiDef "emir" "em_temperature" 110)) 5 325 160 70)
-    (rk_gCombo 'rk_geRunType "Run_Type" (list "DYN SEM") (rk_guiDef "emir" "run_type" "DYN SEM") 170 325 210 70)
-    (rk_gBool 'rk_geSelfheat "Self-heat" (and (rk_guiDef "emir" "selfheat") t) 390 325 110)
-    (rk_gStr 'rk_geStart "Start" (rk_guiDef "emir" "start_time" "0n") 505 325 150 45)
-    (rk_gStr 'rk_geStop "Stop" (rk_guiDef "emir" "stop_time" "20n") 660 325 150 45)
-    (rk_gStr 'rk_geStep "Step" (rk_guiDef "emir" "dynamic_time_step" "20p") 815 325 150 45)
-    (rk_gStr 'rk_geRc "Rc_Corner" (rk_guiStr (rk_guiSite "emir.rc_corner" "typical")) 5 357 230 90)
-    (rk_gStr 'rk_geLife "Life" (rk_guiStr (rk_guiDef "emir" "life_time" "10")) 240 357 140 45)
-    (rk_gCyc 'rk_geLic "License" rk_guiLicChoices licC "" 385 357 290 65)
-    (rk_gStr 'rk_geLicH "N hours" (rk_guiStr (rk_guiSite "emir.license_wait_hours" 8)) 680 357 160 70)
+    (rk_gStr 'rk_gePower "Power nets" "" 5 261 460 90)
+    (rk_gStr 'rk_geGround "Ground" "" 470 261 300 55)
+    (rk_gBtn 'rk_geBPorts "Fill from DUT ports" "(rk_guiSuppliesCB)" 775 261 180)
+    (rk_gStr 'rk_geEmT "EM temp" (rk_guiStr (rk_guiDef "emir" "em_temperature" 110)) 5 293 160 70)
+    (rk_gCombo 'rk_geRunType "Run_Type" (list "DYN SEM") (rk_guiDef "emir" "run_type" "DYN SEM") 170 293 210 70)
+    (rk_gBool 'rk_geSelfheat "Self-heat" (and (rk_guiDef "emir" "selfheat") t) 390 293 110)
+    (rk_gStr 'rk_geStart "Start" (rk_guiDef "emir" "start_time" "0n") 505 293 150 45)
+    (rk_gStr 'rk_geStop "Stop" (rk_guiDef "emir" "stop_time" "20n") 660 293 145 45)
+    (rk_gStr 'rk_geStep "Step" (rk_guiDef "emir" "dynamic_time_step" "20p") 810 293 145 45)
+    (rk_gStr 'rk_geRc "Rc_Corner" (rk_guiStr (rk_guiSite "emir.rc_corner" "typical")) 5 325 230 90)
+    (rk_gStr 'rk_geLife "Life" (rk_guiStr (rk_guiDef "emir" "life_time" "10")) 240 325 140 45)
+    (rk_gCyc 'rk_geLic "License" rk_guiLicChoices licC "" 385 325 290 65)
+    (rk_gStr 'rk_geLicH "N hours" (rk_guiStr (rk_guiSite "emir.license_wait_hours" 8)) 680 325 160 70)
+    (rk_guiDonauRow "emir" 357)
     (rk_guiRunButtons "emir" 389)
-    (rk_guiPageResults "emir" 421 70)
+    (rk_guiPageResults "emir" 423 70)
     (rk_gTakeEntries)))
 
 (defun rk_guiBuildRuns ()
@@ -405,10 +480,10 @@
                  (list "Test" 80 'left 'string t)
                  (list "DUT" 90 'left 'string t)
                  (list "Corners" 55 'right 'string t)
-                 (list "Life" 45 'left 'string t)
+                 (list "Life" 60 'left 'string t)
                  (list "State" 105 'left 'string t)
                  (list "Pass" 45 'center 'string t)
-                 (list "Key metric" 150 'left 'string)
+                 (list "Key metric" 135 'left 'string)
                  (list "Note" 120 'left 'string)
                  (list "Tags" 80 'left 'string)
                  (list "Raw data" 65 'left 'string t))
@@ -424,6 +499,9 @@
   (rk_gBtn 'rk_grBCompare "Compare two" "(rk_guiRunsCompareCB)" 200 375 120)
   (rk_gBtn 'rk_grBCancel "Cancel run" "(rk_guiRunsCancelCB)" 325 375 110)
   (rk_gBtn 'rk_grBDelete "Delete record" "(rk_guiRunsDeleteCB)" 440 375 120)
+  (rk_gBtn 'rk_grBProg "Progress..." "(rk_guiCtxMenuCB \"runs\" \"progress\")" 565 375 100)
+  (rk_gPut (hiCreateLabel ?name 'rk_grHint ?labelText "(click a run, then right-click: progress, log, ...)")
+           'rk_grHint 670 380 290 24 nil)
   (rk_gStr 'rk_grNote "Note" "" 5 407 600 45)
   (rk_gStr 'rk_grTags "Tags" "" 610 407 240 45)
   (rk_gBtn 'rk_grBNote "Save note" "(rk_guiRunsNoteCB)" 855 407 110)
@@ -458,8 +536,18 @@
     (rk_gBtn 'rk_gBReload "Reload from Maestro" "(rk_guiReloadCB)" 800 5 170)
     (rk_gStr 'rk_gRsHome "RelStudio" "" 5 37 600 80 t)
     (rk_gStr 'rk_gIp "IP_Name" "" 615 37 355 70)
-    (rk_gCyc 'rk_gDut "DUT" (list rk_guiNoDut) rk_guiNoDut "(rk_guiDutCB)" 5 69 600 80)
-    (rk_gBtn 'rk_gBPick "Pick from schematic" "(rk_guiPickDutCB)" 615 69 170)
+    ; the button first: a cyclic field grows to its longest choice (long DUT
+    ; labels pushed it over a button placed to its right)
+    (rk_gBtn 'rk_gBPick "Pick from schematic" "(rk_guiPickDutCB)" 5 69 160)
+    (rk_gCyc 'rk_gDut "DUT" (list rk_guiNoDut) rk_guiNoDut "(rk_guiDutCB)" 175 69 795 40)
+    ; corners: filter + count + selection buttons ABOVE the table
+    (rk_gCyc 'rk_gCornerShow "Corners" rk_guiShowChoices (car rk_guiShowChoices) "(rk_guiCornerShowCB)"
+             5 101 230 60)
+    (rk_gStr 'rk_gCornerInfo "" "" 240 101 280 0 t)
+    (rk_gBtn 'rk_gBToggle "Toggle Use" "(rk_guiCornerToggleCB)" 525 101 110)
+    (rk_gBtn 'rk_gBAll "All" "(rk_guiCornerSetCB 'all)" 640 101 60)
+    (rk_gBtn 'rk_gBNone "None" "(rk_guiCornerSetCB 'none)" 705 101 60)
+    (rk_gBtn 'rk_gBMae "As in Maestro" "(rk_guiCornerSetCB 'maestro)" 770 101 120)
     (rk_gRep 'rk_gCorners
              (list (list "_i" 0 'left 'string)
                    (list "Use" 40 'center 'string)
@@ -468,12 +556,7 @@
                    (list "Temp" 55 'right 'string)
                    (list "Overrides" 300 'left 'string)
                    (list "Maestro" 65 'center 'string))
-             5 101 965 118 'extended "(rk_guiCornerToggleCB)" nil)
-    (rk_gBtn 'rk_gBToggle "Toggle selected" "(rk_guiCornerToggleCB)" 5 224 130)
-    (rk_gBtn 'rk_gBAll "All" "(rk_guiCornerSetCB 'all)" 140 224 60)
-    (rk_gBtn 'rk_gBNone "None" "(rk_guiCornerSetCB 'none)" 205 224 60)
-    (rk_gBtn 'rk_gBMae "As in Maestro" "(rk_guiCornerSetCB 'maestro)" 270 224 120)
-    (rk_gStr 'rk_gCornerInfo "" "" 395 224 575 0 t)
+             5 133 965 118 'extended "(rk_guiCornerToggleCB)" nil)
     (setq top (rk_gTakeEntries))
     (setq p1 (rk_guiBuildAging))
     (setq p2 (rk_guiBuildDeos))
@@ -483,7 +566,7 @@
     (setq tab (hiCreateTabField ?name 'rk_gTabs ?tabs (list "Aging" "DEOS" "EMIR" "Runs")
                                 ?tabPlacement 'top ?fields (list p1 p2 p3 p4)))
     (setarray rk_guiPageOf 'rk_gTabs nil)
-    (rk_gStr 'rk_gStatus "Status" "" 5 860 965 55 t)
+    (rk_gStr 'rk_gStatus "Status" "" 5 860 990 55 t)   ; 995 wide: the tab's right border stays inside the window
     (setq top (append top (cons (list tab (list 5 258) (list 975 597)) (rk_gTakeEntries))))
     (setq form (hiCreateAppForm
                  ?name nm
@@ -494,7 +577,7 @@
                  ?buttonLayout 'Close
                  ?dialogStyle 'modeless
                  ?dontBlock t
-                 ?initialSize (list 995 935)))
+                 ?initialSize (list 1010 935)))
     (hiInstantiateForm form)
     (setq rk_guiForm form)
     (setq rk_guiClosed nil)
@@ -510,8 +593,11 @@
     (setq rk_guiLast    (makeTable "rk_guiLast" nil))
     (setq rk_guiResults (makeTable "rk_guiResults" nil))
     (setq rk_guiPending (makeTable "rk_guiPending" nil))
+    (setq rk_guiFresh nil)
     (rk_guiEnable 'rk_geBCalibre nil)
+    (rk_guiAttachMenus)
     (rk_guiLoad sess test t)
+    (rk_guiOwnCB)
     form))
 
 (defun rkOpenPanel (@optional sess)
@@ -700,18 +786,44 @@
                     " ")
         (if (eq (rkGet c "enabled") t) "on" "off")))
 
+; Show filter (rk_gCornerShow): "All" / "Selected only" / "Unselected only".
+(defun rk_guiCornerShown (c)
+  (let ((how (or (rkGuiGet 'rk_gCornerShow) "All")))
+    (cond
+      ((equal how "Selected only") (eq (rkGet c "selected") t))
+      ((equal how "Unselected only") (not (eq (rkGet c "selected") t)))
+      (t t))))
+
+; Rebuild the table. Each row's hidden first column is the corner's index in
+; the FULL list, so Use toggles on a filtered view hit the right corners;
+; keepSel re-selects the same corners (by index) that are still shown.
 (defun rk_guiShowCorners (@optional keepSel)
-  (let ((i 0) rows sel n (corners (and rk_guiCtx (rk_guiL (rkGet rk_guiCtx "corners")))))
-    (setq sel (and keepSel (rk_guiSelected 'rk_gCorners)))
+  (let ((i 0) rows selIdx pos n shown (corners (and rk_guiCtx (rk_guiL (rkGet rk_guiCtx "corners")))))
+    (setq selIdx (and keepSel (rk_guiSelectedIdx 'rk_gCorners)))
     (foreach c corners
-      (setq rows (cons (rk_guiCornerRow c i) rows))
+      (when (rk_guiCornerShown c)
+        (setq rows (cons (rk_guiCornerRow c i) rows)))
       (setq i (add1 i)))
-    (rk_guiSetChoices 'rk_gCorners (reverse rows))
-    (when sel (errset (hiReportSelectItems (rkGuiField 'rk_gCorners) sel nil) nil))
+    (setq rows (reverse rows))
+    (rk_guiSetChoices 'rk_gCorners rows)
+    (when selIdx
+      (setq i 0)
+      (foreach r rows
+        (when (member (atoi (car r)) selIdx) (setq pos (cons i pos)))
+        (setq i (add1 i)))
+      (when pos (errset (hiReportSelectItems (rkGuiField 'rk_gCorners) (reverse pos) nil) nil)))
     (setq n (length (setof c corners (eq (rkGet c "selected") t))))
-    (rkGuiSet 'rk_gCornerInfo (sprintf nil "%d of %d corners selected for the next run (not written back to Maestro)"
-                                       n (length corners)))
+    (setq shown (length rows))
+    (rkGuiSet 'rk_gCornerInfo (sprintf nil "%d of %d selected%s" n (length corners)
+                                       (if (equal shown (length corners)) ""
+                                         (sprintf nil " (showing %d)" shown))))
     n))
+
+(defun rk_guiCornerShowCB ()
+  (unless rk_guiMute
+    (rk_guiShowCorners t)
+    (rk_guiSaveSettings))
+  t)
 
 (defun rk_guiCornersFromCtx ()
   (foreach c (rk_guiL (rkGet rk_guiCtx "corners"))
@@ -782,14 +894,16 @@
         (rkPut s "start_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gaStart)))
         (rkPut s "stop_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gaStop)))
         (setq evalT (rk_guiWords (rkGuiGet 'rk_gaEvalT)))
-        (rkPut s "eval_temperatures" evalT))
+        (rkPut s "eval_temperatures" evalT)
+        (rkPut s "donau_profile" (rkGuiGet 'rk_gaDonau)))
       ((equal type "deos")
         (rkPut s "life_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gdLife)))
         (rkPut s "life_time_unit" (rk_guiNullIfBlank (rkGuiGet 'rk_gdUnit)))
         (rkPut s "start_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gdStart)))
         (rkPut s "stop_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gdStop)))
         (rkPut s "simulation_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gdSimT)))
-        (rkPut s "tddb_temperature" (rk_guiNum (rkGuiGet 'rk_gdTddb))))
+        (rkPut s "tddb_temperature" (rk_guiNum (rkGuiGet 'rk_gdTddb)))
+        (rkPut s "donau_profile" (rkGuiGet 'rk_gdDonau)))
       ((equal type "emir")
         (rkPut s "run_type" (rk_guiNullIfBlank (rkGuiGet 'rk_geRunType)))
         (rkPut s "selfheat" (rkJsonBool (rkGuiGet 'rk_geSelfheat)))
@@ -799,8 +913,11 @@
         (rkPut s "stop_time" (rk_guiNullIfBlank (rkGuiGet 'rk_geStop)))
         (rkPut s "dynamic_time_step" (rk_guiNullIfBlank (rkGuiGet 'rk_geStep)))
         (rkPut s "life_time" (rk_guiNullIfBlank (rkGuiGet 'rk_geLife)))
-        (rkPut s "dspf_file" (rk_guiNullIfBlank (rkGuiGet 'rk_geDspf)))
-        (rkPut s "gds_file" (rk_guiNullIfBlank (rkGuiGet 'rk_geGds)))
+        ; auto (default): relkit extracts / reuses <artifact_root>/<DUT>/<DUT>.dspf/.gds
+        (rkPut s "auto_extract" (rkJsonBool (not (rkGuiGet 'rk_geOwn))))
+        (rkPut s "dspf_file" (and (rkGuiGet 'rk_geOwn) (rk_guiNullIfBlank (rkGuiGet 'rk_geDspf))))
+        (rkPut s "gds_file" (and (rkGuiGet 'rk_geOwn) (rk_guiNullIfBlank (rkGuiGet 'rk_geGds))))
+        (rkPut s "donau_profile" (rkGuiGet 'rk_geDonau))
         (rkPut s "layout_lib" (rk_guiNullIfBlank (rkGuiGet 'rk_geLLib)))
         (rkPut s "layout_view" (rk_guiNullIfBlank (rkGuiGet 'rk_geLView)))
         (rkPut s "supplies" (rk_guiSupplies (rkGuiGet 'rk_gePower) (rkGuiGet 'rk_geGround)))
@@ -812,10 +929,28 @@
         (rkPut s "technology_corner" (rk_guiNullIfBlank (rkGuiGet 'rk_geXCorner)))
         (rkPut s "temperature" (rk_guiNum (rkGuiGet 'rk_geXTemp)))
         (rkPut s "lvs_variant" (rk_guiChoiceOrNil (rkGuiGet 'rk_geXVariant)))
-        (rkPut s "qrc_deck" (rk_guiChoiceOrNil (rkGuiGet 'rk_geXQrc)))
+        (rkPut s "qrc_deck" (rk_guiQrcPath (rkGuiGet 'rk_geXQrc)))
         (rkPut s "power_names" (rk_guiWords (rkGuiGet 'rk_geXPower)))
-        (rkPut s "ground_names" (rk_guiWords (rkGuiGet 'rk_geXGround)))))
+        (rkPut s "ground_names" (rk_guiWords (rkGuiGet 'rk_geXGround)))
+        ; view directories for the freshness check (else Python reads cds.lib)
+        (when rk_guiDut
+          (rkPut s "layout_dir" (rk_guiViewDir (or (rk_guiNullIfBlank (rkGuiGet 'rk_geLLib))
+                                                   (rkGet rk_guiDut "lib"))
+                                               (rkGet rk_guiDut "cell")
+                                               (or (rk_guiNullIfBlank (rkGuiGet 'rk_geLView)) "layout")))
+          (rkPut s "schematic_dir" (rk_guiViewDir (or (rk_guiNullIfBlank (rkGuiGet 'rk_geLLib))
+                                                      (rkGet rk_guiDut "lib"))
+                                                  (rkGet rk_guiDut "cell")
+                                                  (rk_guiSite "extract.source_view" "schematic"))))))
     s))
+
+; Directory of a cellview on disk (ddGetObj + ddGetObjReadPath), or nil.
+(defun rk_guiViewDir (lib cell view)
+  (let (o r)
+    (when (and (stringp lib) (stringp cell) (stringp view))
+      (setq r (errset (ddGetObj lib cell view) nil))
+      (setq o (and r (car r)))
+      (and o (car (errset (ddGetObjReadPath o) nil))))))
 
 (defun rk_guiSetIf (sym v)
   (when (and v (not (eq v rkJsonFalse))) (rkGuiSet sym (rk_guiStr v))))
@@ -843,14 +978,16 @@
         (rk_guiSetIf 'rk_gaUnit (arrayref s "life_time_unit"))
         (rk_guiSetIf 'rk_gaStart (arrayref s "start_time"))
         (rk_guiSetIf 'rk_gaStop (arrayref s "stop_time"))
-        (rkGuiSet 'rk_gaEvalT (rk_guiJoin (arrayref s "eval_temperatures") " ")))
+        (rkGuiSet 'rk_gaEvalT (rk_guiJoin (arrayref s "eval_temperatures") " "))
+        (rk_guiSetDonau "aging" (arrayref s "donau_profile")))
       ((equal type "deos")
         (rk_guiSetIf 'rk_gdLife (arrayref s "life_time"))
         (rk_guiSetIf 'rk_gdUnit (arrayref s "life_time_unit"))
         (rk_guiSetIf 'rk_gdStart (arrayref s "start_time"))
         (rk_guiSetIf 'rk_gdStop (arrayref s "stop_time"))
         (rk_guiSetIf 'rk_gdSimT (arrayref s "simulation_time"))
-        (rkGuiSet 'rk_gdTddb (rk_guiStr (arrayref s "tddb_temperature"))))
+        (rkGuiSet 'rk_gdTddb (rk_guiStr (arrayref s "tddb_temperature")))
+        (rk_guiSetDonau "deos" (arrayref s "donau_profile")))
       ((equal type "emir")
         (rk_guiSetIf 'rk_geRunType (arrayref s "run_type"))
         (when (member (arrayref s "selfheat") (list t rkJsonFalse))
@@ -863,6 +1000,10 @@
         (rk_guiSetIf 'rk_geLife (arrayref s "life_time"))
         (rk_guiSetIf 'rk_geDspf (arrayref s "dspf_file"))
         (rk_guiSetIf 'rk_geGds (arrayref s "gds_file"))
+        (when (member (arrayref s "auto_extract") (list t rkJsonFalse))
+          (rkGuiSet 'rk_geOwn (eq (arrayref s "auto_extract") rkJsonFalse))
+          (rk_guiOwnCB))
+        (rk_guiSetDonau "emir" (arrayref s "donau_profile"))
         (rk_guiSetIf 'rk_geLLib (arrayref s "layout_lib"))
         (rk_guiSetIf 'rk_geLView (arrayref s "layout_view"))
         (when (tablep (arrayref s "supplies"))
@@ -878,16 +1019,28 @@
         (rk_guiSetCyc 'rk_geXCorner (arrayref s "technology_corner"))
         (rk_guiSetIf 'rk_geXTemp (arrayref s "temperature"))
         (rk_guiSetCyc 'rk_geXVariant (arrayref s "lvs_variant"))
-        (rk_guiSetCyc 'rk_geXQrc (arrayref s "qrc_deck"))
+        (when (stringp (arrayref s "qrc_deck"))
+          (rk_guiSetCyc 'rk_geXQrc (rk_guiQrcLabel (arrayref s "qrc_deck"))))
         (when (rk_guiL (arrayref s "power_names"))
           (rkGuiSet 'rk_geXPower (rk_guiJoin (arrayref s "power_names") " ")))
         (when (rk_guiL (arrayref s "ground_names"))
           (rkGuiSet 'rk_geXGround (rk_guiJoin (arrayref s "ground_names") " "))))))
   t)
 
+; Donau profile cyclic of a page (a saved/rerun name the site no longer has is
+; kept visible with a warning summary; rk_yml falls back with a warning too)
+(defun rk_guiSetDonau (type name)
+  (when (stringp name)
+    (rk_guiSetCyc (rk_guiTF type "Donau") name)
+    (rk_guiDonauCB type))
+  name)
+
 (defun rk_guiApplySaved (saved)
   (let (dut)
     (when (stringp (rkGet saved "ip_name")) (rkGuiSet 'rk_gIp (rkGet saved "ip_name")))
+    (when (member (rkGet saved "corner_show") rk_guiShowChoices)
+      (rkGuiSet 'rk_gCornerShow (rkGet saved "corner_show"))
+      (rk_guiShowCorners))
     (foreach type (list "aging" "deos" "emir" "extract")
       (rk_guiFillPage type (rkGet saved (strcat "settings." type))))
     (setq dut (rkGet saved "dut"))
@@ -901,6 +1054,7 @@
       (rkPut o "schema" 1)
       (rkPut o "dut" rk_guiDut)
       (rkPut o "ip_name" (rk_guiNullIfBlank (rkGuiGet 'rk_gIp)))
+      (rkPut o "corner_show" (rkGuiGet 'rk_gCornerShow))
       (foreach type (list "aging" "deos" "emir" "extract")
         (rkPut st type (rk_guiPageSettings type)))
       (rkPut o "settings" st)
@@ -972,10 +1126,15 @@
           (t
             (when (equal type "emir")
               (setq s (rkGet ctx "settings.emir"))
-              (unless (and (rkGet s "dspf_file") (isFile (rkGet s "dspf_file"))
-                           (rkGet s "gds_file") (isFile (rkGet s "gds_file")))
-                (setq ctx nil)
-                (rk_guiPageSay type "DSPF / GDS file missing: extract them or pick existing files"))
+              (cond
+                ((rkGuiGet 'rk_geOwn)
+                  (unless (and (rkGet s "dspf_file") (isFile (rkGet s "dspf_file"))
+                               (rkGet s "gds_file") (isFile (rkGet s "gds_file")))
+                    (setq ctx nil)
+                    (rk_guiPageSay type "own DSPF / GDS file missing: browse them, or untick 'Use my own DSPF/GDS files'")))
+                ((rk_guiL (rkGet rk_guiResolve "missing_env"))
+                  (setq ctx nil)
+                  (rk_guiPageSay type (strcat "cannot make the DSPF/GDS: " (rk_guiMissingEnvText rk_guiResolve)))))
               (when (and ctx (null (rkKeys (rkGet s "supplies.power"))))
                 (setq ctx nil)
                 (rk_guiPageSay type "no power net given (Power nets)"))
@@ -1003,10 +1162,15 @@
       (rk_guiPageSay type (sprintf nil "submit failed: %s" (rkGet res "error" "?"))))
     (t
       (rk_guiFollowRun type (rkGet res "run_dir"))
-      (rk_guiPageSay type (sprintf nil "%s submitted (%s%s); Work_Dir %s"
+      (rk_guiPageSay type (sprintf nil "%s submitted (%s%s); Work_Dir %s%s"
                                    (rkGet res "run_id") (rkGet res "state" "?")
                                    (if (eq (rkGet res "dry_run") t) ", dry run" "")
-                                   (rkGet res "work_dir" "?")))
+                                   (rkGet res "work_dir" "?")
+                                   (if (equal (rkGet res "state") "extracting")
+                                     "  -- DSPF/GDS missing or stale: extracting first, EMIR follows ([Progress...] shows the steps)"
+                                     "")))
+      (when (equal (rkGet res "state") "extracting")
+        (rkGuiSet 'rk_geXStatus (sprintf nil "auto-extract for EMIR run %s started" (rkGet res "run_id"))))
       (rk_guiRunsRefresh nil)))
   t)
 
@@ -1065,6 +1229,7 @@
       (t
         (setarray rk_guiPollFails (strcat "gui:run:" type) 0)
         (rkGuiSet (rk_guiTF type "Status") (rk_guiStatusText res))
+        (when (equal type "emir") (rk_guiRunExtractInfo res))
         (cond
           ((rk_guiIsFinal state)
             (when (equal state "done") (rk_guiLoadResults type (arrayref rk_guiRunDir type)))
@@ -1077,6 +1242,29 @@
             (setq keep nil))
           (t (setq keep t)))))
     keep))
+
+; EMIR run with auto-extract: mirror its extraction on the extract line; an
+; LVS failure enables [Open Calibre GUI] / [LVS report] for that runset.
+(defun rk_guiRunExtractInfo (res)
+  (let ((ex (rkGet res "extract")) state)
+    (when (and (tablep ex) (equal (rkGet ex "mode") "auto"))
+      (setq state (rkGet ex "state"))
+      (cond
+        ((or (equal state "lvs_failed") (equal (rkGet res "state") "lvs_failed"))
+          (setq rk_guiExtract ex)
+          (rk_guiEnable 'rk_geBCalibre t)
+          ; short: a read-only field shows the END of a long text
+          (rkGuiSet 'rk_geXStatus (sprintf nil "LVS FAILED (EMIR run %s): [Open Calibre GUI] / [LVS report]"
+                                           (rkGet res "run_id" "?"))))
+        ((member state (list "running" "pending"))
+          (rkGuiSet 'rk_geXStatus (sprintf nil "auto-extract for EMIR run %s: %s" (rkGet res "run_id" "?")
+                                           (rk_guiJoin (mapcar (lambda (s) (sprintf nil "%s:%s" (rkGet s "name") (rkGet s "state")))
+                                                               (rk_guiL (rkGet ex "steps")))
+                                                       " "))))
+        ((and (equal state "done") (not (equal (rkGet rk_guiFresh "state") "fresh")))
+          (rkGuiSet 'rk_geXStatus (sprintf nil "auto-extract for EMIR run %s: done" (rkGet res "run_id" "?")))
+          (rk_guiCheckFresh))))
+    t))
 
 (defun rk_guiCancelRunCB (type)
   (let ((d (arrayref rk_guiRunDir type)))
@@ -1344,6 +1532,27 @@
       (rkIpcRun "extract-resolve" (rkIpcNewCtxFile ctx "resolve") out 'rk_guiResolved
                 (list "--text" (strcat out ".txt")) 60))))
 
+; QRC deck choices are shown as short labels (<version>/<deck>; the full
+; QCI_deck path made the cyclic grow past the page); label -> path table.
+(unless (boundp 'rk_guiQrcMap) (setq rk_guiQrcMap (makeTable "rk_guiQrcMap" nil)))
+
+(defun rk_guiQrcLabel (path)
+  (let ((segs (parseString (or path "") "/")) lab n)
+    (when (equal (car (last segs)) "QCI_deck") (setq segs (reverse (cdr (reverse segs)))))
+    (setq n (length segs))
+    (setq lab (if (geqp n 2) (strcat (nth (difference n 2) segs) "/" (nth (sub1 n) segs)) (or (car segs) "?")))
+    (let ((base lab) (i 2))
+      (while (and (arrayref rk_guiQrcMap lab) (nequal (arrayref rk_guiQrcMap lab) path))
+        (setq lab (sprintf nil "%s#%d" base i))
+        (setq i (add1 i))))
+    (setarray rk_guiQrcMap lab path)
+    lab))
+
+; cyclic value -> the deck path ((auto) -> nil); unknown labels pass through
+(defun rk_guiQrcPath (v)
+  (let ((c (rk_guiChoiceOrNil v)))
+    (and c (or (arrayref rk_guiQrcMap c) c))))
+
 (defun rk_guiResolveCB ()
   (cond
     ((null rk_guiCtx) (rkGuiSet 'rk_geXStatus "no Maestro context"))
@@ -1367,7 +1576,7 @@
         (setq variants (rk_guiL (rkGet ch "variants")))
         (setq decks (rk_guiL (rkGet ch "qrc_decks")))
         (rk_guiSyncChoices 'rk_geXVariant variants)
-        (rk_guiSyncChoices 'rk_geXQrc decks)
+        (rk_guiSyncChoices 'rk_geXQrc (mapcar 'rk_guiQrcLabel (setof d decks (stringp d))))
         (when (rk_guiBlank (rkGuiGet 'rk_geXPower))
           (rkGuiSet 'rk_geXPower (rk_guiJoin (rkGet res "suggested.power_names") " ")))
         (when (rk_guiBlank (rkGuiGet 'rk_geXGround))
@@ -1388,8 +1597,14 @@
                                (rk_guiStr (rkGet res "resolved.lvs_basename.value"))
                                (rk_guiStr (rkGet res "resolved.lvs_variant.value"))
                                (rk_guiStr (rkGet res "resolved.technology_corner.value"))
-                               (rk_guiStr (rkGet res "resolved.qrc_deck_dir.value"))))))
-        (unless (rkIpcPollActive "gui:extract") (rkGuiSet 'rk_geXStatus txt)))))
+                               (if (stringp (rkGet res "resolved.qrc_deck_dir.value"))
+                                 (rk_guiQrcLabel (rkGet res "resolved.qrc_deck_dir.value"))
+                                 "?")))))
+        ; keep an LVS failure on the line (its [Open Calibre GUI] is still offered)
+        (unless (or (rkIpcPollActive "gui:extract")
+                    (pcreMatchp "^LVS FAILED" (or (rkGuiGet 'rk_geXStatus) "")))
+          (rkGuiSet 'rk_geXStatus txt))
+        (rk_guiCheckFresh))))
   t)
 
 ; cyclic choices = (auto) + what the environment offers; keep the current pick
@@ -1454,12 +1669,12 @@
           ((equal state "done")
             (rkGuiSet 'rk_geDspf (rkGet res "dspf"))
             (rkGuiSet 'rk_geGds (rkGet res "gds"))
-            (rkGuiSet 'rk_geXStatus (strcat "done: DSPF + GDS filled in  " txt))
+            (rkGuiSet 'rk_geXStatus (strcat "done: DSPF + GDS published  " txt))
+            (rk_guiCheckFresh)
             nil)
           ((equal state "lvs_failed")
             (rk_guiEnable 'rk_geBCalibre t)
-            (rkGuiSet 'rk_geXStatus (sprintf nil "LVS FAILED -- report %s; [Open Calibre GUI] reopens the same runset  %s"
-                                             (rk_guiStr (rkGet res "lvs_report")) txt))
+            (rkGuiSet 'rk_geXStatus (sprintf nil "LVS FAILED: [Open Calibre GUI] / [LVS report]  [%s]" steps))
             nil)
           ((member state (list "failed" "cancelled" "none"))
             (rkGuiSet 'rk_geXStatus txt)
@@ -1630,7 +1845,15 @@
             (setarray rk_guiRunDir type d)
             (rkGuiSet (rk_guiTF type "Status")
                       (sprintf nil "last run %s: %s" (rkGet row "id") (rkGet row "state")))
-            (when (equal (rkGet row "state") "done") (rk_guiLoadResults type d)))))))
+            (when (equal (rkGet row "state") "done") (rk_guiLoadResults type d))
+            ; an EMIR run that stopped at LVS: offer its runset again
+            (when (and (equal type "emir") (equal (rkGet row "state") "lvs_failed"))
+              (let ((run (rk_guiReadRun d)) (st (rkMakeObj)))
+                (when run
+                  (rkPut st "run_id" (rkGet run "id"))
+                  (rkPut st "state" (rkGet run "state"))
+                  (rkPut st "extract" (rkGet run "extract"))
+                  (rk_guiRunExtractInfo st)))))))))
   t)
 
 (defun rk_guiRunsSel ()
@@ -1797,3 +2020,289 @@
                             (if missing (sprintf nil "; corners no longer in Maestro: %s" (rk_guiJoin missing " ")) "")))
         (rkGuiSet 'rk_grStatus rk_guiMsg)))
     t))
+
+; ---------------------------------------------------------------------------
+; EMIR page: automatic DSPF/GDS (own files only behind the check box)
+; ---------------------------------------------------------------------------
+
+(defun rk_guiOwnCB ()
+  (let ((own (and (rkGuiGet 'rk_geOwn) t)))
+    (foreach sym (list 'rk_geDspf 'rk_geGds 'rk_geBDetect) (rk_guiEnable sym own))
+    (cond
+      (own (rkGuiSet 'rk_geAuto "own files: the DSPF / GDS below are used as they are (no extraction)"))
+      ((not rk_guiMute) (rk_guiCheckFresh)))
+    t))
+
+; extract-check (async): are <artifact_root>/<DUT>/<DUT>.dspf/.gds fresh?
+(defun rk_guiCheckFresh ()
+  (let (out)
+    (cond
+      ((or (null rk_guiForm) rk_guiClosed (null rk_guiCtx)) nil)
+      ((rkGuiGet 'rk_geOwn) nil)
+      ((null rk_guiDut) (rkGuiSet 'rk_geAuto "auto: choose the DUT first"))
+      (t
+        (setq out (rkIpcNewOutFile "fresh"))
+        (setq rk_guiFreshOut out)
+        (rkIpcRun "extract-check" (rkIpcNewCtxFile (rkGuiRunCtx "emir") "fresh") out
+                  'rk_guiFreshDone nil 60)))))
+
+(defun rk_guiFreshDone (res)
+  (let ((state (rkGet res "state")) (why (car (rk_guiL (rkGet res "reasons")))) n)
+    (cond
+      ((nequal (rkGet res "_out") rk_guiFreshOut) nil)     ; superseded
+      ((rkGuiGet 'rk_geOwn) nil)
+      ((not (eq (rkGet res "ok") t))
+        (setq rk_guiFresh nil)
+        (rkGuiSet 'rk_geAuto (sprintf nil "auto: check failed: %s" (rkGet res "error" "?"))))
+      (t
+        (setq rk_guiFresh res)
+        (setq n (length (rk_guiL (rkGet res "reasons"))))
+        (rkGuiSet 'rk_geDspf (rk_guiStr (rkGet res "dspf")))
+        (rkGuiSet 'rk_geGds (rk_guiStr (rkGet res "gds")))
+        (rkGuiSet 'rk_geAuto
+                  (cond
+                    ((equal state "fresh")
+                      (sprintf nil "auto: FRESH (extracted %s) -- Submit EMIR reuses them" (rk_guiStr (rkGet res "extracted"))))
+                    ((equal state "missing") "auto: MISSING -- Submit EMIR extracts them first")
+                    ((equal state "stale")
+                      (sprintf nil "auto: STALE (%s%s) -- Submit EMIR re-extracts" (rk_guiStr why)
+                               (if (greaterp n 1) (sprintf nil "; +%d more" (sub1 n)) "")))
+                    ((equal state "running") "auto: an extraction is running")
+                    (t "auto: cannot extract here (environment) -- see the Extract line")))))
+    t))
+
+; ---------------------------------------------------------------------------
+; Context menus (right-click) on the run tables -- skuiref "Creating Context
+; Menus for Fields": field->hiContextMenu = a hiCreateSimpleMenu menu. The
+; items act on the run of the page (results tables) or on the selected row
+; (Runs page).
+; ---------------------------------------------------------------------------
+
+(setq rk_guiCtxItems (list "Show progress" "Refresh status" "Open log" "Open Work_Dir" "Cancel run"))
+(setq rk_guiCtxActions (list "progress" "status" "log" "workdir" "cancel"))
+
+(defun rk_guiCtxMenu (where)
+  (let ((sym (stringToSymbol (strcat "rk_guiCtxMenu_" where))))
+    (unless (and (boundp sym) (symeval sym))
+      (set sym (hiCreateSimpleMenu sym "Run"
+                                   rk_guiCtxItems
+                                   (mapcar (lambda (a) (sprintf nil "(rk_guiCtxMenuCB %L %L)" where a))
+                                           rk_guiCtxActions))))
+    (symeval sym)))
+
+(defun rk_guiSetCtxMenu (sym menu)
+  (let ((f (rkGuiField sym)))
+    (when (and f menu)
+      (putprop f menu 'hiContextMenu)
+      (eq (get f 'hiContextMenu) menu))))
+
+(defun rk_guiAttachMenus ()
+  (let ((ok t))
+    (unless (rk_guiSetCtxMenu 'rk_grList (rk_guiCtxMenu "runs")) (setq ok nil))
+    (foreach type rk_guiTypes
+      (unless (rk_guiSetCtxMenu (rk_guiTF type "Res") (rk_guiCtxMenu type)) (setq ok nil)))
+    (unless ok (printf "[relkit] could not attach the run context menus\n"))
+    ok))
+
+; run dir a context-menu action applies to
+(defun rk_guiCtxRunDir (where)
+  (if (equal where "runs")
+    (let ((r (rk_guiRunsOne))) (and r (rkGet r "run_dir")))
+    (arrayref rk_guiRunDir where)))
+
+(defun rk_guiCtxMenuCB (where action)
+  (let ((dir (rk_guiCtxRunDir where)) run)
+    (cond
+      ((null dir) (rk_guiSay (if (equal where "runs")
+                               "click a run first (a right-click does not select the row), then right-click"
+                               "no run on this page yet")))
+      ((equal action "progress") (rkGuiShowProgress dir))
+      ((member action (list "status" "cancel"))
+        (rkIpcRun action nil (rkIpcNewOutFile (strcat "ctx_" action)) 'rk_guiCtxStatusDone
+                  (list "--run" dir) 60))
+      ((equal action "log") (rk_guiOpenRunLog dir))
+      ((equal action "workdir")
+        (setq run (rk_guiReadRun dir))
+        (rk_guiOpenDir (and run (rkGet run "work_dir")))))
+    t))
+
+(defun rk_guiCtxStatusDone (res)
+  (let ((msg (if (eq (rkGet res "ok") t)
+               (if (rkGet res "jobs") (rk_guiStatusText res)
+                 (sprintf nil "%s: %s" (rkGet res "run_id" "?") (rkGet res "state" "?")))
+               (sprintf nil "status failed: %s" (rkGet res "error" "?")))))
+    (rk_guiSay msg)
+    (when rk_guiForm (rkGuiSet 'rk_grStatus msg))
+    (foreach type rk_guiTypes
+      (when (and (equal (rkGet res "run_dir") (arrayref rk_guiRunDir type))
+                 (rkIpcPollActive (strcat "gui:run:" type)))
+        (rkIpcPollNow (strcat "gui:run:" type))))
+    (rk_guiRunsRefresh nil)
+    t))
+
+; The most useful log of a run: LVS report (LVS failed), extract.log (while
+; extracting), the failed job's job.out, else run_relsim's own log.
+(defun rk_guiOpenRunLog (runDir)
+  (let ((run (rk_guiReadRun runDir)) ex cands sims hit state)
+    (when run
+      (setq ex (rkGet run "extract"))
+      (setq state (rkGet run "state"))
+      (when (and (tablep ex) (equal state "lvs_failed"))
+        (setq cands (append cands (list (rkGet ex "lvs_report")))))
+      (when (and (tablep ex) (stringp (rkGet ex "dir")) (member state (list "extracting" "lvs_failed" "failed")))
+        (setq cands (append cands (list (rkPathJoin (rkGet ex "dir") "extract.log")))))
+      (foreach j (rk_guiL (rkGet run "jobs"))
+        (when (equal (rkGet j "state") "failed")
+          (foreach c (rk_guiL (rkGet run "corner_map"))
+            (when (and (equal (rkGet c "sim") (rkGet j "sim")) (stringp (rkGet c "sim_dir")))
+              (setq sims (cons (rkPathJoin (rkGet c "sim_dir") "job.out") sims))))))
+      (setq cands (append cands (reverse sims)))
+      (setq cands (append cands (mapcar (lambda (n) (rkPathJoin (rkPathJoin runDir "logs") n))
+                                        (list "relsim_start.log" "relsim_submit.log" "supervise.log")))))
+    (foreach c cands (when (and (null hit) (stringp c) (isFile c)) (setq hit c)))
+    (cond
+      (hit (rkResultsOpenFile hit) (rk_guiSay (sprintf nil "opened %s" hit)) hit)
+      (t (rk_guiSay "no log for this run yet") nil))))
+
+; ---------------------------------------------------------------------------
+; Progress window: per-job rows of a run (`relkit.py progress`), refreshed
+; every gui.status_poll_seconds while it is open and the run is not final.
+; ---------------------------------------------------------------------------
+
+(defun rk_guiBaseName (p) (car (last (parseString (or p "") "/"))))
+
+(defun rk_guiProgHeaders ()
+  (list (list "_i" 0 'left 'string)
+        (list "Stage" 60 'left 'string)
+        (list "Name" 70 'left 'string)
+        (list "Corner / mode" 170 'left 'string)
+        (list "State" 95 'left 'string)
+        (list "Job id" 70 'left 'string)
+        (list "Started" 75 'left 'string)
+        (list "Elapsed" 70 'right 'string)
+        (list "Donau" 110 'left 'string)
+        (list "Last line" 360 'left 'string)))
+
+(defun rk_guiPageProgressCB (type)
+  (let ((d (arrayref rk_guiRunDir type)))
+    (if d (rkGuiShowProgress d) (rk_guiPageSay type "no run on this page yet"))))
+
+(defun rkGuiShowProgress (runDir)
+  (let (nm form)
+    (rkGuiCloseProgress)
+    (setq rk_guiProgCounter (add1 rk_guiProgCounter))
+    (setq nm (stringToSymbol (sprintf nil "rk_prog_%d" rk_guiProgCounter)))
+    (setq rk_guiProgRun runDir)
+    (setq rk_guiProgRes nil)
+    (setq rk_guiProgLogs nil)
+    (setq rk_guiProgFails 0)
+    (setq form (hiCreateAppForm
+                 ?name nm
+                 ?formTitle (sprintf nil "relkit progress: %s" (rk_guiBaseName runDir))
+                 ?fields
+                 (list
+                   (list (hiCreateStringField ?name 'rk_pHead ?prompt "Run" ?value "loading..." ?editable nil)
+                         (list 5 5) (list 1090 30) 50)
+                   (list (hiCreateReportField ?name 'rk_pRows ?headers (rk_guiProgHeaders) ?choices nil
+                                              ?selectMode 'single ?altRowHilight t
+                                              ?doubleClickCB "(rk_guiProgLogCB)")
+                         (list 5 40) (list 1090 300))
+                   (list (hiCreateButton ?name 'rk_pBRefresh ?buttonText "Refresh now" ?callback "(rk_guiProgRefreshCB)")
+                         (list 5 348) (list 110 28))
+                   (list (hiCreateButton ?name 'rk_pBLog ?buttonText "Open log of the row" ?callback "(rk_guiProgLogCB)")
+                         (list 120 348) (list 160 28))
+                   (list (hiCreateButton ?name 'rk_pBRunLog ?buttonText "Open run log" ?callback "(rk_guiOpenRunLog rk_guiProgRun)")
+                         (list 285 348) (list 110 28))
+                   (list (hiCreateStringField ?name 'rk_pMsg ?prompt "" ?value "" ?editable nil)
+                         (list 400 348) (list 695 30) 0))
+                 ?callback (list (sprintf nil "(rk_guiProgressClosed '%s)" (symbolToString nm))
+                                 (sprintf nil "(rk_guiProgressClosed '%s)" (symbolToString nm)))
+                 ?buttonLayout 'Close
+                 ?dialogStyle 'modeless
+                 ?dontBlock t
+                 ?initialSize (list 1110 435)))
+    (hiInstantiateForm form)
+    (setq rk_guiProgForm form)
+    (rkIpcPollStart "rkprog:progress" "progress" nil (list "--run" runDir) (rk_guiPollSeconds)
+                    'rk_guiProgressCB)
+    (unless rk_guiNoDisplay (hiDisplayForm form))
+    form))
+
+(defun rk_guiProgAlive ()
+  (and rk_guiProgForm (or rk_guiNoDisplay (hiIsFormDisplayed rk_guiProgForm)) t))
+
+(defun rk_guiProgSet (sym v)
+  (let ((f (and rk_guiProgForm (get rk_guiProgForm sym))))
+    (when f (putprop f v (if (eq sym 'rk_pRows) 'choices 'value)))
+    v))
+
+(defun rk_guiHms (iso)
+  (if (and (stringp iso) (geqp (strlen iso) 19)) (substring iso 12 8) (rk_guiStr iso)))
+
+(defun rk_guiProgFill (res)
+  (let ((i 0) rows logs)
+    (foreach r (rk_guiL (rkGet res "rows"))
+      (setq rows (cons (list (sprintf nil "%d" i)
+                             (rk_guiStr (rkGet r "stage")) (rk_guiStr (rkGet r "name"))
+                             (rk_guiJoin (setof x (list (rkGet r "corner") (rkGet r "mode"))
+                                               (and (stringp x) (nequal x "")))
+                                         " / ")
+                             (rk_guiStr (rkGet r "state")) (rk_guiStr (rkGet r "job_id"))
+                             (rk_guiHms (rkGet r "started")) (rk_guiStr (rkGet r "elapsed"))
+                             (rk_guiStr (rkGet r "donau")) (rk_guiStr (rkGet r "last")))
+                       rows))
+      (setq logs (cons (rkGet r "log") logs))
+      (setq i (add1 i)))
+    (setq rk_guiProgLogs (reverse logs))
+    (rk_guiProgSet 'rk_pRows (reverse rows))
+    (rk_guiProgSet 'rk_pHead (sprintf nil "%s  (%s)  %s since %s%s" (rk_guiStr (rkGet res "run_id"))
+                                      (rk_guiStr (rkGet res "type")) (rk_guiStr (rkGet res "state"))
+                                      (rk_guiHms (rkGet res "state_since"))
+                                      (if (eq (rkGet res "final") t) "  -- final" "")))
+    (rk_guiProgSet 'rk_pMsg (sprintf nil "%s  [updated %s]" (rk_guiStr (rkGet res "message"))
+                                     (rk_guiHms (rkGet res "now"))))
+    i))
+
+; poll result -> t to keep polling (window open and run not final)
+(defun rk_guiProgressCB (res)
+  (cond
+    ((not (rk_guiProgAlive)) nil)
+    ((not (eq (rkGet res "ok") t))
+      (setq rk_guiProgFails (add1 rk_guiProgFails))
+      (rk_guiProgSet 'rk_pMsg (sprintf nil "progress failed: %s" (rkGet res "error" "?")))
+      (lessp rk_guiProgFails rk_guiPollMaxFails))
+    (t
+      (setq rk_guiProgFails 0)
+      (setq rk_guiProgRes res)
+      (rk_guiProgFill res)
+      (not (eq (rkGet res "final") t)))))
+
+(defun rk_guiProgRefreshCB ()
+  (cond
+    ((rkIpcPollActive "rkprog:progress") (rkIpcPollNow "rkprog:progress"))
+    (rk_guiProgRun
+      (rkIpcPollStart "rkprog:progress" "progress" nil (list "--run" rk_guiProgRun) (rk_guiPollSeconds)
+                      'rk_guiProgressCB)))
+  t)
+
+(defun rk_guiProgLogCB ()
+  (let ((f (and rk_guiProgForm (get rk_guiProgForm 'rk_pRows))) sel p)
+    (setq sel (and f (car (errset (hiReportGetSelectedItems f) nil))))
+    (setq sel (car (setof x (if (listp sel) sel (list sel)) (integerp x))))
+    (setq p (and sel (nth sel rk_guiProgLogs)))
+    (cond
+      ((and (stringp p) (isFile p)) (rkResultsOpenFile p) p)
+      (t (rk_guiProgSet 'rk_pMsg (if sel "this row has no log file yet" "select a row first")) nil))))
+
+; close callback of a progress window: only the current window's close counts
+(defun rk_guiProgressClosed (@optional formSym)
+  (when (or (null formSym) (null rk_guiProgForm) (eq formSym rk_guiProgForm->hiFormSym))
+    (rkIpcPollStop "rkprog:progress"))
+  t)
+
+(defun rkGuiCloseProgress ()
+  (rkIpcPollStop "rkprog:progress")
+  (when (and rk_guiProgForm (hiIsFormDisplayed rk_guiProgForm))
+    (hiFormCancel rk_guiProgForm))
+  (setq rk_guiProgForm nil)
+  t)

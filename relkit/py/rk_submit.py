@@ -4,13 +4,22 @@ Totem license retry (plan 4.3, D9, D18).
 Subcommands (docs/CONTRACT.md section 3):
   submit     --ctx          create the run record, build the yml, start the supervisor
   status     --run DIR      state of a run (respawns a dead supervisor of a live run)
+  progress   --run DIR      per-job rows (extract steps, simN jobs) for the panel
   cancel     --run DIR      ask the supervisor to stop (or mark cancelled if it is gone)
   supervise  --run DIR      INTERNAL: the detached loop started by submit
 
 The supervisor is a detached process (own session) that survives Virtuoso:
-  submitting -> queued -> running -> summarizing -> done
+  [extracting ->] submitting -> queued -> running -> summarizing -> done
   any -> failed;  EMIR license failure -> waiting_license -> (resubmit) -> queued
+  EMIR auto-extract: LVS not clean -> lvs_failed
   user -> cancelled;  dry run -> dry_run_done
+
+EMIR with auto-extract (default; ctx settings.emir.auto_extract false = the
+user's own files): submit checks <artifact_root>/<DUT>/<DUT>.gds/.dspf with
+rk_extract.freshness; when missing or stale it prepares the extraction and
+starts its worker, the run starts in `extracting`, and the supervisor submits
+EMIR once the worker published a fresh pair (all in detached processes:
+closing the panel or Virtuoso does not stop it).
 It is the only writer of run.json's state fields (rk_parse / rk_report /
 rk_aged write their own keys).
 
@@ -38,7 +47,9 @@ import rk_site
 import rk_yml
 
 PY_DIR = os.path.dirname(os.path.abspath(__file__))
-FINAL_STATES = ("done", "failed", "cancelled", "dry_run_done")
+FINAL_STATES = ("done", "failed", "cancelled", "dry_run_done", "lvs_failed")
+DEFAULT_JOB_ID_RE = r"[Jj]ob *<([0-9]+)>|[Jj]ob[_ ]?[Ii][Dd] *[:=] *([0-9]+)"
+SIM_IN_LINE_RE = re.compile(r"(?:^|[/\s\"'=])(sim\d+)(?=$|[/\s\"';])")
 HISTORY_MARKER = ".relkit_history.json"
 DEFAULT_LICENSE_IGNORE = [
     r"^\s*INFO",
@@ -417,6 +428,52 @@ def scan_jobs(run):
     return jobs
 
 
+def job_id_of(text, site=None):
+    """Cluster job id in a submit command's output (dsub: `Job <123> is
+    submitted ...`; site `donau_job_id_regex` overrides), else None."""
+    pat = (rk_site.get(site, "donau_job_id_regex") if site else None) or DEFAULT_JOB_ID_RE
+    try:
+        rx = re.compile(pat)
+    except re.error:
+        rx = re.compile(DEFAULT_JOB_ID_RE)
+    for line in (text or "").splitlines():
+        m = rx.search(line)
+        if m:
+            for g in (m.groups() or (m.group(0),)):
+                if g:
+                    return g
+    return None
+
+
+def sim_of_line(line):
+    m = SIM_IN_LINE_RE.search(line or "")
+    return m.group(1) if m else None
+
+
+def merge_job_times(prev_jobs, jobs, donau_jobs=None):
+    """run.json jobs from a fresh scan, keeping first-seen start / end times
+    (`started` = first poll that saw the job running or finished, `ended` =
+    first poll that saw it finished) and the cluster job id per sim."""
+    prev = {j.get("sim"): j for j in prev_jobs or [] if isinstance(j, dict)}
+    ids = {d.get("sim"): d.get("job_id") for d in donau_jobs or [] if d.get("sim")}
+    t = iso(now())
+    out = []
+    for j in jobs:
+        p = prev.get(j["sim"]) or {}
+        row = {k: j.get(k) for k in ("sim", "key", "corner", "state", "exit_code")}
+        row["job_id"] = p.get("job_id") or ids.get(j["sim"]) or j.get("job_id")
+        row["started"] = p.get("started")
+        row["ended"] = p.get("ended")
+        if row["state"] in ("running", "done", "failed") and not row["started"]:
+            row["started"] = t
+        if row["state"] in ("done", "failed"):
+            row["ended"] = row["ended"] or t
+        else:
+            row["ended"] = None
+        out.append(row)
+    return out
+
+
 def apply_mapping_to_corner_map(run, sims):
     cmap = {c.get("key"): c for c in run.get("corner_map") or []}
     for s in sims:
@@ -550,10 +607,21 @@ def cmd_submit(args, ctx):
     if not netlist or not os.path.isfile(netlist):
         raise rk_common.RkError("netlist not found: %s (export it first)" % netlist)
     settings = rk_yml.effective_settings(ctx, site, run_type)
+    fresh = None
     if run_type == "emir":
-        for k in ("dspf_file", "gds_file"):
-            if not settings.get(k) or not os.path.isfile(settings[k]):
-                raise rk_common.RkError("EMIR %s not found: %s" % (k, settings.get(k)))
+        if use_auto_extract(settings):
+            fresh = auto_extract_check(ctx, site)
+            # the yml names the canonical pair; it is (re)extracted below when needed
+            sets = ctx.get("settings") if isinstance(ctx.get("settings"), dict) else {}
+            ctx["settings"] = sets
+            em = sets.get("emir") if isinstance(sets.get("emir"), dict) else {}
+            sets["emir"] = em
+            em["dspf_file"], em["gds_file"] = fresh["dspf"], fresh["gds"]
+            settings = rk_yml.effective_settings(ctx, site, run_type)
+        else:
+            for k in ("dspf_file", "gds_file"):
+                if not settings.get(k) or not os.path.isfile(settings[k]):
+                    raise rk_common.RkError("EMIR %s not found: %s" % (k, settings.get(k)))
         if not ((settings.get("supplies") or {}).get("power")):
             raise rk_common.RkError("EMIR supplies.power is empty")
     dry_run = bool(site.get("dry_run"))
@@ -565,6 +633,10 @@ def cmd_submit(args, ctx):
     # never leaves an empty run record or an empty RelStudio History dir.
     preview_dir, preview_hist = preview_work_dir(ctx, site)
     rk_yml.build_doc(ctx, site, run_type, preview_dir, preview_hist, tools={}, sysver="")
+    xp = None
+    if fresh is not None and fresh["state"] != "fresh":
+        import rk_extract
+        xp, _cmds = rk_extract.prepare(ctx, site)   # renders the runsets; refuses a live worker
 
     run_id, run_dir = _persist_dir(ctx, site, run_type)
     os.makedirs(os.path.join(run_dir, "input"), exist_ok=True)
@@ -591,6 +663,18 @@ def cmd_submit(args, ctx):
         files = {"dspf": _file_info(settings.get("dspf_file")),
                  "gds": _file_info(settings.get("gds_file"))}
     rk_common.write_json(os.path.join(run_dir, "input", "files.json"), files)
+    extract = None
+    if run_type == "emir":
+        extract = {"mode": "own"} if fresh is None else {
+            "mode": "auto", "check": fresh["state"], "reasons": fresh["reasons"],
+            "dir": fresh["extract_dir"], "gds": fresh["gds"], "dspf": fresh["dspf"],
+            "extracted": fresh.get("extracted"),
+            "state": "fresh" if xp is None else "running", "steps": [], "step": None,
+            "pid": None, "lvs_report": None, "message": None}
+        if xp is not None:
+            import rk_extract
+            extract["calibre_gui_cmd"] = rk_extract.shell_join(rk_extract.calibre_gui_argv(xp))
+            extract["calibre_gui_cwd"] = xp["workarea"]
 
     m = ctx.get("maestro") or {}
     hist = ctx.get("history") or {}
@@ -622,17 +706,55 @@ def cmd_submit(args, ctx):
                     "deadline": None, "first_wait": None, "unmatched_tail": []},
         "failure_tail": [], "warnings": site_warn + info["warnings"],
         "official_reports": [], "aux_report": None, "summary": None, "summary_ready": False,
-        "raw_data_present": True,
+        "raw_data_present": True, "cluster": info.get("cluster"), "donau_jobs": [],
+        "extract": extract,
     }
     set_state(run, "created", "run record created")
-    set_state(run, "submitting", "starting supervisor")
+    if xp is not None:
+        set_state(run, "extracting", "DSPF/GDS %s (%s): extracting first"
+                  % (fresh["state"], "; ".join(fresh["reasons"][:3])))
+        save_run(run_dir, run)
+        import rk_extract
+        run["extract"]["pid"] = rk_extract.spawn_worker(xp["extract_dir"], python=sys.executable)
+    else:
+        if extract and extract.get("mode") == "auto":
+            run["timeline"].append({"t": iso(now()), "state": "created",
+                                    "msg": "DSPF/GDS fresh (extracted %s): no extraction"
+                                    % (fresh.get("extracted") or "?")})
+        set_state(run, "submitting", "starting supervisor")
     save_run(run_dir, run)
     pid = forget(start_supervisor(run_dir))
     run = update_run(run_dir, lambda r: r.update({"supervisor_pid": pid}))
     return {"run_id": run_id, "run_dir": run_dir, "work_dir": work_dir,
             "rs_history": history, "type_dir": type_dir, "yml_path": yml_path,
             "state": run["state"], "supervisor_pid": pid, "dry_run": dry_run,
-            "warnings": run["warnings"]}
+            "extract": run.get("extract"), "warnings": run["warnings"]}
+
+
+def use_auto_extract(settings):
+    """settings.emir.auto_extract: true = relkit makes the DSPF/GDS; false = the
+    user's own dspf_file/gds_file; null (CLI callers) = auto unless both files
+    are given. The panel always sends true/false."""
+    a = settings.get("auto_extract")
+    if a is None:
+        return not (settings.get("dspf_file") and settings.get("gds_file"))
+    return bool(a)
+
+
+def auto_extract_check(ctx, site):
+    """EMIR auto-extract: freshness of the DUT's DSPF/GDS; raises when the
+    extraction cannot run (environment missing, an extraction already running)."""
+    import rk_extract
+    fr = rk_extract.freshness(ctx, site)
+    if fr["state"] == "unresolved":
+        raise rk_common.RkError(
+            "EMIR needs the DUT's DSPF/GDS, but the extraction parameters do not resolve: %s "
+            "(or tick 'Use my own DSPF/GDS files')" % (fr["reasons"][0] if fr["reasons"] else "?"),
+            missing_env=fr.get("missing_env") or [], extract=fr)
+    if fr["state"] == "running":
+        raise rk_common.RkError("%s; wait for it to finish or cancel it, then submit again"
+                                % fr["reasons"][0], extract=fr)
+    return fr
 
 
 def start_supervisor(run_dir):
@@ -763,15 +885,26 @@ class Supervisor(object):
                 self.state("failed", "batch_submit_list.txt is empty or missing")
                 return
             log_path = os.path.join(self.run_dir, "logs", "batch_submit.log")
+            ids = []
             for line in lines:
+                # the submit line usually backgrounds the job; its output (dsub's
+                # "Job <id> is submitted ...") is captured for the job ids
+                p = subprocess.Popen(shell_argv(line), cwd=run["type_dir"],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT)
+                text = (p.communicate()[0] or b"").decode("utf-8", "replace")
+                rc = p.returncode
                 with open(log_path, "ab") as lf:
                     lf.write(("[relkit %s] %s\n" % (iso(now()), line)).encode("utf-8"))
-                    rc = subprocess.call(shell_argv(line), cwd=run["type_dir"],
-                                         stdin=subprocess.DEVNULL, stdout=lf,
-                                         stderr=subprocess.STDOUT)
+                    lf.write(text.encode("utf-8"))
+                ids.append({"cmd": line[:500], "sim": sim_of_line(line),
+                            "job_id": job_id_of(text, site), "t": iso(now())})
                 if rc != 0:
                     self.state("failed", "submit command exited %s: %s" % (rc, line[:200]))
                     return
+            self.reload()
+            self.run["donau_jobs"] = ids
+            self.save()
             self.state("queued", "submitted %d job(s) from batch_submit_list.txt" % len(lines))
 
     def fail_with_log(self, msg, mode):
@@ -784,6 +917,8 @@ class Supervisor(object):
 
     def step(self):
         st = self.run["state"]
+        if st == "extracting":
+            return self.step_extract()
         if st == "waiting_license":
             return self.step_license_wait()
         if st == "summarizing":
@@ -800,8 +935,8 @@ class Supervisor(object):
         jobs = scan_jobs(self.run)
         self.reload()
         apply_mapping_to_corner_map(self.run, sims)
-        self.run["jobs"] = [{k: j[k] for k in ("sim", "key", "corner", "state", "job_id",
-                                               "exit_code")} for j in jobs]
+        self.run["jobs"] = merge_job_times(self.run.get("jobs"), jobs,
+                                           self.run.get("donau_jobs"))
         self.save()
         states = [j["state"] for j in jobs]
         if all(s == "done" for s in states):
@@ -871,6 +1006,50 @@ class Supervisor(object):
             return
         self.resubmit()
 
+    def step_extract(self):
+        """EMIR auto-extract: follow the extraction worker; submit when it is done."""
+        import rk_extract
+        ex = self.run.get("extract") or {}
+        xdir = ex.get("dir")
+        if not xdir or rk_extract.read_status(xdir) is None:
+            return self.state("failed", "extraction status missing in %s" % xdir)
+        st = rk_extract.status_out(xdir)   # a dead worker is reported failed
+        steps = [{"name": s.get("name"), "state": s.get("state"), "started": s.get("started"),
+                  "ended": s.get("ended"), "exit_code": s.get("exit_code"), "log": s.get("log")}
+                 for s in st.get("steps") or []]
+        state = st.get("state")
+        brief = " ".join("%s:%s" % (s["name"], s["state"]) for s in steps)
+        self.reload()
+        ex = self.run.setdefault("extract", {})
+        ex.update({"state": state, "steps": steps, "step": st.get("step"),
+                   "message": st.get("message"), "lvs_report": st.get("lvs_report"),
+                   "lvs": st.get("lvs"), "log_tail": (st.get("log_tail") or [])[-10:]})
+        if st.get("calibre_gui_cmd"):
+            ex["calibre_gui_cmd"] = st["calibre_gui_cmd"]
+            ex["calibre_gui_cwd"] = st.get("calibre_gui_cwd")
+        self.save()
+        if state == "done":
+            missing = [p for p in (ex.get("gds"), ex.get("dspf")) if not (p and os.path.isfile(p))]
+            if missing:
+                return self.state("failed", "extraction done but %s missing" % " ".join(missing))
+            files = {"dspf": _file_info(ex.get("dspf")), "gds": _file_info(ex.get("gds"))}
+            rk_common.write_json(os.path.join(self.run_dir, "input", "files.json"), files)
+            self.state("submitting", "extraction done (%s); submitting EMIR" % brief)
+            return self.submit_flow()
+        if state == "lvs_failed":
+            return self.state("lvs_failed", "LVS not clean: %s" % (st.get("message") or "?"))
+        if state == "cancelled":
+            return self.state("cancelled", "extraction cancelled")
+        if state in ("failed", "none"):
+            self.reload()
+            self.run["failure_tail"] = (st.get("log_tail") or [])[-20:]
+            self.save()
+            return self.state("failed", "extraction failed at %s: %s"
+                              % (st.get("step") or "?", st.get("message") or "?"))
+        msg = "extracting DSPF/GDS: %s" % brief
+        if msg != self.run.get("message"):
+            self.state("extracting", msg)
+
     def resubmit(self):
         """D18: resubmit the same yml; archive the old job files first."""
         self.reload()
@@ -887,6 +1066,9 @@ class Supervisor(object):
                 os.remove(ok)
         lic["waiting"] = False
         lic["next_retry"] = None
+        for j in self.run.get("jobs") or []:
+            j["started"] = j["ended"] = None
+            j["state"] = "queued"
         self.save()
         self.state("submitting", "license retry %d: resubmitting the same yml" % n)
         self.submit_flow()
@@ -930,6 +1112,13 @@ class Supervisor(object):
         self.state("done", "; ".join(msgs) if msgs else "finished")
 
     def do_cancel(self):
+        ex = self.run.get("extract") or {}
+        if self.run.get("state") == "extracting" and ex.get("dir"):
+            try:
+                import rk_extract
+                rk_extract.cancel(ex["dir"], wait_seconds=15)
+            except rk_common.RkError as e:
+                rk_common.log("extract cancel: %s", e)
         if self.start_alive():
             pid = self.start_proc.pid if self.start_proc is not None else self.run.get("start_pid")
             kill_tree(pid)
@@ -979,7 +1168,132 @@ def _status_fields(run_dir, run):
                         ("waiting", "retries", "next_retry", "policy", "deadline")},
             "work_dir": run.get("work_dir"), "official_reports": run.get("official_reports") or [],
             "summary_ready": bool(run.get("summary_ready")), "raw_data_present": raw,
-            "aux_report": run.get("aux_report"), "failure_tail": run.get("failure_tail") or []}
+            "aux_report": run.get("aux_report"), "failure_tail": run.get("failure_tail") or [],
+            "extract": _extract_brief(run.get("extract"))}
+
+
+def _extract_brief(ex):
+    if not isinstance(ex, dict):
+        return None
+    return {k: ex.get(k) for k in ("mode", "check", "reasons", "state", "step", "steps",
+                                   "message", "dir", "gds", "dspf", "lvs_report",
+                                   "calibre_gui_cmd", "calibre_gui_cwd", "extracted")}
+
+
+# --------------------------------------------------------------------------
+# progress (the panel's "Show progress" window)
+
+def _elapsed(start, end=None):
+    a = parse_iso(start)
+    if a is None:
+        return ""
+    b = parse_iso(end) or now()
+    s = max(0, int((b - a).total_seconds()))
+    return "%d:%02d:%02d" % (s // 3600, (s % 3600) // 60, s % 60)
+
+
+def _last_line(path):
+    for line in reversed(tail_lines(path, 20) if path else []):
+        if line.strip():
+            return line.strip()[:300]
+    return ""
+
+
+def _donau_query(site, job_id, cache):
+    """site donau_query_cmd (e.g. "djob -j {job_id}"): first output line, or ""."""
+    cmd = rk_site.get(site, "donau_query_cmd")
+    if not cmd or not job_id:
+        return ""
+    if job_id in cache:
+        return cache[job_id]
+    try:
+        p = subprocess.Popen(shell_argv(cmd.replace("{job_id}", str(job_id))),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+        try:
+            out = p.communicate(timeout=10)[0]
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out = b"(donau query timed out)"
+        lines = [l for l in out.decode("utf-8", "replace").splitlines() if l.strip()]
+        cache[job_id] = (lines[-1] if lines else "").strip()[:200]
+    except OSError as e:
+        cache[job_id] = "(donau query failed: %s)" % e
+    return cache[job_id]
+
+
+def progress(run_dir):
+    """Rows for the progress window: the extraction steps (EMIR auto-extract)
+    then one row per RelStudio job (simN) with its state, cluster job id,
+    first-seen start, elapsed time and the last line of its job.out."""
+    run = load_run(run_dir)
+    site = site_for_run(run)
+    rows = []
+    ex = run.get("extract") or {}
+    if ex.get("mode") == "auto":
+        if ex.get("check") == "fresh":
+            rows.append({"stage": "extract", "name": "(skipped)", "corner": "", "mode": "",
+                         "state": "fresh", "job_id": "", "started": "", "elapsed": "",
+                         "last": "DSPF/GDS up to date (extracted %s)" % (ex.get("extracted") or "?"),
+                         "log": ""})
+        else:
+            steps = ex.get("steps") or []
+            if ex.get("dir"):
+                try:
+                    import rk_extract
+                    st = rk_extract.read_status(ex["dir"])
+                    if st and st.get("steps"):
+                        steps = st["steps"]
+                except Exception:
+                    pass
+            for s in steps:
+                rows.append({"stage": "extract", "name": s.get("name"), "corner": "",
+                             "mode": "", "state": s.get("state") or "", "job_id": "",
+                             "started": s.get("started") or "",
+                             "elapsed": _elapsed(s.get("started"), s.get("ended"))
+                             if s.get("started") else "",
+                             "last": _last_line(s.get("log")), "log": s.get("log") or ""})
+    prev = {j.get("sim"): j for j in run.get("jobs") or [] if isinstance(j, dict)}
+    ids = {d.get("sim"): d.get("job_id") for d in run.get("donau_jobs") or [] if d.get("sim")}
+    cmap = {c.get("key"): c for c in run.get("corner_map") or []}
+    sims = sim_dirs(run) if run.get("type_dir") and os.path.isdir(run["type_dir"]) else []
+    cache = {}
+    if sims:
+        for s in sims:
+            state, code = job_state(s["dir"])
+            p = prev.get(s["sim"]) or {}
+            c = cmap.get(s["key"]) or {}
+            modes = [r.get("sim_type") or r.get("mode_name") for r in s["rows"]]
+            modes = [m for m in modes if m] if run.get("type") == "aging" else []
+            jid = p.get("job_id") or ids.get(s["sim"])
+            started = p.get("started") or ""
+            rows.append({"stage": "job", "name": s["sim"], "corner": c.get("corner") or "",
+                         "mode": "+".join(modes) if modes else (c.get("mode") or ""),
+                         "state": state, "exit_code": code, "job_id": jid or "",
+                         "started": started,
+                         "elapsed": _elapsed(started, p.get("ended")) if started else "",
+                         "last": _last_line(os.path.join(s["dir"], "job.out")),
+                         "log": posix(os.path.join(s["dir"], "job.out")),
+                         "donau": _donau_query(site, jid, cache)})
+    else:
+        for c in run.get("corner_map") or []:
+            p = prev.get(c.get("sim")) or {}
+            rows.append({"stage": "job", "name": c.get("sim") or "", "corner": c.get("corner") or "",
+                         "mode": c.get("mode") or "", "state": p.get("state") or "not submitted",
+                         "job_id": p.get("job_id") or "", "started": p.get("started") or "",
+                         "elapsed": _elapsed(p.get("started"), p.get("ended"))
+                         if p.get("started") else "",
+                         "last": "", "log": ""})
+    return {"run_id": run.get("id"), "run_dir": posix(run_dir), "type": run.get("type"),
+            "state": run.get("state"), "state_since": run.get("state_since"),
+            "message": run.get("message"), "final": run.get("state") in FINAL_STATES,
+            "now": iso(now()), "rows": rows,
+            "timeline": (run.get("timeline") or [])[-8:],
+            "extract": _extract_brief(ex) if ex else None}
+
+
+def cmd_progress(args, ctx):
+    return progress(os.path.abspath(args.run))
 
 
 def cmd_status(args, ctx):
@@ -1012,6 +1326,14 @@ def cmd_cancel(args, ctx):
         f.write(iso(now()) + "\n")
     site = site_for_run(run)
     if not supervisor_alive(run_dir, run, site):
+        ex = run.get("extract") or {}
+        if run.get("state") == "extracting" and ex.get("dir"):
+            try:
+                import rk_extract
+                rk_extract.cancel(ex["dir"], wait_seconds=15)
+            except rk_common.RkError:
+                pass
+
         def mark(r):
             set_state(r, "cancelled", "cancelled (supervisor was not running)")
         run = update_run(run_dir, mark)
@@ -1040,6 +1362,10 @@ def register(subparsers):
                           ctx_required=True)
     p = rk_common.add_command(subparsers, "status", cmd_status,
                               "report the state of a run",
+                              ctx_required=False)
+    p.add_argument("--run", required=True, help="run record directory (absolute)")
+    p = rk_common.add_command(subparsers, "progress", cmd_progress,
+                              "per-job progress rows of a run (extract steps, simN jobs)",
                               ctx_required=False)
     p.add_argument("--run", required=True, help="run record directory (absolute)")
     p = rk_common.add_command(subparsers, "cancel", cmd_cancel,

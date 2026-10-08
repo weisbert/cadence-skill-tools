@@ -33,6 +33,10 @@
     "GPU": 4,
     "Machine_Arch": "x86"
   },
+  "donau_profiles": null,
+  "donau_default": null,
+  "donau_job_id_regex": "[Jj]ob *<([0-9]+)>|[Jj]ob[_ ]?[Ii][Dd] *[:=] *([0-9]+)",
+  "donau_query_cmd": null,
   "simulator": {
     "Name": "alps",
     "Simulator_Accuracy": "moderate",

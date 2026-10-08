@@ -105,7 +105,11 @@ Keys (defaults in `site_defaults.json`, example in `site.example.json`):
 | `model_file_map` | list | `[{"match": <python regex, full path>, "replace": <re.sub replacement>}]`, first match wins; no match -> path unchanged. Maps a Maestro corner model file to the yml `Corner_Group.*.Model_File` entry |
 | `tool_version_names` | list | executables for `Common.ToolVersion` (`which`; missing ones omitted + warning) |
 | `tech` | obj | `Foundry, Technology, Tech_Voltage, Tech_Layout, Rel_Tech_Dir` (yml `Common`) |
-| `cluster` | obj | yml `Cluster` block: `Using_Cluster, Cluster_Type, Group, Queue, CPU, Memory, GPU, Machine_Arch` |
+| `cluster` | obj | yml `Cluster` block: `Using_Cluster, Cluster_Type, Group, Queue, CPU, Memory, GPU, Machine_Arch`; the base of every Donau profile, and the single profile `default` when `donau_profiles` is not set |
+| `donau_profiles` | obj/null | `{name: {cluster keys...}}`, each deep-merged over `cluster` (keys starting with `_` and non-object values ignored); names are offered sorted (rk_yml.donau_profiles, rkGui rk_guiDonauTable) |
+| `donau_default` | obj/null | `{aging|deos|emir: name}`; missing/unknown -> `default` if present, else the first name (rk_yml.donau_default) |
+| `donau_job_id_regex` | str | regex reading the cluster job id from a submit command's output (first non-empty group; default dsub `Job <123>`) |
+| `donau_query_cmd` | str/null | `progress` runs it per known job id (`{job_id}` replaced, 10 s timeout) and shows its last output line; null = off |
 | `simulator` | obj | yml `Simulator` block: `Name, Simulator_Accuracy, Sim_Mt, Simulation_Options, Flag_Is_Delete_Simulation_Data, Flag_Is_Save_Final_Result` |
 | `aging_model` | obj | `Model_File, Relxpert_Uri_Libs` (aging yml) |
 | `emir.gds_map_file` | str | yml `Gds_Map_File` |
@@ -294,7 +298,10 @@ to `<persist_root>/_ipc/<user>_<YYYYMMDD-HHMMSS>_<n>_<tag>_ctx.json`.
 | emir | `supplies` | obj | from `emir-inputs` | `Supplies{Power{net: V}, Ground{net: 0}}` |
 | emir | `limits` | obj/null | null = RelStudio GUI defaults (rk_yml) | `Limits` |
 | emir | `license_policy`, `license_wait_hours` | | site `emir.*` | (relkit only, D18) |
+| emir | `auto_extract` | bool/null | null | true: relkit uses/makes `<artifact_root>/<DUT>/<DUT>.dspf/.gds` (freshness check, extract first when missing/stale; `dspf_file`/`gds_file` are overwritten with the canonical pair); false: `dspf_file`/`gds_file` are the user's own files; null (CLI callers) = auto unless both files are given. The panel always sends true/false |
+| aging/deos/emir | `donau_profile` | str/null | site `donau_default.<type>` | the yml `Cluster` blocks (rk_yml.resolve_donau; unknown name -> default + warning); recorded in run.json settings |
 | extract | `layout_lib`, `layout_view`, `technology_corner` (corner name), `temperature`, `lvs_variant`, `qrc_deck` (null = automatic), `power_names`, `ground_names` (lists; empty = site lists + DUT supply ports) | | site `extract.*` / environment | (rk_extract, rk_pdk) |
+| extract | `layout_dir`, `schematic_dir` | str/null | null = from cds.lib (`rk_extract.cdslib_libs`) | on-disk view directories of the layout / source schematic (panel: ddGetObjReadPath), for the freshness check |
 
 `Sim_Cell` / `Instance_Name` come from `dut.cell` / `dut.inst`; EMIR corner keys
 get the `_0` suffix (GUI behaviour).
@@ -357,7 +364,7 @@ exposes `register(subparsers)`. Built-ins in relkit.py: `site`, `version`.
 | `version` | relkit.py | | `version`, `python`, `modules` |
 | `build-yml` | rk_yml | `--ctx` `[--type T]` `[--yml PATH]` `[--work-dir DIR]` | `yml_path`, `rs_type`, `yml_name`, `work_dir`, `rs_history`, `corner_keys[]`, `corner_map[]`, `warnings[]` |
 | `emir-inputs` | rk_yml | `--ctx` | `dut_ports[]{name,net,kind(power/ground/signal),voltage}`, `supplies{power{net: V or null},ground{net: "0"}}`, `unresolved[]` (power ports without a voltage), `dspf_candidates[]`, `gds_candidates[]`, `warnings[]` |
-| `submit` | rk_submit | `--ctx` | `run_id`, `run_dir`, `work_dir`, `rs_history`, `type_dir`, `yml_path`, `state` (normally `submitting`: the supervisor takes it on), `supervisor_pid`, `dry_run`, `warnings[]` |
+| `submit` | rk_submit | `--ctx` | `run_id`, `run_dir`, `work_dir`, `rs_history`, `type_dir`, `yml_path`, `state` (normally `submitting`: the supervisor takes it on; `extracting` for an EMIR run whose DSPF/GDS are being made first), `supervisor_pid`, `dry_run`, `extract` (EMIR: run.json `extract`), `warnings[]`; an EMIR auto-extract that cannot run fails with `missing_env[]` / `extract` (the freshness result) |
 | `status` | rk_submit | `--run DIR` | see 3.3 |
 | `cancel` | rk_submit | `--run DIR` | `run_id`, `state` |
 | `supervise` | rk_submit | `--run DIR` | INTERNAL (started by submit) |
@@ -368,6 +375,8 @@ exposes `register(subparsers)`. Built-ins in relkit.py: `site`, `version`.
 | `extract-resolve` | rk_extract | `--ctx` `[--text FILE]` | preview, never fails for an unresolved value: `resolved{key: {value, source (rule/literal/derived/default/user/unset), expr, missing[]}}`, `choices{variants[], qrc_decks[], corners[{name, technology_corner}]}`, `selected{lvs_variant, qrc_deck, corner, temperature}`, `suggested{power_names[], ground_names[]}`, `missing_env[]`, `errors[]`, `warnings[]`, `ready`, `text` (human-readable preview written with `--text`) |
 | `extract` | rk_extract | `--ctx` `[--sync]` | `extract_dir`, `status_path`, `pid`, `gds`, `dspf` (expected product paths), `state`, `log`, `qci`, `dspf_cmd`, `si_env`, `calibre_gui_cmd`, `calibre_gui_cwd`, `commands{step: cmd}`, `resolved{key: value}`, `warnings[]`; fails up front (nothing created) with `missing[]` (every error) and `missing_env[]` when the rules do not resolve |
 | `extract-status` | rk_extract | `--ctx` or `--dir DIR` | section 5.4 |
+| `extract-check` | rk_extract | `--ctx` | `state` (`fresh`/`stale`/`missing`/`running`/`unresolved`), `reasons[]`, `gds`, `dspf`, `manifest`, `extract_dir`, `extracted` (manifest time), `layout`, `schematic` (current view identities `{dir,file,size,mtime,md5}`), `missing_env[]` (unresolved), `warnings[]` (section 5.5) |
+| `progress` | rk_submit | `--run DIR` | `run_id`, `type`, `state`, `state_since`, `message`, `final`, `now`, `rows[]{stage (extract/job), name (strmout/si/lvs/qrc or simN), corner, mode, state, exit_code, job_id, started, elapsed (h:mm:ss), last (last non-empty log line), log, donau}`, `timeline[]` (last 8), `extract` (brief) |
 | `extract-cancel` | rk_extract | `--ctx` or `--dir DIR` | `state` |
 | `extract-run` | rk_extract | `--dir DIR` | INTERNAL (the detached worker started by `extract`) |
 | `runs list` | rk_runs | `--ctx` `[--type T]` `[--test X]` `[--since YYYYMMDD]` `[--until YYYYMMDD]` `[--all]` (or `--persist-root DIR` without ctx) | `runs[]` (4.3), `table_path` (`<out stem>_runs.tsv`), `persist_root`, `warnings[]` |
@@ -392,10 +401,15 @@ Example (`submit` success):
 
 ### 3.3 Run state machine (`status`)
 
-`created -> submitting -> queued -> running -> summarizing -> done`; any step
--> `failed`; `running`/`queued` -> `waiting_license` -> `queued` (EMIR resubmit
-every `license_retry_minutes`, D18); user -> `cancelled`; dry run ->
-`dry_run_done`. `done`, `failed`, `cancelled`, `dry_run_done` are final.
+`created -> [extracting ->] submitting -> queued -> running -> summarizing -> done`;
+any step -> `failed`; `running`/`queued` -> `waiting_license` -> `queued` (EMIR resubmit
+every `license_retry_minutes`, D18); EMIR auto-extract with LVS not clean ->
+`lvs_failed`; user -> `cancelled` (also stops a running extraction); dry run ->
+`dry_run_done`. `done`, `failed`, `cancelled`, `dry_run_done`, `lvs_failed` are final.
+`extracting`: submit prepared the extraction (rk_extract.prepare) and started its
+detached worker; the supervisor follows `<extract dir>/status.json`, copies the
+steps into run.json `extract`, and submits EMIR (`submit_flow`) when the worker
+published a fresh pair.
 `status` also returns `raw_data_present`, `aux_report`, `failure_tail[]`; it
 restarts the supervisor of a non-final run whose heartbeat
 (`logs/supervisor.heartbeat`) is stale and whose pid is gone.
@@ -460,7 +474,15 @@ logs/             submit.log, supervise.log, relsim_<mode>.log
 }
 ```
 
-Also written by rk_submit: `workarea`, `run_dir`, `message`, `state_since`,
+Also written by rk_submit: `cluster` (the yml Cluster block of the run's Donau
+profile), `donau_jobs[]{cmd, sim, job_id, t}` (submit_batch: one per submit line,
+id read with `donau_job_id_regex`), `extract` (EMIR: `{"mode": "own"}`, or `{mode:
+"auto", check (fresh/stale/missing at submit), reasons[], dir, gds, dspf, extracted,
+state (fresh/running/done/failed/lvs_failed/cancelled), steps[]{name,state,started,
+ended,exit_code,log}, step, message, lvs_report, lvs, log_tail[], pid,
+calibre_gui_cmd, calibre_gui_cwd}`), `jobs[].started` / `jobs[].ended` (first poll
+that saw the job running-or-finished / finished; reset by a license retry),
+`workarea`, `run_dir`, `message`, `state_since`,
 `start_pid`, `attempt_started` (epoch s of the current submit attempt; Totem logs
 older than it are ignored by the license check), `failure_tail[]` (last
 `emir.license_tail_lines` lines of the failed job.out / relsim log), `warnings[]`,
@@ -612,6 +634,23 @@ Layout of `<artifact_root>/<cell>/extract/`: `request.json`, `status.json`,
 
 ---
 
+### 5.5 Freshness of the published DSPF/GDS (`extract-check`, EMIR auto-extract)
+
+A successful extraction writes `<artifact_root>/<cell>/<cell>.extract.json`:
+`{schema, created, cell, layout, schematic, settings, gds, dspf, extract_dir}` where
+`layout` / `schematic` = the identity of the cellview read at the START of the
+run (`{dir, file (layout.oa / sch.oa / the only .oa), size, mtime, md5}`; md5 up to
+256 MB), `settings` = `rk_extract.FINGERPRINT_KEYS` of the resolved parameters
+(library, cell, layout_view, source_view, layer_map, lvs_rules_file, lvs_variant,
+technology_corner (Quantus token), temperature, technology_library_file,
+qrc_deck_dir, power_nets, ground_nets; lists sorted), `gds` / `dspf` = `{path, size,
+mtime}` as published. `fresh` = both files + manifest exist, the current
+identities equal the recorded ones (md5 when both have one, else size+mtime), the
+fingerprint is equal and the files were not replaced; otherwise `stale` with one
+reason per difference. `missing` = a file is absent; `running` = a live worker in
+the extract dir; `unresolved` = the rules do not resolve (nothing can be checked).
+Only the top cellviews are compared (README limitation).
+
 ## 6. SKILL public functions (per module)
 
 All modules: prefix `rk` public / `rk_` private; globals guarded with
@@ -743,7 +782,20 @@ bar and of the tab pages, reached as form->rk_gTabs->pageN->field),
 workarea; tests point it at a scratch dir). Form lifecycle Pattern A: fresh form
 name per build (`rk_panel_<n>`), the previous panel is cancelled, callbacks reach
 the live form via `rk_guiForm`, `?dontBlock t`. Pollers are named
-`gui:run:<type>` and `gui:extract`. Per-cell settings content (2.5): `dut`,
+`gui:run:<type>` and `gui:extract`. Round 2: `rkGuiShowProgress(runDir)` -> the
+progress form (`rk_prog_<n>`, fields `rk_pHead rk_pRows rk_pMsg`, poller
+`rkprog:progress` -- independent of the panel, stops when the run is final or the
+window closes; `rk_guiProgRes` = last `progress` result), `rkGuiCloseProgress()`;
+context menus (`rk_guiAttachMenus`: `field->hiContextMenu` = `hiCreateSimpleMenu`
+menus `rk_guiCtxMenu_<runs|aging|deos|emir>` on `rk_grList` / `rk_g?Res`, items
+-> `rk_guiCtxMenuCB(where action)`, actions progress/status/log/workdir/cancel);
+corners `Show` filter `rk_gCornerShow` (All / Selected only / Unselected only;
+rows keep the full-list index in the hidden first column; per-cell setting
+`corner_show`); Donau cyclic + summary per page (`rk_gaDonau rk_gaDonauInfo`,
+`rk_gd...`, `rk_ge...`); EMIR `rk_geOwn` (own files) + `rk_geAuto` (freshness line,
+from `extract-check`, run on resolve / DUT change / extraction done). QRC deck
+choices are short labels (`<version>/<deck>`) mapped to the deck path
+(`rk_guiQrcLabel` / `rk_guiQrcPath`). Per-cell settings content (2.5): `dut`,
 `ip_name`, `settings.{aging,deos,emir,extract}` from the page fields; written on
 DUT choice and on submit, read when a panel is built. Corner selection is never
 saved (D3). Field symbols are listed in the rkGui.il header (tests drive them).
@@ -771,7 +823,8 @@ MyTool: `relkit.il` registers `"RelStudio..."` -> `rkOpenPanel`.
 * Fake behaviour switch: JSON file from `$RELKIT_FAKE_RS_CONFIG`, else
   `fake_relstudio/fake_config.json` (git-ignored; written by tests), e.g.
   `{"mode": "ok"|"fail"|"license_fail", "license_fail_times": 2, "job_seconds": 2}`.
-  Default (no file): success.
+  Default (no file): success. Each `batch_submit_list.txt` line prints
+  `Job <420N> is submitted to queue <fake>.` like dsub (job id tests).
 * `py/tests/fake_tools/` (owner: extract & history): executables `strmout`,
   `si`, `calibre`, `qrc`; switch from `$RELKIT_FAKE_TOOLS_CONFIG`, else
   `fake_tools/fake_config.json`, e.g. `{"lvs": "pass"|"fail", "fail_step": null}`.
@@ -879,6 +932,17 @@ Virtuoso rewrites them once more (seen at kill time) -- so restore `results/`
 only after the test Virtuoso has exited -- a "view unchanged" check must cover
 `results/` too, and restoring means restoring those files.
 
+Verified in round 2 (IC6.1.8, private Virtuoso on Xvfb, real X events through
+XTest): `putprop field menu 'hiContextMenu` attaches a `hiCreateSimpleMenu` menu
+to a report field and a real right-click shows it; **a right-click does NOT change
+the report field's selection** (the menu must act on the existing selection, or
+on the page's run). A cyclic field grows to its longest choice regardless of the
+2-D width (long DUT labels / QRC deck paths ran over the fields to their right:
+put cyclics last in a row and keep their choices short). The window width is the
+widest field's right edge (the `?initialSize` width did not widen it), so a
+field reaching x=995 keeps a 975-wide tab field's right border inside.
+`hiDisplayForm(form (list 0 0))` places the window.
+
 ## Change log
 
 | date | role | change |
@@ -896,3 +960,4 @@ only after the test Virtuoso has exited -- a "view unchanged" check must cover
 | 2026-10-08 | SKILL reviewer | 6: rkGui closed-panel rules (no poller after close, stale close callback of a replaced panel ignored, poll-failure limit); 8: `$SB_ID` for every SKILL test driver (`run_skill_test.py`, `rkAged_vm_test.py`: minimal edits); 9: verified `ipcWait` interval meaning and the history `.rdb` rewrite on first open. Code fixes (no API change): rkGui R1 callback re-reads aged-include out.json keeping JSON false; `rk_agedRunPy` goes through `rkIpcRunSync`; `rkIpcRunSync` ipcWait interval; rkResults walk guards hdbPushCell / hdbIsAtStopPoint / sub-config top; rkSite `rkJsonParseKeepFalse` keeps the parser message; rkGui string/combo/file fields coerce site values to strings, `rk_guiPageOf` survives a reload, extract cancel keeps the last good extract dir |
 | 2026-10-08 | env-derived extraction | section 1: extract parameters are RULES resolved against Virtuoso's environment (new py/rk_pdk.py, Auto_ext R1-R8): new keys `layer_map, lvs_deck_dir, lvs_basename, lvs_filename_pattern, lvs_default_variant, tech_name, tech_name_env_vars, qrc_deck_dir, qrc_deck_glob, qrc_query_cmd_name, qrc_preserve_cell_list_name, corners, default_corner, power_names, ground_names, check_files`; old fixed-value keys are legacy overrides; `lvs_options.rules_file_pattern` removed (use `lvs_filename_pattern`). 2.4: extract settings gain `lvs_variant, qrc_deck, power_names, ground_names`; `technology_corner` is a corner name. 3.2: new `extract-resolve`; `extract` out gains `resolved`, failure gains `missing_env`. rk_yml.classify_port reads `power_names/ground_names` (legacy names as fallback). rkGui EMIR page: RC corner / LVS variant / QRC deck cyclics, LVS power/ground fields, [Resolve / preview] (auto on load, DUT change, choice change; stale results ignored by out-file), [Show resolved]; [Extract] disabled while variables are missing. Top-bar corners table 118 px, tab area 597 px. Test helper `py/tests/fake_pdk.py` (synthetic PDK tree + its variables) |
 | 2026-10-08 | Python review + E2E | Fixes, no API change: `submit` validates the whole yml before it creates the run record / History dir; the supervisor never dies in `submitting` and retries unexpected step errors (5 in a row -> `failed`); `aged-include --stress N` merges into run.json `hrmi` (missing Stress entries dropped) instead of replacing it; `extract-status` re-reads status.json before declaring a gone worker `failed` (race with a worker that just finished); `parse_ir_worst`/`parse_power_summary` skip unparsable numbers. relkit.py + rk_common.py (scaffold files, minimal): `rk_common.prune_ipc_dir` -- after each command whose `--out` is in a dir named `_ipc`, files older than 14 days there are deleted (at most once a day, marker `.pruned`); `write_json` retries the final rename on Windows while a reader holds the file (sharing violation; the cause of the earlier flaky Windows extract test). Test fixtures: measured values / layout coordinates copied from the real probes replaced by synthetic numbers (gate keywords extended) |
+| 2026-10-08 | owner feedback round 2 | 1: `donau_profiles`, `donau_default`, `donau_job_id_regex`, `donau_query_cmd`; 2.4: emir `auto_extract`, per-type `donau_profile`, extract `layout_dir`/`schematic_dir`; 3.2: new `extract-check`, `progress`; `submit` out `extract`; 3.3: `extracting`, `lvs_failed` (final; also in rk_runs); 4.1: `cluster`, `donau_jobs`, `extract`, `jobs[].started/ended`; 5.5 freshness manifest `<cell>.extract.json` (rk_extract writes it at publish; `prepare` records the source identities); 6: rkGui progress window, context menus, corners Show filter, Donau rows, EMIR own-files check box + freshness line, QRC labels; panel top bar re-laid out (Pick button before the DUT cyclic; filter + count + selection buttons above the corners table); EMIR page: power/ground on one row, "Extract only"; 7: fake dsub job ids; 9: verified UI facts. rk_yml: `donau_profiles/donau_default/resolve_donau`, `cluster_block(site, profile)`, `build_doc` info `cluster`. rk_submit: auto-extract flow (`auto_extract_check`, `use_auto_extract`, `Supervisor.step_extract`), `merge_job_times`, `job_id_of`, `sim_of_line`, `progress` |

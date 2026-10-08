@@ -39,6 +39,14 @@
     "Machine_Arch": "x86"
   },
 
+  "_donau_doc": "Donau profiles: each one lists only what differs from 'cluster' above. The Aging / DEOS / EMIR pages offer them in a 'Donau profile' drop-down; donau_default picks each type's default. Without donau_profiles, 'cluster' is the single profile 'default'. donau_query_cmd ({job_id} is replaced) fills the Donau column of the progress window; null = not queried.",
+  "donau_profiles": {
+    "std": {"Queue": "normal", "CPU": 8, "Memory": 12000},
+    "emir": {"Queue": "long", "CPU": 16, "Memory": 64000}
+  },
+  "donau_default": {"aging": "std", "deos": "std", "emir": "emir"},
+  "donau_query_cmd": null,
+
   "simulator": {
     "Name": "alps",
     "Simulator_Accuracy": "moderate",

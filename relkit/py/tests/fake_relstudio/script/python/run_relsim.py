@@ -267,8 +267,11 @@ def do_submit(S):
                 write(dst, "// fake netlist copy\n")
         job = "%s_%s_%s_%s_%s_%s_end" % (S.ip, S.cell, S.project, S.history, S.rs_type, s["sim"])
         sub.append("cd %s; echo -n %s > /dev/null;(%s/script/run.cshrc)" % (d, job, d))
-        batch.append('nohup "%s" "%s" --fake-job --type %s --yml "%s" --sim %s > /dev/null 2>&1 &'
-                     % (py, me, S.rs_type, S.yml.replace("\\", "/"), s["sim"]))
+        # like dsub: print the cluster job id, then the job runs in the background
+        batch.append('echo "Job <%d> is submitted to queue <fake>."; '
+                     'nohup "%s" "%s" --fake-job --type %s --yml "%s" --sim %s > /dev/null 2>&1 &'
+                     % (4200 + len(batch) + 1, py, me, S.rs_type, S.yml.replace("\\", "/"),
+                        s["sim"]))
     write(os.path.join(S.type_dir, "submit_list.txt"), "\n".join(sub) + "\n")
     write(os.path.join(S.type_dir, "batch_submit_list.txt"), "\n".join(batch) + "\n")
     log(S.type_dir, "end relsim submit flow of %s. The task is success." % S.rs_type)

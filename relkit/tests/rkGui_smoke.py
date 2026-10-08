@@ -98,7 +98,13 @@ def prepare(scratch):
     os.makedirs(os.path.join(scratch, "wa"))
     with open(os.path.join(WORKAREA, ".relkit_site.json"), encoding="utf-8") as f:
         site = json.load(f)
+    fake = os.path.join(RELKIT, "py", "tests")
     site.update({
+        # the fakes of THIS relkit tree (the dev site may point at another copy)
+        "relstudio_home": os.path.join(fake, "fake_relstudio"),
+        "donau_profiles": {"std": {"Queue": "short", "CPU": 8},
+                           "emir": {"Queue": "long", "CPU": 16, "Memory": 64000}},
+        "donau_default": {"aging": "std", "deos": "std", "emir": "emir"},
         "work_root": os.path.join(scratch, "work"),
         "persist_root": os.path.join(scratch, "runs"),
         "artifact_root": os.path.join(scratch, "Reliability"),
@@ -113,6 +119,7 @@ def prepare(scratch):
               "qrc_preserve_cell_list", "power_nets", "ground_nets", "layer_map",
               "lvs_deck_dir", "qrc_deck_dir", "tech_name"):
         ex.pop(k, None)          # the env rules of site_defaults.json apply
+    ex["tools"] = {t: os.path.join(fake, "fake_tools", t) for t in ("strmout", "si", "calibre", "qrc")}
     ex["power_names"] = ["VDD"]
     ex["ground_names"] = ["VSS"]
     # a synthetic PDK tree; its variables go to pdk_env.txt (used unless the
@@ -164,6 +171,9 @@ def main(argv):
         b.wait("rk_guiResolve", "resolve (env complete)", 60)
         print("resolve 2:", b.ev("(rkGuiGet 'rk_geXStatus)"))
         b.ev("(rkGuiT_checkReady)")
+        b.wait("rk_guiFresh", "extract-check (auto DSPF/GDS state)", 60)
+        print("auto:", b.ev("(rkGuiGet 'rk_geAuto)"))
+        b.ev("(rkGuiT_checkAutoState)")
 
         # --- extraction: LVS fails first
         b.ev("(rkGuiT_extract)")
@@ -205,6 +215,22 @@ def main(argv):
         b.ev("(rkGuiT_checkRuns)")
         b.ev("(rkGuiT_drill)")
 
+        # --- progress window (context menu on the Runs page + page button)
+        b.ev("(rkGuiT_runsRefresh)")
+        b.wait("rk_guiRunsRows", "runs list (progress)", 60)
+        b.ev("(rkGuiT_progress)")
+        b.wait("rk_guiProgRes", "progress rows", 60)
+        print("progress:", b.ev("(rkGuiT_progSummary)"))
+        b.ev("(rkGuiT_checkProgress)")
+
+        # --- EMIR auto-extract with LVS failing -> lvs_failed
+        write_json(os.path.join(scratch, "fake_tools.json"), {"lvs": "fail"})
+        print("emir lvs-fail submit:", b.ev("(rkGuiT_emirLvsFail)"))
+        b.wait('(rk_guiIsFinal (rkGuiT_state "emir"))', "EMIR auto-extract LVS-fail run final", 180, 2.0)
+        print("  emir:", b.ev("(rkGuiGet 'rk_geStatus)"), "|", b.ev("(rkGuiGet 'rk_geXStatus)"))
+        b.ev("(rkGuiT_checkEmirLvsFail)")
+        write_json(os.path.join(scratch, "fake_tools.json"), {"lvs": "pass"})
+
         # --- Runs page
         b.ev("(rkGuiT_runsRefresh)")
         b.wait("rk_guiRunsRows", "runs list", 60)
@@ -228,7 +254,7 @@ def main(argv):
 
         # --- reopen (resume) before deleting, so every page has its last run
         b.ev("(rkGuiT_reopen)")
-        b.wait('(and (get (rkGuiField (quote rk_geRes)) (quote choices)) (get (rkGuiField (quote rk_gdRes)) (quote choices)))',
+        b.wait('(and (get (rkGuiField (quote rk_gdRes)) (quote choices)) (pcreMatchp "^last run" (rkGuiGet (quote rk_geStatus))))',
                "resume loads the last results", 60)
         b.ev("(rkGuiT_checkResume)")
         b.ev("(rkGuiT_runsRefresh)")

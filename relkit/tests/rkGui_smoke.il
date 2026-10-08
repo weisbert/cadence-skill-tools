@@ -26,7 +26,7 @@
 ; ---------------------------------------------------------------------------
 
 (defun rkGuiT_setup (scratch)
-  (let (f1 f2 r rows idx)
+  (let (f1 f2 r rows idx nm)
     (rkTestBegin "rkGui_smoke")
     (setq rkGuiT_dir scratch)
     (setq rkGuiSiteWorkarea (rkPathJoin scratch "wa"))
@@ -79,7 +79,58 @@
     (rkCheckEqual "toggle selects the two corners"
                   (sort (mapcar (lambda (c) (rkGet c "name")) (rk_guiSelectedCorners)) 'alphalessp)
                   (sort (copy rkGuiT_corners) 'alphalessp))
-    (rkCheck "corner info line" (pcreMatchp "^2 of " (rkGuiGet 'rk_gCornerInfo)))
+    (rkCheck "corner info line" (pcreMatchp "^2 of [0-9]+ selected$" (rkGuiGet 'rk_gCornerInfo)))
+    ; --- Show filter: display only, Use toggles on a filtered view hit the right corner
+    (rkGuiSet 'rk_gCornerShow "Selected only")
+    (rk_guiCornerShowCB)
+    (setq rows (get (rkGuiField 'rk_gCorners) 'choices))
+    (rkCheckEqual "filter: 'Selected only' shows the 2 selected" (length rows) 2)
+    (rkCheck "filter: count with 'showing'" (pcreMatchp "^2 of [0-9]+ selected [(]showing 2[)]$" (rkGuiGet 'rk_gCornerInfo)))
+    (setq nm (nth 2 (nth 1 rows)))
+    (hiReportSelectItems (rkGuiField 'rk_gCorners) (list 1) nil)
+    (rk_guiCornerToggleCB)
+    (rkCheck "filter: toggled row's corner is deselected"
+             (not (member nm (mapcar (lambda (c) (rkGet c "name")) (rk_guiSelectedCorners)))))
+    (rkCheckEqual "filter: 1 row left in 'Selected only'" (length (get (rkGuiField 'rk_gCorners) 'choices)) 1)
+    (rkGuiSet 'rk_gCornerShow "Unselected only")
+    (rk_guiCornerShowCB)
+    (setq rows (get (rkGuiField 'rk_gCorners) 'choices))
+    (rkCheckEqual "filter: 'Unselected only' rows" (length rows)
+                  (difference (length (rkGet rk_guiCtx "corners")) 1))
+    (setq r 0)
+    (foreach x rows (when (equal (nth 2 x) nm) (setq idx r)) (setq r (add1 r)))
+    (hiReportSelectItems (rkGuiField 'rk_gCorners) (list idx) nil)
+    (rk_guiCornerToggleCB)
+    (rkCheckEqual "filter: toggled back from the unselected view" (length (rk_guiSelectedCorners)) 2)
+    (rkCheckEqual "filter persisted in the per-cell settings"
+                  (rkGet (rkMaeReadSettings rk_guiCtx) "corner_show") "Unselected only")
+    (rkGuiSet 'rk_gCornerShow "All")
+    (rk_guiCornerShowCB)
+    (rkCheckEqual "filter: All shows every corner" (length (get (rkGuiField 'rk_gCorners) 'choices))
+                  (length (rkGet rk_guiCtx "corners")))
+    ; --- Donau profiles per page
+    (rkCheckEqual "donau choices" (get (rkGuiField 'rk_gaDonau) 'choices) (list "emir" "std"))
+    (rkCheckEqual "donau aging default" (rkGuiGet 'rk_gaDonau) "std")
+    (rkCheckEqual "donau deos default" (rkGuiGet 'rk_gdDonau) "std")
+    (rkCheckEqual "donau emir default" (rkGuiGet 'rk_geDonau) "emir")
+    (rkCheck "donau summary" (pcreMatchp "Queue long, CPU 16, Memory 64000" (rkGuiGet 'rk_geDonauInfo)))
+    (rkGuiSet 'rk_gaDonau "emir")
+    (rk_guiDonauCB "aging")
+    (rkCheck "donau summary follows the pick" (pcreMatchp "Queue long" (rkGuiGet 'rk_gaDonauInfo)))
+    (rkCheckEqual "donau pick -> settings" (rkGet (rk_guiPageSettings "aging") "donau_profile") "emir")
+    ; --- context menus attached, EMIR own files off by default
+    (rkCheck "context menu on the Runs list" (get (rkGuiField 'rk_grList) 'hiContextMenu))
+    (rkCheck "context menu on the EMIR results" (get (rkGuiField 'rk_geRes) 'hiContextMenu))
+    (rkCheck "own DSPF/GDS off by default" (null (rkGuiGet 'rk_geOwn)))
+    (rkCheck "DSPF field disabled in auto mode" (null (get (rkGuiField 'rk_geDspf) 'enabled)))
+    (rkCheck "auto -> auto_extract true" (eq (rkGet (rk_guiPageSettings "emir") "auto_extract") t))
+    (rkGuiSet 'rk_geOwn t)
+    (rk_guiOwnCB)
+    (rkCheck "own: DSPF field enabled" (get (rkGuiField 'rk_geDspf) 'enabled))
+    (rkCheck "own: auto_extract false" (eq (rkGet (rk_guiPageSettings "emir") "auto_extract") rkJsonFalse))
+    (rkCheck "own: state line" (pcreMatchp "^own files" (rkGuiGet 'rk_geAuto)))
+    (rkGuiSet 'rk_geOwn nil)
+    (rk_guiOwnCB)
     ; --- DUT from the drop-down (saves the per-cell settings)
     (rkGuiSet 'rk_gDut (car (setof c (get (rkGuiField 'rk_gDut) 'choices) (pcreMatchp "^I7 " c))))
     (rk_guiDutCB)
@@ -157,6 +208,11 @@
   (rk_guiResolveCB)
   t)
 
+(defun rkGuiT_checkAutoState ()
+  (rkCheck "auto DSPF/GDS state shown" (pcreMatchp "^auto: (MISSING|STALE|FRESH)" (rkGuiGet 'rk_geAuto)))
+  (rkCheck "auto DSPF path shown" (pcreMatchp "Test_cell[.]dspf$" (rkGuiGet 'rk_geDspf)))
+  t)
+
 (defun rkGuiT_checkReady ()
   (printf "[rkGui_smoke] PDK env %s\n" (if rkGuiT_pdkInherited "inherited from Virtuoso" "passed via rkIpcSetEnv"))
   (rkCheck "resolve ready" (eq (rkGet rk_guiResolve "ready") t))
@@ -166,7 +222,11 @@
   (rkCheck "variant choices from the deck dir"
            (and (member "wodio" (get (rkGuiField 'rk_geXVariant) 'choices))
                 (member "widio" (get (rkGuiField 'rk_geXVariant) 'choices))))
-  (rkCheck "QRC deck choices" (exists c (get (rkGuiField 'rk_geXQrc) 'choices) (pcreMatchp "QCI_deck$" c)))
+  (rkCheck "QRC deck choices (short labels)" (member "Ver_B/DEMO_QRC_R1" (get (rkGuiField 'rk_geXQrc) 'choices)))
+  (rkGuiSet 'rk_geXQrc "Ver_B/DEMO_QRC_R1")
+  (rkCheck "QRC label -> deck path in the settings"
+           (pcreMatchp "/QRC/Ver_B/DEMO_QRC_R1/QCI_deck$" (rkGet (rk_guiPageSettings "extract") "qrc_deck")))
+  (rkGuiSet 'rk_geXQrc rk_guiAuto)
   (rkCheck "RC corner choices" (member "cworst" (get (rkGuiField 'rk_geXCorner) 'choices)))
   (rkCheck "LVS power prefilled" (pcreMatchp "VDD" (rkGuiGet 'rk_geXPower)))
   (rkCheck "LVS ground prefilled" (pcreMatchp "VSS" (rkGuiGet 'rk_geXGround)))
@@ -198,7 +258,7 @@
   (rkCheck "LVS fail message" (pcreMatchp "^LVS FAILED" (rkGuiGet 'rk_geXStatus)))
   (rkCheck "Calibre GUI button enabled" (get (rkGuiField 'rk_geBCalibre) 'enabled))
   (rkCheck "calibre gui command known" (stringp (rkGet rk_guiExtract "calibre_gui_cmd")))
-  (rkCheck "no DSPF published after LVS fail" (rk_guiBlank (rkGuiGet 'rk_geDspf)))
+  (rkCheck "no DSPF published after LVS fail" (not (isFile (rkGuiGet 'rk_geDspf))))
   t)
 
 (defun rkGuiT_checkExtractDone ()
@@ -277,6 +337,70 @@
     ; DEOS: the violating first instance (I7.PIN5) is the worst device, FAIL row
     (rkCheck "deos FAIL row" (exists r (get (rkGuiField 'rk_gdRes) 'choices) (equal (nth 3 r) "FAIL")))
     (rkCheck "deos worst device I7.PIN5" (exists r (get (rkGuiField 'rk_gdRes) 'choices) (equal (nth 5 r) "I7.PIN5")))
+    ; EMIR: DSPF/GDS automatic (extracted first unless the pair was fresh)
+    (rkCheckEqual "emir auto-extract mode" (rkGet run "extract.mode") "auto")
+    (rkCheck "emir: extracted first when not fresh"
+             (or (equal (rkGet run "extract.check") "fresh")
+                 (and (equal (rkGet run "extract.state") "done")
+                      (exists e (rkGet run "timeline") (equal (rkGet e "state") "extracting")))))
+    (rkCheck "emir: yml names the canonical DSPF" (pcreMatchp "/Test_cell/Test_cell[.]dspf$" (rkGet run "settings.dspf_file")))
+    ; Donau profiles recorded per run
+    (rkCheckEqual "emir donau profile" (rkGet run "settings.donau_profile") "emir")
+    (setq run (rk_guiReadRun (arrayref rk_guiRunDir "aging")))
+    (rkCheckEqual "aging donau profile (picked)" (rkGet run "settings.donau_profile") "emir")
+    (rkCheckEqual "aging cluster from the profile" (rkGet run "cluster.Queue") "long")
+    (setq run (rk_guiReadRun (arrayref rk_guiRunDir "deos")))
+    (rkCheckEqual "deos donau profile (default)" (rkGet run "settings.donau_profile") "std")
+    (rkCheckEqual "deos cluster" (rkGet run "cluster.Queue") "short")
+    t))
+
+; --- progress window from the Runs page context menu, then the page button
+(defun rkGuiT_progress ()
+  (rkGuiT_select (list (rk_guiBaseName (arrayref rk_guiRunDir "emir"))))
+  (setq rk_guiProgRes nil)
+  (rk_guiCtxMenuCB "runs" "progress")
+  t)
+
+(defun rkGuiT_progSummary ()
+  (sprintf nil "%s: %d row(s) %L" (rkGet rk_guiProgRes "state" "?") (length (rkGet rk_guiProgRes "rows"))
+           (mapcar (lambda (r) (list (nth 1 r) (nth 2 r) (nth 4 r))) (get (get rk_guiProgForm 'rk_pRows) 'choices))))
+
+(defun rkGuiT_checkProgress ()
+  (let ((rows (get (get rk_guiProgForm 'rk_pRows) 'choices)) f1)
+    (rkCheck "progress: window built for the emir run" (pcreMatchp "_emir" (get (get rk_guiProgForm 'rk_pHead) 'value)))
+    (rkCheck "progress: job rows" (exists r rows (equal (nth 1 r) "job")))
+    (rkCheck "progress: every job done" (forall r (setof x rows (equal (nth 1 x) "job")) (equal (nth 4 r) "done")))
+    (rkCheck "progress: extract rows when it extracted"
+             (or (equal (rkGet (rk_guiReadRun (arrayref rk_guiRunDir "emir")) "extract.check") "fresh")
+                 (equal (mapcar (lambda (r) (nth 2 r)) (setof x rows (equal (nth 1 x) "extract")))
+                        (list "strmout" "si" "lvs" "qrc"))))
+    (rkCheck "progress: final run -> poller stopped" (null (rkIpcPollActive "rkprog:")))
+    (rkCheck "progress: log of a job row" (exists l rk_guiProgLogs (and (stringp l) (pcreMatchp "job[.]out$" l))))
+    (setq f1 rk_guiProgForm)
+    (rk_guiPageProgressCB "deos")
+    (rkCheck "progress: page button replaces the window" (and rk_guiProgForm (nequal rk_guiProgForm f1)))
+    (rkCheck "progress: page button follows the deos run" (pcreMatchp "_deos" (rk_guiBaseName rk_guiProgRun)))
+    (rkGuiCloseProgress)
+    (rkCheck "progress: closed -> no poller" (null (rkIpcPollActive "rkprog:")))
+    (rkCheck "progress: closed -> no form" (null rk_guiProgForm))
+    t))
+
+; --- EMIR auto-extract whose LVS fails: run ends lvs_failed, Calibre button on
+(defun rkGuiT_emirLvsFail ()
+  (rkGuiSet 'rk_geXCorner "rcworst")     ; settings change (was cworst) -> the pair is stale
+  (setarray rk_guiLast "emir" nil)
+  (rk_guiEnable 'rk_geBCalibre nil)
+  (rkGuiSubmit "emir"))
+
+(defun rkGuiT_checkEmirLvsFail ()
+  (let ((run (rk_guiReadRun (arrayref rk_guiRunDir "emir"))))
+    (rkCheckEqual "emir auto LVS fail: run state" (rkGet run "state") "lvs_failed")
+    (rkCheck "emir auto LVS fail: page status" (pcreMatchp "lvs_failed" (rkGuiGet 'rk_geStatus)))
+    (rkCheck "emir auto LVS fail: extract line" (pcreMatchp "^LVS FAILED [(]EMIR run" (rkGuiGet 'rk_geXStatus)))
+    (rkCheck "emir auto LVS fail: Calibre GUI button enabled" (get (rkGuiField 'rk_geBCalibre) 'enabled))
+    (rkCheck "emir auto LVS fail: runset command" (pcreMatchp "-runset" (rkGet rk_guiExtract "calibre_gui_cmd")))
+    (rkCheck "emir auto LVS fail: no RelStudio job" (null (rkGet run "jobs")))
+    (rkGuiSet 'rk_geXCorner "cworst")
     t))
 
 ; drill-down: summary row -> device table window (headless) -> jump
@@ -359,6 +483,7 @@
 (defun rkGuiT_rerun ()
   (rkGuiSet 'rk_gdTddb "")
   (rkGuiSet 'rk_gdStop "99n")
+  (rkGuiSet 'rk_gdDonau "emir")
   (rk_guiCornerSetCB 'all)
   (putprop (get rk_guiForm 'rk_gTabs) 1 'value)
   (rkGuiT_select (list (nth 1 (rkGuiT_ids))))
@@ -371,6 +496,7 @@
   (rkCheckEqual "rerun: DEOS tab shown" (get (get rk_guiForm 'rk_gTabs) 'value) 2)
   (rkCheckEqual "rerun: stop time restored" (rkGuiGet 'rk_gdStop) "20n")
   (rkCheckEqual "rerun: tddb restored" (rkGuiGet 'rk_gdTddb) "125")
+  (rkCheckEqual "rerun: Donau profile restored" (rkGuiGet 'rk_gdDonau) "std")
   (rkCheckEqual "rerun: corners restored"
                 (sort (mapcar (lambda (c) (rkGet c "name")) (rk_guiSelectedCorners)) 'alphalessp)
                 (sort (copy rkGuiT_corners) 'alphalessp))
@@ -456,7 +582,9 @@
 (defun rkGuiT_checkResume ()
   (rkCheck "reopen: DEOS page shows the last run" (pcreMatchp "^last run .*_deos: done" (rkGuiGet 'rk_gdStatus)))
   (rkCheck "reopen: DEOS results reloaded" (get (rkGuiField 'rk_gdRes) 'choices))
-  (rkCheck "reopen: EMIR results reloaded" (get (rkGuiField 'rk_geRes) 'choices))
+  (rkCheck "reopen: EMIR page shows the last (lvs_failed) run" (pcreMatchp "^last run .*_emir: lvs_failed" (rkGuiGet 'rk_geStatus)))
+  (rkCheck "reopen: the LVS-failed EMIR run offers its Calibre runset" (get (rkGuiField 'rk_geBCalibre) 'enabled))
+  (rkCheck "reopen: LVS failure on the extract line" (pcreMatchp "^LVS FAILED [(]EMIR run" (rkGuiGet 'rk_geXStatus)))
   t)
 
 ; display through a timer (the bridge must not wait on hiDisplayForm)
@@ -475,6 +603,7 @@
 
 (defun rkGuiT_cleanup ()
   (rkIpcPollStopAll "gui:")
+  (rkGuiCloseProgress)
   (foreach f rkGuiT_forms (when (and f (hiIsFormDisplayed f)) (hiFormCancel f)))
   (rkResultsCloseWindow)
   (when rkGuiT_sess

@@ -54,7 +54,7 @@ BUILTIN_DEFAULTS = {
              "life_time_unit": "years", "method": "iterated", "dspf_file": None,
              "gds_file": None, "layout_lib": None, "layout_view": "layout",
              "supplies": None, "limits": None, "license_policy": None,
-             "license_wait_hours": None},
+             "license_wait_hours": None, "auto_extract": None},
 }
 
 # EM.yml Limits as the RelStudio GUI fills them by default.
@@ -152,6 +152,9 @@ def effective_settings(ctx, site, run_type):
     eff = merge_settings(builtin, site_def, ctx_set)
     for k in builtin:
         eff.setdefault(k, None)
+    # Donau profile: the panel's pick, else site donau_default.<type> (recorded
+    # in run.json settings, so a rerun uses the same one)
+    eff["donau_profile"], _blk = resolve_donau(site, run_type, eff.get("donau_profile"))
     return eff
 
 
@@ -649,14 +652,70 @@ def simulator_block(site, run_type):
     }
 
 
-def cluster_block(site):
-    c = rk_site.get(site, "cluster") or {}
-    keys = ["Using_Cluster", "Cluster_Type", "Group", "Queue", "CPU", "Memory", "GPU",
-            "Machine_Arch"]
+CLUSTER_KEYS = ["Using_Cluster", "Cluster_Type", "Group", "Queue", "CPU", "Memory", "GPU",
+                "Machine_Arch"]
+
+
+def donau_profiles(site):
+    """Named Donau settings: {name: cluster dict}, names sorted.
+
+    site `donau_profiles` {name: {Group, Queue, CPU, ...}}, each merged over the
+    site `cluster` section (so a profile only lists what differs). Without
+    profiles the single `cluster` section is the profile "default" (sites
+    written before profiles existed keep working unchanged)."""
+    base = rk_site.get(site, "cluster") or {}
+    prof = rk_site.get(site, "donau_profiles")
     out = {}
-    for k in keys:
-        v = c.get(k)
-        out[k] = v
+    if isinstance(prof, dict) and prof:
+        for name in sorted(prof):
+            p = prof[name]
+            if name.startswith("_") or not isinstance(p, dict):
+                continue
+            out[name] = rk_site.deep_merge(base, p)
+    if not out:
+        out["default"] = dict(base)
+    return out
+
+
+def donau_default(site, run_type, profiles=None):
+    """Profile name a run type uses unless the panel picked another."""
+    profiles = profiles if profiles is not None else donau_profiles(site)
+    want = (rk_site.get(site, "donau_default") or {})
+    want = want.get(run_type) if isinstance(want, dict) else None
+    if want in profiles:
+        return want
+    if "default" in profiles:
+        return "default"
+    return sorted(profiles)[0]
+
+
+def resolve_donau(site, run_type, wanted=None, warnings=None):
+    """-> (profile name, cluster dict). An unknown `wanted` falls back to the
+    type's default with a warning (a profile removed from the site file)."""
+    profiles = donau_profiles(site)
+    if wanted and wanted in profiles:
+        name = wanted
+    else:
+        name = donau_default(site, run_type, profiles)
+        if wanted and warnings is not None:
+            warnings.append("Donau profile %r is not in the site config; using %r"
+                            % (wanted, name))
+    return name, cluster_block(site, name, profiles)
+
+
+def cluster_block(site, profile=None, profiles=None):
+    """yml `Cluster` block of a Donau profile (None = the site `cluster` section)."""
+    if profile is None:
+        c = rk_site.get(site, "cluster") or {}
+    else:
+        profiles = profiles if profiles is not None else donau_profiles(site)
+        if profile not in profiles:
+            raise rk_common.RkError("unknown Donau profile %r (site donau_profiles: %s)"
+                                    % (profile, ", ".join(sorted(profiles))))
+        c = profiles[profile]
+    out = {}
+    for k in CLUSTER_KEYS:
+        out[k] = c.get(k)
     if out["Using_Cluster"] is None:
         out["Using_Cluster"] = True
     return out
@@ -735,7 +794,8 @@ def build_doc(ctx, site, run_type, work_dir, history, now=None, host=None,
         if tech.get(k) is None:
             warnings.append("site tech.%s is not set" % k)
     sim_block = simulator_block(site, run_type)
-    clu_block = cluster_block(site)
+    want = ((ctx.get("settings") or {}).get(run_type) or {}).get("donau_profile")
+    settings["donau_profile"], clu_block = resolve_donau(site, run_type, want, warnings)
 
     corner_docs = {}
     corner_keys = []
@@ -802,7 +862,7 @@ def build_doc(ctx, site, run_type, work_dir, history, now=None, host=None,
     common["Foundry"] = tech.get("Foundry")
     doc = {"Simulation": simulation, "Common": common}
     return doc, {"corner_keys": corner_keys, "corner_map": corner_map,
-                 "warnings": warnings, "settings": settings}
+                 "warnings": warnings, "settings": settings, "cluster": clu_block}
 
 
 def _base_entry(mode_type, netlist):

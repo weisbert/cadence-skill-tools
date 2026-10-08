@@ -45,7 +45,7 @@ import rk_common
 import rk_site
 
 RS_TYPES = {"aging": "analog_aging", "deos": "dynamic_eos", "emir": "emir"}
-FINAL_STATES = ("done", "failed", "cancelled", "dry_run_done")
+FINAL_STATES = ("done", "failed", "cancelled", "dry_run_done", "lvs_failed")
 RUN_ID_RE = re.compile(r"^\d{8}-\d{6}_(aging|deos|emir)(_\d+)?$")
 MAX_REPORT_COPY_BYTES = 5 * 1024 * 1024
 TEXT_REPORT_EXTS = (".report", ".rpt", ".txt", ".html", ".htm", ".csv")
