@@ -832,9 +832,19 @@ def settings_for_rerun(run_dir):
         "project_name": run.get("project_name"),
         "corners": [c.get("name") for c in corners],
         "corner_details": corners,
-        "settings": run.get("settings") or {},
+        "settings": _pinned_settings(run),
         "netlist": run.get("netlist"),
     }
+
+
+def _pinned_settings(run):
+    """run settings; a run that used "the Maestro job policy" reruns with the
+    policy it actually used (Maestro's current one may have changed since)."""
+    st = dict(run.get("settings") or {})
+    if st.get("donau_profile"):
+        import rk_donau
+        st["donau_profile"] = rk_donau.pin_for_rerun(st["donau_profile"], run.get("donau"))
+    return st
 
 
 def _inside(child, parent):

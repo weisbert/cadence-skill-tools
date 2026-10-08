@@ -105,9 +105,10 @@ Keys (defaults in `site_defaults.json`, example in `site.example.json`):
 | `model_file_map` | list | `[{"match": <python regex, full path>, "replace": <re.sub replacement>}]`, first match wins; no match -> path unchanged. Maps a Maestro corner model file to the yml `Corner_Group.*.Model_File` entry |
 | `tool_version_names` | list | executables for `Common.ToolVersion` (`which`; missing ones omitted + warning) |
 | `tech` | obj | `Foundry, Technology, Tech_Voltage, Tech_Layout, Rel_Tech_Dir` (yml `Common`) |
-| `cluster` | obj | yml `Cluster` block: `Using_Cluster, Cluster_Type, Group, Queue, CPU, Memory, GPU, Machine_Arch`; the base of every Donau profile, and the single profile `default` when `donau_profiles` is not set |
-| `donau_profiles` | obj/null | `{name: {cluster keys...}}`, each deep-merged over `cluster` (keys starting with `_` and non-object values ignored); names are offered sorted (rk_yml.donau_profiles, rkGui rk_guiDonauTable) |
+| `cluster` | obj | base for job policies and site profiles; yml `Cluster` block: `Using_Cluster, Cluster_Type, Group, Queue, CPU, Memory, GPU, Machine_Arch`; the base of every Donau profile, and the single profile `default` when `donau_profiles` is not set |
+| `donau_profiles` | obj/null | site FALLBACK when no Maestro job policy applies (see rk_donau): `{name: {cluster keys...}}`, each deep-merged over `cluster` (keys starting with `_` and non-object values ignored); names are offered sorted (rk_yml.donau_profiles, rkGui rk_guiDonauTable) |
 | `donau_default` | obj/null | `{aging|deos|emir: name}`; missing/unknown -> `default` if present, else the first name (rk_yml.donau_default) |
+| `job_policy_dirs` | list/null | extra dirs holding Maestro job policy `.jp` files, scanned after the setup.loc `.cadence/jobpolicy` dirs (`.`, `$CDS_WORKAREA`, workarea, `$HOME`, `$CDS_PROJECT`, `$CDS_SITE`); for a customised setup.loc |
 | `donau_job_id_regex` | str | regex reading the cluster job id from a submit command's output (first non-empty group; default dsub `Job <123>`) |
 | `donau_query_cmd` | str/null | `progress` runs it per known job id (`{job_id}` replaced, 10 s timeout) and shows its last output line; null = off |
 | `simulator` | obj | yml `Simulator` block: `Name, Simulator_Accuracy, Sim_Mt, Simulation_Options, Flag_Is_Delete_Simulation_Data, Flag_Is_Save_Final_Result` |
@@ -246,6 +247,35 @@ to `<persist_root>/_ipc/<user>_<YYYYMMDD-HHMMSS>_<n>_<tag>_ctx.json`.
 | `run_type` | `aging`/`deos`/`emir`; build-yml/submit act on `settings[run_type]` |
 | `settings` | see 2.4; `null` fields = use `site.defaults.<type>` then RelStudio defaults |
 
+### 2.2b `job_policy` (rkMaeJobPolicy; null when Maestro cannot be asked)
+
+```json
+"job_policy": {
+  "current_name": "demo_short",
+  "current": {"name": "demo_short", "distributionmethod": "Command",
+              "jobsubmitcommand": "dsub -A grp_demo.cls -q short -R \"cpu=4;mem=8000\"", "...": "..."},
+  "available": [{"name": "demo_short", "path": "/wa/.cadence/jobpolicy/demo_short.jp",
+                 "props": {"...": "..."}}],
+  "search_dirs": ["/wa/.cadence/jobpolicy", "/home/u/.cadence/jobpolicy"]
+}
+```
+`current`: maeGetJobPolicy(?session ?testName) (maeSKILLref p.53), else
+axlGetAttachedJobPolicy(sess "ICRP" test) (adexlSKILLref p.484). `available`: the
+union of axlGetJobPolicyTypes (p.487) and the `.jp` files found in the setup.loc
+`.cadence/jobpolicy` dirs (+ site `job_policy_dirs`; first dir wins; the name is the
+file's `name=` line, else its stem), sorted; `props` from maeGetJobPolicyByName
+(maeSKILLref p.54) / axlGetJobPolicy (p.486), null -> Python reads `path`. No API
+returns a policy's file path, hence the directory scan.
+
+Mapping (rk_donau.policy_cluster): only `distributionmethod=Command` with a `dsub`
+jobsubmitcommand (shlex-split; leading `VAR=x` / `env` allowed; any path to dsub):
+`-A` -> Group, `-q` -> Queue, every `-R` (also `-Rx`) split on `;` `,` blanks:
+`cpu=` -> CPU, `mem=`/`memory=` -> Memory in MB (`G`/`M`/`K` suffixes converted;
+the unit RelStudio itself writes: yml Memory 12000 <-> its dsub `mem=12000`),
+`gpu=` -> GPU; all other options ignored. Keys the policy lacks come from site
+`cluster`; Using_Cluster true; Cluster_Type `donau` unless the site says otherwise.
+Anything else (Local / LBS / non-dsub / unsplittable) is not usable, with a reason.
+
 ### 2.3 Corners after sweep expansion
 
 * One entry per (Maestro corner x combination of its multi-valued sweeps).
@@ -299,7 +329,8 @@ to `<persist_root>/_ipc/<user>_<YYYYMMDD-HHMMSS>_<n>_<tag>_ctx.json`.
 | emir | `limits` | obj/null | null = RelStudio GUI defaults (rk_yml) | `Limits` |
 | emir | `license_policy`, `license_wait_hours` | | site `emir.*` | (relkit only, D18) |
 | emir | `auto_extract` | bool/null | null | true: relkit uses/makes `<artifact_root>/<DUT>/<DUT>.dspf/.gds` (freshness check, extract first when missing/stale; `dspf_file`/`gds_file` are overwritten with the canonical pair); false: `dspf_file`/`gds_file` are the user's own files; null (CLI callers) = auto unless both files are given. The panel always sends true/false |
-| aging/deos/emir | `donau_profile` | str/null | site `donau_default.<type>` | the yml `Cluster` blocks (rk_yml.resolve_donau; unknown name -> default + warning); recorded in run.json settings |
+| aging/deos/emir | `donau_profile` | str/null | `maestro` when Maestro's job policy for the test maps to dsub, else site `donau_default.<type>` | `maestro` / `policy:<name>` / `<site profile>` (`site:<name>` accepted) -> the yml `Cluster` blocks (rk_donau.resolve; an unusable pick falls back to the Maestro policy, then the site default, + warning); recorded in run.json settings |
+| aging/deos/emir | `sim_mt` | str/int/null | null | yml `Simulator.Sim_Mt` + `-p`/`+mt` of Simulation_Cmd; null -> site `simulator.Sim_Mt` if a number, else the cluster CPU (job policy `cpu=`), else 8 |
 | extract | `layout_lib`, `layout_view`, `technology_corner` (corner name), `temperature`, `lvs_variant`, `qrc_deck` (null = automatic), `power_names`, `ground_names` (lists; empty = site lists + DUT supply ports) | | site `extract.*` / environment | (rk_extract, rk_pdk) |
 | extract | `layout_dir`, `schematic_dir` | str/null | null = from cds.lib (`rk_extract.cdslib_libs`) | on-disk view directories of the layout / source schematic (panel: ddGetObjReadPath), for the freshness check |
 
@@ -353,7 +384,7 @@ Manager lists a `relkit` view); `CCP_EXPAND_ALL` carries everything. The old
 
 ### 3.1 Module registry (fixed in relkit.py)
 
-`rk_yml, rk_submit, rk_parse, rk_report, rk_aged, rk_extract, rk_runs`; each
+`rk_yml, rk_submit, rk_parse, rk_report, rk_aged, rk_extract, rk_runs, rk_donau`; each
 exposes `register(subparsers)`. Built-ins in relkit.py: `site`, `version`.
 
 ### 3.2 Subcommands
@@ -376,6 +407,7 @@ exposes `register(subparsers)`. Built-ins in relkit.py: `site`, `version`.
 | `extract` | rk_extract | `--ctx` `[--sync]` | `extract_dir`, `status_path`, `pid`, `gds`, `dspf` (expected product paths), `state`, `log`, `qci`, `dspf_cmd`, `si_env`, `calibre_gui_cmd`, `calibre_gui_cwd`, `commands{step: cmd}`, `resolved{key: value}`, `warnings[]`; fails up front (nothing created) with `missing[]` (every error) and `missing_env[]` when the rules do not resolve |
 | `extract-status` | rk_extract | `--ctx` or `--dir DIR` | section 5.4 |
 | `extract-check` | rk_extract | `--ctx` | `state` (`fresh`/`stale`/`missing`/`running`/`unresolved`), `reasons[]`, `gds`, `dspf`, `manifest`, `extract_dir`, `extracted` (manifest time), `layout`, `schematic` (current view identities `{dir,file,size,mtime,md5}`), `missing_env[]` (unresolved), `warnings[]` (section 5.5) |
+| `donau` | rk_donau | `--ctx` | `current_name`, `policies[]`, `types{aging,deos,emir: {default (value), choices[]{value, label, kind (policy/site), name, path, mtime, ok, reason, notes[], block (Cluster or null), summary, sim_mt}}}`, `warnings[]`; labels: `Maestro current (<name>)`, `<policy>`, `site: <profile>` |
 | `progress` | rk_submit | `--run DIR` | `run_id`, `type`, `state`, `state_since`, `message`, `final`, `now`, `rows[]{stage (extract/job), name (strmout/si/lvs/qrc or simN), corner, mode, state, exit_code, job_id, started, elapsed (h:mm:ss), last (last non-empty log line), log, donau}`, `timeline[]` (last 8), `extract` (brief) |
 | `extract-cancel` | rk_extract | `--ctx` or `--dir DIR` | `state` |
 | `extract-run` | rk_extract | `--dir DIR` | INTERNAL (the detached worker started by `extract`) |
@@ -475,7 +507,7 @@ logs/             submit.log, supervise.log, relsim_<mode>.log
 ```
 
 Also written by rk_submit: `cluster` (the yml Cluster block of the run's Donau
-profile), `donau_jobs[]{cmd, sim, job_id, t}` (submit_batch: one per submit line,
+settings), `donau{value, kind (policy/site), name, path, mtime (of the .jp), reason, notes[], sim_mt}` (rk_donau.record; `runs settings-for-rerun` turns a `maestro` pick into `policy:<name>` so a rerun uses the policy it actually used), `donau_jobs[]{cmd, sim, job_id, t}` (submit_batch: one per submit line,
 id read with `donau_job_id_regex`), `extract` (EMIR: `{"mode": "own"}`, or `{mode:
 "auto", check (fresh/stale/missing at submit), reasons[], dir, gds, dspf, extracted,
 state (fresh/running/done/failed/lvs_failed/cancelled), steps[]{name,state,started,
@@ -673,6 +705,9 @@ enabled, else first); `rkMaeGetDesign(sess test)` -> table `{lib cell view is_co
 `rkMaeGetGlobalVars(sess test)` -> table (test design variables overridden by
 enabled Maestro global variables); `rkMaeTestModels(sess test)` -> list of
 `(file section)`; `rkMaeGetCorners(sess test)` -> list of corner tables (2.3);
+`rkMaeJobPolicy(sess test)` -> ctx `job_policy` table (2.2b); `rkMaeJobPolicyDirs()` -> the
+`.cadence/jobpolicy` dirs scanned (setup.loc order + site `job_policy_dirs`); `rkMaeJobPolicyFiles()` ->
+`{name: .jp path}`;
 `rkMaeGetContext(sess [test])` -> ctx table (section 2 minus dut/settings/netlist;
 sess nil = `rkMaeCurrentSession()`); `rkMaeWarnings()`;
 `rkMaeFindHistory(sess test [histName])` -> `{name dir netlist_dir source mtime}` / nil;
@@ -961,3 +996,4 @@ field reaching x=995 keeps a 975-wide tab field's right border inside.
 | 2026-10-08 | env-derived extraction | section 1: extract parameters are RULES resolved against Virtuoso's environment (new py/rk_pdk.py, Auto_ext R1-R8): new keys `layer_map, lvs_deck_dir, lvs_basename, lvs_filename_pattern, lvs_default_variant, tech_name, tech_name_env_vars, qrc_deck_dir, qrc_deck_glob, qrc_query_cmd_name, qrc_preserve_cell_list_name, corners, default_corner, power_names, ground_names, check_files`; old fixed-value keys are legacy overrides; `lvs_options.rules_file_pattern` removed (use `lvs_filename_pattern`). 2.4: extract settings gain `lvs_variant, qrc_deck, power_names, ground_names`; `technology_corner` is a corner name. 3.2: new `extract-resolve`; `extract` out gains `resolved`, failure gains `missing_env`. rk_yml.classify_port reads `power_names/ground_names` (legacy names as fallback). rkGui EMIR page: RC corner / LVS variant / QRC deck cyclics, LVS power/ground fields, [Resolve / preview] (auto on load, DUT change, choice change; stale results ignored by out-file), [Show resolved]; [Extract] disabled while variables are missing. Top-bar corners table 118 px, tab area 597 px. Test helper `py/tests/fake_pdk.py` (synthetic PDK tree + its variables) |
 | 2026-10-08 | Python review + E2E | Fixes, no API change: `submit` validates the whole yml before it creates the run record / History dir; the supervisor never dies in `submitting` and retries unexpected step errors (5 in a row -> `failed`); `aged-include --stress N` merges into run.json `hrmi` (missing Stress entries dropped) instead of replacing it; `extract-status` re-reads status.json before declaring a gone worker `failed` (race with a worker that just finished); `parse_ir_worst`/`parse_power_summary` skip unparsable numbers. relkit.py + rk_common.py (scaffold files, minimal): `rk_common.prune_ipc_dir` -- after each command whose `--out` is in a dir named `_ipc`, files older than 14 days there are deleted (at most once a day, marker `.pruned`); `write_json` retries the final rename on Windows while a reader holds the file (sharing violation; the cause of the earlier flaky Windows extract test). Test fixtures: measured values / layout coordinates copied from the real probes replaced by synthetic numbers (gate keywords extended) |
 | 2026-10-08 | owner feedback round 2 | 1: `donau_profiles`, `donau_default`, `donau_job_id_regex`, `donau_query_cmd`; 2.4: emir `auto_extract`, per-type `donau_profile`, extract `layout_dir`/`schematic_dir`; 3.2: new `extract-check`, `progress`; `submit` out `extract`; 3.3: `extracting`, `lvs_failed` (final; also in rk_runs); 4.1: `cluster`, `donau_jobs`, `extract`, `jobs[].started/ended`; 5.5 freshness manifest `<cell>.extract.json` (rk_extract writes it at publish; `prepare` records the source identities); 6: rkGui progress window, context menus, corners Show filter, Donau rows, EMIR own-files check box + freshness line, QRC labels; panel top bar re-laid out (Pick button before the DUT cyclic; filter + count + selection buttons above the corners table); EMIR page: power/ground on one row, "Extract only"; 7: fake dsub job ids; 9: verified UI facts. rk_yml: `donau_profiles/donau_default/resolve_donau`, `cluster_block(site, profile)`, `build_doc` info `cluster`. rk_submit: auto-extract flow (`auto_extract_check`, `use_auto_extract`, `Supervisor.step_extract`), `merge_job_times`, `job_id_of`, `sim_of_line`, `progress` |
+| 2026-10-08 | Donau from Maestro job policies | owner rule: no re-invented cluster settings. 1: `job_policy_dirs`; `simulator.Sim_Mt` default null (= follow the cluster CPU); `cluster` / `donau_profiles` become the fallback. 2.2b: ctx `job_policy` (rkMaeJobPolicy). 2.4: `donau_profile` values `maestro` / `policy:<name>` / site name, new `sim_mt`. 3.1: relkit.py MODULES += `rk_donau` (scaffold file, one-word edit). 3.2: new `donau`. 4.1: run.json `donau`; settings-for-rerun pins `maestro`. rk_yml: `resolve_cluster`, `simulator_block(site, type, mt)`, `simulation_cmd(site, type, mt)`, build_doc info `donau`; the site-profile helpers stay (thin wrappers over rk_donau). rkMae: `rkMaeJobPolicy`, `rkMaeJobPolicyDirs`, `rkMaeJobPolicyFiles`. rkGui: Donau cyclic labels/values, async `donau` after every Maestro (re)read (stale answers ignored by out-file), Sim_Mt field per page, Donau state reset on every build (a pick of an older panel never leaks) |

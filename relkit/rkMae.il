@@ -355,6 +355,100 @@
          "27"))))
 
 ; ---------------------------------------------------------------------------
+; Job policies (Donau settings of RelStudio jobs; CONTRACT 2.1 job_policy)
+; ---------------------------------------------------------------------------
+; Current policy: maeGetJobPolicy (maeSKILLref p.53), else
+; axlGetAttachedJobPolicy (adexlSKILLref p.484). Names: axlGetJobPolicyTypes
+; (p.487); properties: maeGetJobPolicyByName (maeSKILLref p.54) /
+; axlGetJobPolicy (p.486). No API returns the .jp file path, so the
+; .cadence/jobpolicy dirs of the setup.loc search order (adexlSKILLref
+; p.458-459: ., $CDS_WORKAREA, $HOME, $CDS_PROJECT, $CDS_SITE) are scanned.
+
+; DPL (nil key "v" ...) -> table {key: string}
+(defun rk_maeDplTable (dpl)
+  (let ((tbl (rkMakeObj)) (l (and (listp dpl) (cdr dpl))))
+    (while (and l (cdr l))
+      (when (car l)
+        (rkPut tbl (rk_maeStr (car l)) (rk_maeStr (cadr l))))
+      (setq l (cddr l)))
+    tbl))
+
+(defun rkMaeJobPolicyDirs ()
+  (let (out d)
+    (foreach base (list (getWorkingDir) (getShellEnvVar "CDS_WORKAREA") (rkWorkarea)
+                        (getShellEnvVar "HOME") (getShellEnvVar "CDS_PROJECT")
+                        (getShellEnvVar "CDS_SITE"))
+      (when (and (stringp base) (nequal base ""))
+        (setq d (strcat (rk_stripTrailingSlash base) "/.cadence/jobpolicy"))
+        (when (and (isDir d) (not (member d out)))
+          (setq out (cons d out)))))
+    ; site job_policy_dirs: extra dirs holding .jp files (a customised setup.loc)
+    (foreach d (rkSiteGet "job_policy_dirs")
+      (when (and (stringp d) (nequal d ""))
+        (setq d (rk_stripTrailingSlash (rkExpandVars d)))
+        (when (and (isDir d) (not (member d out)))
+          (setq out (cons d out)))))
+    (reverse out)))
+
+; name= line of a .jp file, else the file stem
+(defun rk_maeJpName (path)
+  (let ((p (infile path)) line nm)
+    (when p
+      (while (and (null nm) (gets line p))
+        (when (pcreMatchp "^[ \t]*name[ \t]*=" line)
+          (setq nm (rk_maeTrim (pcreReplace (pcreCompile "^[ \t]*name[ \t]*=") line "" 0)))
+          (when (equal nm "") (setq nm nil))))
+      (close p))
+    (or nm (pcreReplace (pcreCompile "\\.jp$") (rk_maeBasename path) "" 0))))
+
+; {name: path} of the .jp files found (first dir in search order wins)
+(defun rkMaeJobPolicyFiles ()
+  (let ((tbl (rkMakeObj)) path nm)
+    (foreach d (rkMaeJobPolicyDirs)
+      (foreach f (rk_maeSortStrings (getDirFiles d))
+        (when (pcreMatchp "\\.jp$" f)
+          (setq path (strcat d "/" f))
+          (when (isFile path)
+            (setq nm (or (rk_maeTry (rk_maeJpName path)) f))
+            (unless (arrayref tbl nm) (rkPut tbl nm path))))))
+    tbl))
+
+(defun rk_maePolicyProps (sess name)
+  (let (dpl)
+    (setq dpl (or (and (getd 'maeGetJobPolicyByName)
+                       (rk_maeTry (maeGetJobPolicyByName name ?session sess)))
+                  (and (getd 'axlGetJobPolicy) (rk_maeTry (axlGetJobPolicy name)))))
+    (and dpl (rk_maeDplTable dpl))))
+
+; -> {current_name, current, available: [{name, path, props}], search_dirs}
+(defun rkMaeJobPolicy (sess test)
+  (let ((jp (rkMakeObj)) dpl cur curName files names avail e)
+    (setq dpl (or (and (getd 'maeGetJobPolicy)
+                       (rk_maeTry (maeGetJobPolicy ?session sess ?testName test)))
+                  (and (getd 'axlGetAttachedJobPolicy)
+                       (or (rk_maeTry (axlGetAttachedJobPolicy sess "ICRP" test))
+                           (rk_maeTry (axlGetAttachedJobPolicy sess))))))
+    (when dpl
+      (setq cur (rk_maeDplTable dpl))
+      (setq curName (arrayref cur "name")))
+    (setq files (rkMaeJobPolicyFiles))
+    (setq names (rk_maeUnique (append (rkKeys files)
+                                      (setof n (rk_maeTry (axlGetJobPolicyTypes)) (stringp n)))))
+    (when (and (stringp curName) (not (member curName names)))
+      (setq names (cons curName names)))
+    (foreach n (rk_maeSortStrings names)
+      (setq e (rkMakeObj))
+      (rkPut e "name" n)
+      (rkPut e "path" (arrayref files n))
+      (rkPut e "props" (rk_maePolicyProps sess n))
+      (setq avail (cons e avail)))
+    (rkPut jp "current_name" curName)
+    (rkPut jp "current" cur)
+    (rkPut jp "available" (rk_maeListOrEmpty (reverse avail)))
+    (rkPut jp "search_dirs" (rk_maeListOrEmpty (rkMaeJobPolicyDirs)))
+    jp))
+
+; ---------------------------------------------------------------------------
 ; Corners (CONTRACT 2.3)
 ; ---------------------------------------------------------------------------
 
@@ -561,6 +655,7 @@
     (rkPut ctx "project_name" (rkSiteGet "project_name" "relsim1"))
     (rkPut ctx "global_vars" (rkMaeGetGlobalVars sess test))
     (rkPut ctx "corners" (rk_maeListOrEmpty (rkMaeGetCorners sess test)))
+    (rkPut ctx "job_policy" (rk_maeTry (rkMaeJobPolicy sess test)))
     (rkPut ctx "run_type" nil)
     (rkPut ctx "settings" nil)
     (rkPut ctx "warnings" (rk_maeListOrEmpty (rkMaeWarnings)))

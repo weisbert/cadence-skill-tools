@@ -17,6 +17,8 @@
 (setq rkGuiT_sess nil)
 (setq rkGuiT_dir nil)
 (setq rkGuiT_forms nil)
+(setq rkGuiT_jpOrig nil)
+(setq rkGuiT_jpAttached nil)
 (setq rkGuiT_corners (list "TT_pvt_tt_VDD3" "PVT_NT_ss_VDD3"))
 
 (defun rkGuiT_names (rows) (mapcar (lambda (r) (nth 2 r)) rows))
@@ -42,6 +44,18 @@
     (setq r (errset (maeOpenSetup "sim_yusheng" "Test" "maestro" ?mode "r") t))
     (setq rkGuiT_sess (and r (car r)))
     (rkCheck "maeOpenSetup read-only" (stringp rkGuiT_sess))
+    ; --- job policy: what Maestro reports, then a synthetic dsub policy attached
+    ;     in memory (read-only session, never saved)
+    (setq rkGuiT_jpOrig (car (errset (maeGetJobPolicy ?session rkGuiT_sess ?testName "Test") nil)))
+    (printf "[rkGui_smoke] maeGetJobPolicy before attach: %L\n" rkGuiT_jpOrig)
+    (printf "[rkGui_smoke] axlGetJobPolicyTypes: %L\n" (car (errset (axlGetJobPolicyTypes) nil)))
+    (setq rkGuiT_jpAttached
+          (and (car (errset (maeSetJobPolicy "relkit_demo_short" ?distributionmethod "Command"
+                                             ?jobsubmitcommand "dsub -A grp_demo.cls -q short -R \"cpu=4;mem=8000\""
+                                             ?tests (list "Test") ?session rkGuiT_sess) t))
+               (equal (get (car (errset (maeGetJobPolicy ?session rkGuiT_sess ?testName "Test") nil)) 'name)
+                      "relkit_demo_short")))
+    (printf "[rkGui_smoke] synthetic policy attached: %L\n" rkGuiT_jpAttached)
     ; --- lifecycle: two builds -> two different form names, last one live
     (setq f1 (rkGuiBuild rkGuiT_sess))
     (setq f2 (rkGuiBuild rkGuiT_sess))
@@ -108,16 +122,6 @@
     (rk_guiCornerShowCB)
     (rkCheckEqual "filter: All shows every corner" (length (get (rkGuiField 'rk_gCorners) 'choices))
                   (length (rkGet rk_guiCtx "corners")))
-    ; --- Donau profiles per page
-    (rkCheckEqual "donau choices" (get (rkGuiField 'rk_gaDonau) 'choices) (list "emir" "std"))
-    (rkCheckEqual "donau aging default" (rkGuiGet 'rk_gaDonau) "std")
-    (rkCheckEqual "donau deos default" (rkGuiGet 'rk_gdDonau) "std")
-    (rkCheckEqual "donau emir default" (rkGuiGet 'rk_geDonau) "emir")
-    (rkCheck "donau summary" (pcreMatchp "Queue long, CPU 16, Memory 64000" (rkGuiGet 'rk_geDonauInfo)))
-    (rkGuiSet 'rk_gaDonau "emir")
-    (rk_guiDonauCB "aging")
-    (rkCheck "donau summary follows the pick" (pcreMatchp "Queue long" (rkGuiGet 'rk_gaDonauInfo)))
-    (rkCheckEqual "donau pick -> settings" (rkGet (rk_guiPageSettings "aging") "donau_profile") "emir")
     ; --- context menus attached, EMIR own files off by default
     (rkCheck "context menu on the Runs list" (get (rkGuiField 'rk_grList) 'hiContextMenu))
     (rkCheck "context menu on the EMIR results" (get (rkGuiField 'rk_geRes) 'hiContextMenu))
@@ -344,13 +348,20 @@
                  (and (equal (rkGet run "extract.state") "done")
                       (exists e (rkGet run "timeline") (equal (rkGet e "state") "extracting")))))
     (rkCheck "emir: yml names the canonical DSPF" (pcreMatchp "/Test_cell/Test_cell[.]dspf$" (rkGet run "settings.dspf_file")))
-    ; Donau profiles recorded per run
-    (rkCheckEqual "emir donau profile" (rkGet run "settings.donau_profile") "emir")
+    ; Donau recorded per run (default = Maestro job policy when it maps to dsub)
+    (cond
+      (rkGuiT_jpAttached
+        (rkCheckEqual "emir donau (Maestro policy)" (rkGet run "settings.donau_profile") "maestro")
+        (rkCheckEqual "emir cluster from the policy" (rkGet run "cluster.Group") "grp_demo.cls")
+        (rkCheckEqual "emir donau record: policy name" (rkGet run "donau.name") "relkit_demo_short")
+        (rkCheckEqual "emir Sim_Mt = policy cpu" (rkGet run "donau.sim_mt") 4))
+      (t (rkCheckEqual "emir donau (site default)" (rkGet run "settings.donau_profile") "emir")))
     (setq run (rk_guiReadRun (arrayref rk_guiRunDir "aging")))
-    (rkCheckEqual "aging donau profile (picked)" (rkGet run "settings.donau_profile") "emir")
-    (rkCheckEqual "aging cluster from the profile" (rkGet run "cluster.Queue") "long")
+    (rkCheckEqual "aging donau (picked site profile)" (rkGet run "settings.donau_profile") "emir")
+    (rkCheckEqual "aging cluster from the site profile" (rkGet run "cluster.Queue") "long")
     (setq run (rk_guiReadRun (arrayref rk_guiRunDir "deos")))
-    (rkCheckEqual "deos donau profile (default)" (rkGet run "settings.donau_profile") "std")
+    (rkCheckEqual "deos donau (default)" (rkGet run "settings.donau_profile")
+                  (if rkGuiT_jpAttached "maestro" "std"))
     (rkCheckEqual "deos cluster" (rkGet run "cluster.Queue") "short")
     t))
 
@@ -483,7 +494,7 @@
 (defun rkGuiT_rerun ()
   (rkGuiSet 'rk_gdTddb "")
   (rkGuiSet 'rk_gdStop "99n")
-  (rkGuiSet 'rk_gdDonau "emir")
+  (rkGuiSet 'rk_gdDonau "site: emir")
   (rk_guiCornerSetCB 'all)
   (putprop (get rk_guiForm 'rk_gTabs) 1 'value)
   (rkGuiT_select (list (nth 1 (rkGuiT_ids))))
@@ -496,7 +507,8 @@
   (rkCheckEqual "rerun: DEOS tab shown" (get (get rk_guiForm 'rk_gTabs) 'value) 2)
   (rkCheckEqual "rerun: stop time restored" (rkGuiGet 'rk_gdStop) "20n")
   (rkCheckEqual "rerun: tddb restored" (rkGuiGet 'rk_gdTddb) "125")
-  (rkCheckEqual "rerun: Donau profile restored" (rkGuiGet 'rk_gdDonau) "std")
+  (rkCheckEqual "rerun: Donau restored (pinned to the policy used)" (rkGuiGet 'rk_gdDonau)
+                (if rkGuiT_jpAttached "relkit_demo_short" "site: std"))
   (rkCheckEqual "rerun: corners restored"
                 (sort (mapcar (lambda (c) (rkGet c "name")) (rk_guiSelectedCorners)) 'alphalessp)
                 (sort (copy rkGuiT_corners) 'alphalessp))
@@ -614,3 +626,46 @@
   (setq rk_guiNoDisplay nil)
   (rkSiteLoad nil t)
   t)
+
+; Donau cyclics after the async `relkit.py donau` answer (rk_guiDonauRes)
+(defun rkGuiT_checkDonau ()
+  (let (labels cur)
+    (setq labels (get (rkGuiField 'rk_gaDonau) 'choices))
+    (printf "[rkGui_smoke] Donau choices: %L\n" labels)
+    (printf "[rkGui_smoke] Donau summary (EMIR): %s\n" (rkGuiGet 'rk_geDonauInfo))
+    (rkCheck "donau: answer received" (and rk_guiDonauRes t))
+    (rkCheck "donau: .jp from job_policy_dirs listed" (member "relkit_demo_local" labels))
+    (rkCheck "donau: site profiles listed" (and (member "site: std" labels) (member "site: emir" labels) t))
+    (cond
+      (rkGuiT_jpAttached
+        (setq cur "Maestro current (relkit_demo_short)")
+        (rkCheckEqual "donau: first choice = Maestro current" (car labels) cur)
+        (foreach sym (list 'rk_gaDonau 'rk_gdDonau 'rk_geDonau)
+          (rkCheckEqual (sprintf nil "donau default %s" sym) (rkGuiGet sym) cur))
+        (rkCheck "donau summary from the policy"
+                 (pcreMatchp "Group grp_demo.cls, Queue short, CPU 4, Mem 8000, Sim_Mt 4"
+                             (rkGuiGet 'rk_geDonauInfo)))
+        (rkCheckEqual "donau default -> settings" (rkGet (rk_guiPageSettings "deos") "donau_profile")
+                      "maestro"))
+      (t
+        (rkCheckEqual "donau default without a dsub Maestro policy" (rkGuiGet 'rk_gaDonau) "site: std")))
+    ; a Local policy is listed but not usable
+    (rkGuiSet 'rk_gdDonau "relkit_demo_local")
+    (rk_guiDonauCB "deos")
+    (rkCheck "donau: Local policy flagged" (pcreMatchp "not usable: distributionmethod is Local"
+                                                       (rkGuiGet 'rk_gdDonauInfo)))
+    (rkCheckEqual "donau: policy pick -> settings" (rkGet (rk_guiPageSettings "deos") "donau_profile")
+                  "policy:relkit_demo_local")
+    (rkGuiSet 'rk_gdDonau (car labels))
+    (rk_guiDonauCB "deos")
+    ; site profile pick on the aging page (kept for the runs below)
+    (rkGuiSet 'rk_gaDonau "site: emir")
+    (rk_guiDonauCB "aging")
+    (rkCheck "donau summary follows the pick" (pcreMatchp "Queue long" (rkGuiGet 'rk_gaDonauInfo)))
+    (rkCheckEqual "donau site pick -> settings" (rkGet (rk_guiPageSettings "aging") "donau_profile") "emir")
+    ; Sim_Mt override field
+    (rkGuiSet 'rk_geSimMt "2")
+    (rkCheckEqual "Sim_Mt override -> settings" (rkGet (rk_guiPageSettings "emir") "sim_mt") "2")
+    (rkGuiSet 'rk_geSimMt "")
+    (rkCheck "Sim_Mt blank -> null" (null (rkGet (rk_guiPageSettings "emir") "sim_mt")))
+    t))

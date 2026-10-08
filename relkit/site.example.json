@@ -39,18 +39,20 @@
     "Machine_Arch": "x86"
   },
 
-  "_donau_doc": "Donau profiles: each one lists only what differs from 'cluster' above. The Aging / DEOS / EMIR pages offer them in a 'Donau profile' drop-down; donau_default picks each type's default. Without donau_profiles, 'cluster' is the single profile 'default'. donau_query_cmd ({job_id} is replaced) fills the Donau column of the progress window; null = not queried.",
+  "_donau_doc": "Donau settings come from Maestro job policies by default: the Aging / DEOS / EMIR pages offer 'Maestro current (<policy>)' (the policy Maestro uses for the test), every job policy found in the .cadence/jobpolicy dirs, and the site profiles below (shown as 'site: <name>'). Only distributionmethod=Command policies with a dsub jobsubmitcommand map: -A -> Group, -q -> Queue, -R cpu= -> CPU, mem= -> Memory (MB), gpu= -> GPU; other keys come from 'cluster'. donau_profiles is the fallback (each lists only what differs from 'cluster'); donau_default picks the fallback per type. donau_query_cmd ({job_id} is replaced) fills the Donau column of the progress window; null = not queried.",
   "donau_profiles": {
     "std": {"Queue": "normal", "CPU": 8, "Memory": 12000},
     "emir": {"Queue": "long", "CPU": 16, "Memory": 64000}
   },
   "donau_default": {"aging": "std", "deos": "std", "emir": "emir"},
+  "job_policy_dirs": [],
   "donau_query_cmd": null,
 
   "simulator": {
     "Name": "alps",
     "Simulator_Accuracy": "moderate",
-    "Sim_Mt": 8,
+    "Sim_Mt": null,
+    "_Sim_Mt_doc": "null = follow the Donau CPU count (job policy cpu= or the site profile CPU); a number pins it",
     "Simulation_Options": null
   },
 

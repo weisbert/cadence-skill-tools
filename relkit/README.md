@@ -104,12 +104,13 @@ The keys you will normally set:
 | `dry_run` | `true`: only `run_relsim -m submit` (scripts generated, nothing submitted) |
 | `model_file_map` | regex rules mapping a Maestro corner model file to the yml `Model_File` (e.g. `.../toplevel.scs` -> `$MODEL_ROOT/alps/toplevel.scs`) |
 | `tech` | `Foundry, Technology, Tech_Voltage, Tech_Layout, Rel_Tech_Dir` |
-| `cluster` | yml `Cluster` block (type, group, queue, CPU, memory ...); without `donau_profiles` it is the single profile `default` |
-| `donau_profiles` | named Donau settings, each listing only what differs from `cluster`, e.g. `{"std": {"Queue": "normal"}, "emir": {"Queue": "long", "CPU": 16, "Memory": 64000}}`; each page offers them in a **Donau profile** drop-down |
-| `donau_default` | default profile per run type, e.g. `{"aging": "std", "deos": "std", "emir": "emir"}` |
+| `cluster` | base of the yml `Cluster` block (type, group, queue, CPU, memory, GPU, arch); fills whatever a job policy does not say |
+| `job_policy_dirs` | extra directories with Maestro job policy `.jp` files (only needed with a customised `setup.loc`) |
+| `donau_profiles` | FALLBACK Donau settings when no Maestro job policy applies, each listing only what differs from `cluster`, e.g. `{"std": {"Queue": "normal"}, "emir": {"Queue": "long", "CPU": 16, "Memory": 64000}}`; offered as `site: <name>` |
+| `donau_default` | fallback profile per run type, e.g. `{"aging": "std", "deos": "std", "emir": "emir"}` |
 | `donau_query_cmd` | optional command that reports a cluster job (`{job_id}` is replaced), shown in the progress window; `null` = not queried |
 | `donau_job_id_regex` | how to read the job id from the submit output (default: dsub's `Job <123> ...`) |
-| `simulator` | yml `Simulator` block (name, accuracy, threads, options) |
+| `simulator` | yml `Simulator` block (name, accuracy, options); `Sim_Mt` null = follow the Donau CPU count |
 | `aging_model` | aging `Model_File`, `Relxpert_Uri_Libs` |
 | `emir.*` | `gds_map_file`, `rc_corner`, license policy defaults, `license_keywords` / `license_ignore`, `totem_flow` overrides |
 | `extract.*` | extraction tools, and the rules that derive the PDK files from the environment (see below) |
@@ -169,10 +170,21 @@ your site file), a status line, a results table and these buttons:
 * **Cancel run**, **Official report** (RelStudio's report), **Aux report**
   (relkit's HTML report), **Progress...** (the [progress window](#progress-window)
   of the page's run; also on a right-click of the results table).
-* **Donau profile**: which cluster settings (queue, CPU, memory ...) this run
-  type uses, with a one-line summary; the default per type comes from the site
-  `donau_default`. The choice is saved per cell and recorded in the run, so
-  **Rerun with these settings** uses it again.
+* **Donau**: which cluster settings RelStudio's jobs use. relkit does not keep
+  its own copy: it takes them from your **Maestro job policies**. The default
+  is `Maestro current (<policy>)` -- the job policy Maestro uses for the test;
+  the drop-down also lists every other job policy found (the `.cadence/jobpolicy`
+  directories of the Cadence search path) and the site fallback profiles
+  (`site: <name>`). The one-line summary shows Group / Queue / CPU / Mem /
+  Sim_Mt and where they come from. Mapping of the policy's `jobsubmitcommand`
+  (`distributionmethod=Command`): `dsub -A <account>` -> Group, `-q` -> Queue,
+  `-R "cpu=8;mem=8000"` -> CPU and Memory (MB), `gpu=` -> GPU; other options are
+  ignored and missing keys come from the site `cluster`. A Local / LBS / non-dsub
+  policy is listed as *not usable* and the site profile is used instead.
+  **Sim_Mt** (blank = the CPU count) overrides the simulator threads. The choice
+  is saved per cell and recorded in the run (policy name, file, and the
+  resolved Cluster block); **Rerun with these settings** reuses the policy the
+  run actually used, even if Maestro's current one changed since.
 * Results: one row per corner (aging: per Stress). **Open device table** (or
   double-click) shows the per-device table: aging degradation (dfr0), DEOS
   violations sorted by DPM with failing rows flagged, EMIR EM/IR worst
@@ -488,9 +500,12 @@ the real site file. Steps 1-3 need no cluster time.
    one DUT and diff the DSPF with Auto_ext's. Submit EMIR on a DUT without
    DSPF/GDS and check that the run extracts first (timeline / **Progress...**),
    then that a second Submit EMIR reports the pair FRESH and skips it.
-9. **Donau profiles**: set `donau_profiles` / `donau_default` (e.g. a bigger
-   queue for EMIR); check the yml `Cluster` blocks of an aging and an EMIR run
-   (`<run dir>/input/*.yml`). With `submit_strategy: submit_batch`, check that
+9. **Donau from job policies**: open the panel from a Maestro whose test uses
+   a dsub job policy; check that each page shows `Maestro current (<policy>)`
+   with the policy's account / queue / cpu / mem, that the other `.jp`
+   policies are listed, and the yml `Cluster` blocks + `Sim_Mt` of an aging and
+   an EMIR run (`<run dir>/input/*.yml`); pick another policy for EMIR (e.g. a
+   big-memory one) and check its yml. With `submit_strategy: submit_batch`, check that
    the progress window shows the cluster job ids; set `donau_query_cmd` if
    you want their cluster state there.
 8. **RelStudio GUI history**: open the RelStudio GUI on the same

@@ -130,6 +130,17 @@ def prepare(scratch):
     with open(os.path.join(scratch, "pdk_env.txt"), "w", encoding="utf-8") as f:
         for k, v in env.items():
             f.write("%s=%s\n" % (k, v))
+    # synthetic Maestro job policies, found through site job_policy_dirs (the
+    # owner's real .cadence/jobpolicy dirs are never written)
+    jp = os.path.join(scratch, "jobpolicy")
+    os.makedirs(jp)
+    with open(os.path.join(jp, "relkit_demo_short.jp"), "w", encoding="utf-8") as f:
+        f.write('distributionmethod=Command\n'
+                'jobsubmitcommand=dsub -A grp_demo.cls -q short -R "cpu=4;mem=8000"\n'
+                'maxjobs=20\nname=relkit_demo_short\n')
+    with open(os.path.join(jp, "relkit_demo_local.jp"), "w", encoding="utf-8") as f:
+        f.write('distributionmethod=Local\nmaxjobs=1\nname=relkit_demo_local\n')
+    site["job_policy_dirs"] = [jp]
     site.setdefault("gui", {})["status_poll_seconds"] = 2
     write_json(os.path.join(scratch, "wa", ".relkit_site.json"), site)
     write_json(os.path.join(scratch, "fake_rs.json"), {
@@ -151,6 +162,9 @@ def main(argv):
     had_settings = os.path.isdir(settings_dir)
     mae = os.path.join(libdir, CELL, "maestro")
     before = {f: md5(os.path.join(mae, f)) for f in ("maestro.sdb", "active.state", "data.dm")}
+    jp_dirs = [os.path.join(WORKAREA, ".cadence", "jobpolicy"),
+               os.path.expanduser("~/.cadence/jobpolicy")]
+    jp_before = {d: sorted(os.listdir(d)) if os.path.isdir(d) else None for d in jp_dirs}
     prepare(scratch)
 
     b = Bridge(ident)
@@ -161,6 +175,11 @@ def main(argv):
         r = b.ev("(rkGuiT_setup %s)" % q(scratch))
         print("setup:", r)
         b.check("setup ran (%s)" % r, r == "t")
+
+        # --- Donau: Maestro job policies (async `relkit.py donau`)
+        b.wait("rk_guiDonauRes", "Maestro job policies (donau)", 60)
+        print("donau:", b.ev("rkGuiT_jpOrig"), "| attached:", b.ev("rkGuiT_jpAttached"))
+        b.ev("(rkGuiT_checkDonau)")
 
         # --- extract-resolve: env missing, then complete
         b.ev("(rkGuiT_resolveMissing)")
@@ -274,9 +293,11 @@ def main(argv):
         b.ev("(rkGuiT_cleanup)")
         rep = b.ev("(rkTestReport)")
     after = {f: md5(os.path.join(mae, f)) for f in before}
+    jp_after = {d: sorted(os.listdir(d)) if os.path.isdir(d) else None for d in jp_dirs}
+    b.check("real .cadence/jobpolicy dirs untouched (%s)" % jp_after, jp_before == jp_after)
     if not had_settings and os.path.isdir(settings_dir):
         shutil.rmtree(settings_dir)
-    ok_mae = before == after and (had_settings or not os.path.isdir(settings_dir))
+    ok_mae = before == after and jp_before == jp_after and (had_settings or not os.path.isdir(settings_dir))
     if not keep:
         shutil.rmtree(scratch, ignore_errors=True)
     print(rep)

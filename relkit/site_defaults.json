@@ -34,13 +34,14 @@
     "Machine_Arch": "x86"
   },
   "donau_profiles": null,
+  "job_policy_dirs": null,
   "donau_default": null,
   "donau_job_id_regex": "[Jj]ob *<([0-9]+)>|[Jj]ob[_ ]?[Ii][Dd] *[:=] *([0-9]+)",
   "donau_query_cmd": null,
   "simulator": {
     "Name": "alps",
     "Simulator_Accuracy": "moderate",
-    "Sim_Mt": 8,
+    "Sim_Mt": null,
     "Simulation_Options": null,
     "Flag_Is_Delete_Simulation_Data": false,
     "Flag_Is_Save_Final_Result": false

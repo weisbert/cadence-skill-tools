@@ -35,10 +35,10 @@
 ; callbacks rk_gui*CB directly -- see tests/rkGui_smoke.il):
 ;   top    rk_gTest rk_gDesign rk_gRsHome rk_gDut rk_gIp rk_gCornerShow rk_gCorners rk_gCornerInfo
 ;          rk_gTabs rk_gStatus
-;   aging  rk_gaLife rk_gaUnit rk_gaStart rk_gaStop rk_gaEvalT rk_gaDonau rk_gaDonauInfo rk_gaStatus rk_gaRes
-;   deos   rk_gdLife rk_gdUnit rk_gdStart rk_gdStop rk_gdSimT rk_gdTddb rk_gdDonau rk_gdDonauInfo rk_gdStatus rk_gdRes
+;   aging  rk_gaLife rk_gaUnit rk_gaStart rk_gaStop rk_gaEvalT rk_gaDonau rk_gaDonauInfo rk_gaSimMt rk_gaStatus rk_gaRes
+;   deos   rk_gdLife rk_gdUnit rk_gdStart rk_gdStop rk_gdSimT rk_gdTddb rk_gdDonau rk_gdDonauInfo rk_gdSimMt rk_gdStatus rk_gdRes
 ;   emir   rk_geDut rk_geOwn rk_geAuto rk_geDspf rk_geGds rk_geLLib rk_geLView rk_geXCorner rk_geXTemp
-;          rk_geXVariant rk_geXQrc rk_geXPower rk_geXGround rk_geXStatus rk_geDonau rk_geDonauInfo
+;          rk_geXVariant rk_geXQrc rk_geXPower rk_geXGround rk_geXStatus rk_geDonau rk_geDonauInfo rk_geSimMt
 ;          rk_gePower rk_geGround rk_geRc rk_geEmT rk_geRunType rk_geSelfheat rk_geStart rk_geStop
 ;          rk_geStep rk_geLife rk_geLic rk_geLicH rk_geStatus rk_geRes
 ;   runs   rk_grType rk_grTest rk_grSince rk_grUntil rk_grAll rk_grList rk_grNote rk_grTags rk_grStatus rk_grCount
@@ -331,9 +331,21 @@
     (rk_gBtn (stringToSymbol (strcat p "BAux")) "Aux report" (sprintf nil "(rk_guiAuxCB %L)" type) 400 y 110)
     (rk_gBtn (stringToSymbol (strcat p "BProg")) "Progress..." (sprintf nil "(rk_guiPageProgressCB %L)" type) 515 y 95)))
 
-; --- Donau profiles (site donau_profiles / donau_default; CONTRACT 1) -------
+;; --- Donau (Maestro job policies + site donau_profiles; CONTRACT 1, rk_donau) --
+;
+; Each run page has a "Donau" cyclic. Labels <-> values (settings.donau_profile):
+;   "Maestro current (<policy>)"  <-> "maestro"        (default)
+;   "<policy>"                    <-> "policy:<policy>"
+;   "site: <profile>"             <-> "<profile>"      (site fallback; legacy value)
+; The choices and their summaries come from `relkit.py donau` (async, after
+; each Maestro (re)read); until it answers only the site profiles are listed.
 
-; profile name -> table of its cluster keys (site `cluster` merged under it)
+(unless (boundp 'rk_guiDonauRes) (setq rk_guiDonauRes nil))
+(unless (boundp 'rk_guiDonauOut) (setq rk_guiDonauOut nil))
+(unless (boundp 'rk_guiDonauWant) (setq rk_guiDonauWant (makeTable "rk_guiDonauWant" nil)))
+(setq rk_guiDonauWait "(reading Maestro job policies...)")
+
+; site profile name -> table of its cluster keys (site `cluster` merged under it)
 (defun rk_guiDonauTable ()
   (let ((profs (rkSiteGet "donau_profiles")) (base (rkSiteGet "cluster")) out names)
     (setq out (makeTable "rk_guiDonau" nil))
@@ -351,34 +363,114 @@
 (defun rk_guiDonauNames ()
   (sort (rkKeys (rk_guiDonauTable)) 'alphalessp))
 
-(defun rk_guiDonauDefault (type)
-  (let ((names (rk_guiDonauNames)) (d (rkSiteGet "donau_default")) want)
-    (setq want (and (tablep d) (arrayref d type)))
-    (cond
-      ((member want names) want)
-      ((member "default" names) "default")
-      (t (car names)))))
-
-(defun rk_guiDonauSummary (name)
+(defun rk_guiDonauSiteSummary (name)
   (let ((p (arrayref (rk_guiDonauTable) name)))
     (if (tablep p)
-      (sprintf nil "Group %s, Queue %s, CPU %s, Memory %s, GPU %s%s"
+      (sprintf nil "Group %s, Queue %s, CPU %s, Mem %s -- site config%s"
                (rk_guiStr (arrayref p "Group")) (rk_guiStr (arrayref p "Queue"))
                (rk_guiStr (arrayref p "CPU")) (rk_guiStr (arrayref p "Memory"))
-               (rk_guiStr (arrayref p "GPU"))
                (if (eq (arrayref p "Using_Cluster") rkJsonFalse) "  (cluster OFF: local run)" ""))
       (sprintf nil "(profile %s is not in the site config)" (rk_guiStr name)))))
 
+; choices (tables: value label summary ok ...) of a type from the last answer
+(defun rk_guiDonauChoices (type)
+  (and rk_guiDonauRes (rk_guiL (rkGet rk_guiDonauRes (strcat "types." type ".choices")))))
+
+(defun rk_guiDonauLabels (type)
+  (let ((ch (rk_guiDonauChoices type)))
+    (if ch
+      (mapcar (lambda (c) (rk_guiStr (rkGet c "label"))) ch)
+      (cons rk_guiDonauWait
+            (mapcar (lambda (n) (strcat "site: " n)) (rk_guiDonauNames))))))
+
+(defun rk_guiDonauValueOf (label)
+  (cond
+    ((or (not (stringp label)) (rk_guiBlank label) (equal label rk_guiDonauWait)) nil)
+    ((pcreMatchp "^Maestro current" label) "maestro")
+    ((pcreMatchp "^site: " label) (rk_guiTrim (substring label 7)))
+    (t (strcat "policy:" label))))
+
+(defun rk_guiDonauLabelOf (type value)
+  (cond
+    ((not (stringp value)) nil)
+    ((equal value "maestro")
+      (car (setof l (rk_guiDonauLabels type) (pcreMatchp "^Maestro current" l))))
+    ((pcreMatchp "^policy:" value) (substring value 8))
+    ((pcreMatchp "^site:" value) (strcat "site: " (rk_guiTrim (substring value 6))))
+    (t (strcat "site: " value))))
+
+(defun rk_guiDonauSummaryOf (type label)
+  (let ((ch (car (setof c (rk_guiDonauChoices type) (equal (rkGet c "label") label)))))
+    (cond
+      (ch (rk_guiStr (rkGet ch "summary")))
+      ((and (stringp label) (pcreMatchp "^site: " label))
+        (rk_guiDonauSiteSummary (rk_guiTrim (substring label 7))))
+      (t "Maestro job policies are being read..."))))
+
 (defun rk_guiDonauRow (type y)
-  (let ((p (rk_guiPrefixOf type)) (names (rk_guiDonauNames)) dflt)
-    (setq dflt (rk_guiDonauDefault type))
-    (rk_gCyc (stringToSymbol (strcat p "Donau")) "Donau profile" names dflt
-             (sprintf nil "(rk_guiDonauCB %L)" type) 5 y 270 100)
-    (rk_gStr (stringToSymbol (strcat p "DonauInfo")) "" (rk_guiDonauSummary dflt) 280 y 690 0 t)))
+  (let ((p (rk_guiPrefixOf type)) labels)
+    (setq labels (rk_guiDonauLabels type))
+    (rk_gCyc (stringToSymbol (strcat p "Donau")) "Donau" labels (car labels)
+             (sprintf nil "(rk_guiDonauCB %L)" type) 5 y 330 55)
+    (rk_gStr (stringToSymbol (strcat p "DonauInfo")) "" (rk_guiDonauSummaryOf type (car labels))
+             340 y 520 0 t)
+    (rk_gStr (stringToSymbol (strcat p "SimMt")) "Sim_Mt" "" 865 y 105 50)))
 
 (defun rk_guiDonauCB (type)
-  (rkGuiSet (rk_guiTF type "DonauInfo") (rk_guiDonauSummary (rkGuiGet (rk_guiTF type "Donau"))))
+  (let ((label (rkGuiGet (rk_guiTF type "Donau"))))
+    (unless rk_guiMute
+      (setarray rk_guiDonauWant type (rk_guiDonauValueOf label)))
+    (rkGuiSet (rk_guiTF type "DonauInfo") (rk_guiDonauSummaryOf type label))
+    t))
+
+; value of a page's Donau cyclic (nil = let Python choose the default)
+(defun rk_guiDonauValue (type)
+  (or (rk_guiDonauValueOf (rkGuiGet (rk_guiTF type "Donau")))
+      (arrayref rk_guiDonauWant type)))
+
+; (Re)read the Maestro job policies -> fills the three Donau cyclics
+(defun rk_guiLoadDonau ()
+  (let (out)
+    (when (and rk_guiForm rk_guiCtx (not rk_guiClosed))
+      (setq out (rkIpcNewOutFile "donau"))
+      (setq rk_guiDonauOut out)
+      (rkIpcRun "donau" (rkIpcNewCtxFile rk_guiCtx "donau") out 'rk_guiDonauLoaded nil 60))))
+
+(defun rk_guiDonauApply (type)
+  (let ((sym (rk_guiTF type "Donau")) labels want label)
+    (setq labels (rk_guiDonauLabels type))
+    (setq want (or (arrayref rk_guiDonauWant type)
+                   (and rk_guiDonauRes (rkGet rk_guiDonauRes (strcat "types." type ".default")))))
+    (setq label (rk_guiDonauLabelOf type want))
+    (rk_guiSetChoices sym labels)
+    (cond
+      ((member label labels) (rkGuiSet sym label))
+      ((stringp label) (rk_guiSetCyc sym label))        ; a saved pick no longer offered
+      (t (rkGuiSet sym (car labels))))
+    (rkGuiSet (rk_guiTF type "DonauInfo") (rk_guiDonauSummaryOf type (rkGuiGet sym)))))
+
+(defun rk_guiDonauLoaded (res)
+  (cond
+    ((nequal (rkGet res "_out") rk_guiDonauOut) nil)    ; superseded by a newer call
+    ((null rk_guiForm) nil)
+    ((not (eq (rkGet res "ok") t))
+      (setq rk_guiDonauRes nil)
+      (foreach ty (list "aging" "deos" "emir")
+        (rkGuiSet (rk_guiTF ty "DonauInfo")
+                  (sprintf nil "reading job policies failed: %s" (rkGet res "error" "?")))))
+    (t
+      (setq rk_guiDonauRes res)
+      (let ((rk_guiMute t))
+        (foreach ty (list "aging" "deos" "emir") (rk_guiDonauApply ty)))))
   t)
+
+; Donau cyclic of a page from a saved / rerun value
+(defun rk_guiSetDonau (type value)
+  (when (stringp value)
+    (setarray rk_guiDonauWant type value)
+    (when rk_guiDonauRes
+      (let ((rk_guiMute t)) (rk_guiDonauApply type))))
+  value)
 
 (defun rk_guiBuildAging ()
   (setq rk_gPage 'page1)
@@ -529,6 +621,10 @@
     (rkIpcPollStopAll "gui:")
     ; Pattern A: a rebuild closes the previous panel (different form name)
     (when (and rk_guiForm (hiIsFormDisplayed rk_guiForm)) (hiFormCancel rk_guiForm))
+    ; Donau picks / answers of an older panel never leak into this one
+    (setq rk_guiDonauRes nil)
+    (setq rk_guiDonauOut nil)
+    (setq rk_guiDonauWant (makeTable "rk_guiDonauWant" nil))
     (setq rk_gEntries nil)
     (setq rk_gPage nil)
     (rk_gCyc 'rk_gTest "Test" (list "-") "-" "(rk_guiTestCB)" 5 5 300 60)
@@ -690,6 +786,7 @@
                                   (strcat "; warnings: " (rk_guiJoin (rk_guiL (rkGet ctx "warnings")) "; "))
                                   "")))
             (when first (rk_guiRunsRefresh t))
+            (rk_guiLoadDonau)
             (rk_guiResolveExtract)))))
     rk_guiCtx))
 
@@ -895,7 +992,8 @@
         (rkPut s "stop_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gaStop)))
         (setq evalT (rk_guiWords (rkGuiGet 'rk_gaEvalT)))
         (rkPut s "eval_temperatures" evalT)
-        (rkPut s "donau_profile" (rkGuiGet 'rk_gaDonau)))
+        (rkPut s "donau_profile" (rk_guiDonauValue "aging"))
+        (rkPut s "sim_mt" (rk_guiNullIfBlank (rkGuiGet 'rk_gaSimMt))))
       ((equal type "deos")
         (rkPut s "life_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gdLife)))
         (rkPut s "life_time_unit" (rk_guiNullIfBlank (rkGuiGet 'rk_gdUnit)))
@@ -903,7 +1001,8 @@
         (rkPut s "stop_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gdStop)))
         (rkPut s "simulation_time" (rk_guiNullIfBlank (rkGuiGet 'rk_gdSimT)))
         (rkPut s "tddb_temperature" (rk_guiNum (rkGuiGet 'rk_gdTddb)))
-        (rkPut s "donau_profile" (rkGuiGet 'rk_gdDonau)))
+        (rkPut s "donau_profile" (rk_guiDonauValue "deos"))
+        (rkPut s "sim_mt" (rk_guiNullIfBlank (rkGuiGet 'rk_gdSimMt))))
       ((equal type "emir")
         (rkPut s "run_type" (rk_guiNullIfBlank (rkGuiGet 'rk_geRunType)))
         (rkPut s "selfheat" (rkJsonBool (rkGuiGet 'rk_geSelfheat)))
@@ -917,7 +1016,8 @@
         (rkPut s "auto_extract" (rkJsonBool (not (rkGuiGet 'rk_geOwn))))
         (rkPut s "dspf_file" (and (rkGuiGet 'rk_geOwn) (rk_guiNullIfBlank (rkGuiGet 'rk_geDspf))))
         (rkPut s "gds_file" (and (rkGuiGet 'rk_geOwn) (rk_guiNullIfBlank (rkGuiGet 'rk_geGds))))
-        (rkPut s "donau_profile" (rkGuiGet 'rk_geDonau))
+        (rkPut s "donau_profile" (rk_guiDonauValue "emir"))
+        (rkPut s "sim_mt" (rk_guiNullIfBlank (rkGuiGet 'rk_geSimMt)))
         (rkPut s "layout_lib" (rk_guiNullIfBlank (rkGuiGet 'rk_geLLib)))
         (rkPut s "layout_view" (rk_guiNullIfBlank (rkGuiGet 'rk_geLView)))
         (rkPut s "supplies" (rk_guiSupplies (rkGuiGet 'rk_gePower) (rkGuiGet 'rk_geGround)))
@@ -979,7 +1079,8 @@
         (rk_guiSetIf 'rk_gaStart (arrayref s "start_time"))
         (rk_guiSetIf 'rk_gaStop (arrayref s "stop_time"))
         (rkGuiSet 'rk_gaEvalT (rk_guiJoin (arrayref s "eval_temperatures") " "))
-        (rk_guiSetDonau "aging" (arrayref s "donau_profile")))
+        (rk_guiSetDonau "aging" (arrayref s "donau_profile"))
+        (rk_guiSetIf 'rk_gaSimMt (arrayref s "sim_mt")))
       ((equal type "deos")
         (rk_guiSetIf 'rk_gdLife (arrayref s "life_time"))
         (rk_guiSetIf 'rk_gdUnit (arrayref s "life_time_unit"))
@@ -987,7 +1088,8 @@
         (rk_guiSetIf 'rk_gdStop (arrayref s "stop_time"))
         (rk_guiSetIf 'rk_gdSimT (arrayref s "simulation_time"))
         (rkGuiSet 'rk_gdTddb (rk_guiStr (arrayref s "tddb_temperature")))
-        (rk_guiSetDonau "deos" (arrayref s "donau_profile")))
+        (rk_guiSetDonau "deos" (arrayref s "donau_profile"))
+        (rk_guiSetIf 'rk_gdSimMt (arrayref s "sim_mt")))
       ((equal type "emir")
         (rk_guiSetIf 'rk_geRunType (arrayref s "run_type"))
         (when (member (arrayref s "selfheat") (list t rkJsonFalse))
@@ -1004,6 +1106,7 @@
           (rkGuiSet 'rk_geOwn (eq (arrayref s "auto_extract") rkJsonFalse))
           (rk_guiOwnCB))
         (rk_guiSetDonau "emir" (arrayref s "donau_profile"))
+        (rk_guiSetIf 'rk_geSimMt (arrayref s "sim_mt"))
         (rk_guiSetIf 'rk_geLLib (arrayref s "layout_lib"))
         (rk_guiSetIf 'rk_geLView (arrayref s "layout_view"))
         (when (tablep (arrayref s "supplies"))
@@ -1026,14 +1129,6 @@
         (when (rk_guiL (arrayref s "ground_names"))
           (rkGuiSet 'rk_geXGround (rk_guiJoin (arrayref s "ground_names") " "))))))
   t)
-
-; Donau profile cyclic of a page (a saved/rerun name the site no longer has is
-; kept visible with a warning summary; rk_yml falls back with a warning too)
-(defun rk_guiSetDonau (type name)
-  (when (stringp name)
-    (rk_guiSetCyc (rk_guiTF type "Donau") name)
-    (rk_guiDonauCB type))
-  name)
 
 (defun rk_guiApplySaved (saved)
   (let (dut)

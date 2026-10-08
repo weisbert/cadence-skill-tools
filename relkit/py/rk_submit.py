@@ -706,7 +706,8 @@ def cmd_submit(args, ctx):
                     "deadline": None, "first_wait": None, "unmatched_tail": []},
         "failure_tail": [], "warnings": site_warn + info["warnings"],
         "official_reports": [], "aux_report": None, "summary": None, "summary_ready": False,
-        "raw_data_present": True, "cluster": info.get("cluster"), "donau_jobs": [],
+        "raw_data_present": True, "cluster": info.get("cluster"), "donau": info.get("donau"),
+        "donau_jobs": [],
         "extract": extract,
     }
     set_state(run, "created", "run record created")

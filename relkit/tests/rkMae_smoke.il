@@ -175,6 +175,20 @@
   (rkCheckEqual "settings path other view" (rkMaeSettingsPath ctx)
                 (rkPathJoin tmp "lib/tb_top/relkit/relkit_settings_maestro_alt.json")))
 
+; --- job policy helpers (synthetic .jp, no Maestro) ---------------------
+(let (tmp tbl jp)
+  (setq tmp (rkPathJoin (rkWorkarea) "relkit_dev/tmp/mae_jp"))
+  (rkMkdirs tmp)
+  (setq tbl (rk_maeDplTable (list nil 'name "demo_jp" 'distributionmethod "Command" 'maxjobs "4")))
+  (rkCheckEqual "jp DPL -> table name" (rkGet tbl "name") "demo_jp")
+  (rkCheckEqual "jp DPL -> table method" (rkGet tbl "distributionmethod") "Command")
+  (setq jp (rkPathJoin tmp "file_stem.jp"))
+  (rkMaeT_write jp (list "distributionmethod=Command" "name = demo_named" "maxjobs=2"))
+  (rkCheckEqual "jp name= line" (rk_maeJpName jp) "demo_named")
+  (rkMaeT_write jp (list "distributionmethod=Local"))
+  (rkCheckEqual "jp stem without name=" (rk_maeJpName jp) "file_stem")
+  (deleteFile jp))
+
 ; ===========================================================================
 ; Part B -- live Maestro (read-only session)
 ; ===========================================================================
@@ -212,6 +226,14 @@
         (rkCheckEqual "B var VDD" (rkGet gv "VDD") "3")
         (rkCheckEqual "B var flo" (rkGet gv "flo") "5G")
         (rkCheck "B test models" (rkMaeTestModels sess "Test"))
+        (let ((jp (rkMaeJobPolicy sess "Test")))
+          (printf "[rkMae_smoke] job policy of test Test: current %L (%L), %d available, dirs %L
+"
+                  (rkGet jp "current_name") (rkGet jp "current.distributionmethod")
+                  (length (rkGet jp "available")) (rkGet jp "search_dirs"))
+          (rkCheck "B job_policy table" (tablep jp))
+          (rkCheck "B job_policy available is a list"
+                   (or (listp (rkGet jp "available")) (eq (rkGet jp "available") rkJsonEmptyArray))))
 
         ; --- corners as stored --------------------------------------------
         (setq corners (rkMaeGetCorners sess "Test"))

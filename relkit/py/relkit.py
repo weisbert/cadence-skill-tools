@@ -29,7 +29,7 @@ VERSION = "0.1.0"
 
 # Fixed module registry (CONTRACT section 3.1). Order = order in --help.
 MODULES = ["rk_yml", "rk_submit", "rk_parse", "rk_report", "rk_aged",
-           "rk_extract", "rk_runs"]
+           "rk_extract", "rk_runs", "rk_donau"]
 
 
 def _cmd_site(args, ctx):
