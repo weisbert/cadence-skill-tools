@@ -1,0 +1,16 @@
+; LOdelay_calc.ocn -- Calculator Function Panel entry (run with run_gui.sh).
+; The panel itself is Qt; this checks the registration and what Viva recorded.
+load("../calcfn.il")
+calCalculatorFormCB()
+procedure( LDC_chk(name ok got)
+  printf("CASE %s %-34s got=%L\n" if(ok "PASS" "FAIL") name got))
+LDC_chk("registered in Function Panel" calcfn_panel == '("LOdelay") calcfn_panel)
+let((p line hit)
+  p = infile(strcat(getShellEnvVar("HOME") "/.cadence/dfII/viva/customFunctions.ini"))
+  when(p
+    while(gets(line p)
+      when(index(line simplifyFilename(strcat(calcfn_dir "LOdelay_ui.ocn"))) hit = t))
+    close(p))
+  LDC_chk("recorded in customFunctions.ini" hit hit))
+printf("SUMMARY done\n")
+exit()

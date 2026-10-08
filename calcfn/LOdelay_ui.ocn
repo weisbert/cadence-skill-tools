@@ -1,0 +1,99 @@
+;; LOdelay_ui.ocn -- Calculator Function Panel template for LOdelay (parameters
+;; shown in the panel, like the built-in functions).  Format: vivaxlug
+;; appendix F "Function Templates"; written after the shipped delay.ocn /
+;; abs_jitter.ocn in <CDS_INST_DIR>/tools/dfII/etc/tools/viva/functionTemplates.
+ocnmRegGUIBuilder(
+  '(nil
+    function LOdelay
+    name LOdelay
+    description "Edge-to-edge delay: each output edge pairs with the latest reference edge at least tmin before it"
+    category ("calcfn")
+    analysis (nil
+              general (nil
+                   args (wRef wOut refEdge outEdge refThr outThr tmin from to skip stat)
+                   signals (nil
+                            wRef (nil
+                                  prompt "Ref signal"
+                                  tooltip "reference (input) signal"
+                                  )
+                            wOut (nil
+                                  prompt "Out signal"
+                                  tooltip "output signal"
+                                  )
+                   )
+                   params (nil
+                           refEdge (nil
+                                    prompt "Ref / Out edge"
+                                    tooltip "edge type on the reference signal"
+                                    type ("rising" "falling" "either")
+                                    default "rising"
+                                    required nil
+                                    keyed t
+                                    guiRowHint 1)
+                           outEdge (nil
+                                    prompt ""
+                                    tooltip "edge type on the output signal"
+                                    type ("rising" "falling" "either")
+                                    default "rising"
+                                    required nil
+                                    keyed t
+                                    guiRowHint 1)
+                           refThr (nil
+                                   prompt "Ref / Out threshold"
+                                   tooltip "crossing level on the reference signal; blank = its mid level"
+                                   type float
+                                   default nil
+                                   required nil
+                                   keyed t
+                                   guiRowHint 2)
+                           outThr (nil
+                                   prompt ""
+                                   tooltip "crossing level on the output signal; blank = its mid level"
+                                   type float
+                                   default nil
+                                   required nil
+                                   keyed t
+                                   guiRowHint 2)
+                           tmin (nil
+                                 prompt "tmin"
+                                 tooltip "smallest plausible delay; only needed when the delay can exceed one reference period"
+                                 type float
+                                 default nil
+                                 required nil
+                                 keyed t)
+                           from (nil
+                                 prompt "from / to"
+                                 tooltip "measure only output edges after this time"
+                                 type float
+                                 default nil
+                                 required nil
+                                 keyed t
+                                 guiRowHint 3)
+                           to (nil
+                               prompt ""
+                               tooltip "measure only output edges before this time"
+                               type float
+                               default nil
+                               required nil
+                               keyed t
+                               guiRowHint 3)
+                           skip (nil
+                                 prompt "skip first N"
+                                 tooltip "drop the first N measured pairs (startup)"
+                                 type int
+                                 default nil
+                                 required nil
+                                 keyed t)
+                           stat (nil
+                                 prompt "stat"
+                                 tooltip "what to return; wave = delay vs output-edge time"
+                                 type ("mean" "min" "max" "std" "pp" "first" "last" "count" "wave")
+                                 default "mean"
+                                 required nil
+                                 keyed t)
+                   )
+                   )
+    )
+    outputs (result)
+   )
+)

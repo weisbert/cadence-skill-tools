@@ -8,9 +8,11 @@ load("/abs/path/to/skill_tools/calcfn/calcfn.il")
 ```
 
 One function per file, file name = function name; `calcfn.il` lists them.
-Each function also shows up in the Calculator under Function Panel ->
-**Skill User Defined Functions** (that is the IC6.1.8 label; the manual
-spells it "SKILL").
+A function with a `<name>_ui.ocn` template next to it also appears in the
+Calculator: Function Panel -> category **calcfn**, with its parameters shown
+in the panel like the built-in functions.  (Viva records this in
+`~/.cadence/dfII/viva/customFunctions.ini` and reloads it at its next start;
+if you move or remove calcfn, delete that line.)
 
 | function | what it measures |
 |---|---|
@@ -49,18 +51,12 @@ output edge it caused.
 Crossing times come from the built-in `cross()` (linear interpolation between
 time points), so ps-level results are only as good as the transient step.
 
-The Calculator form takes both signals as text (`/net`, or any expression
-such as `VT("/inp")-VT("/inn")`) and writes the finished `LOdelay(...)` call
-into the Buffer -- the same line that goes into a Maestro output.
-
-Each signal field has a **Select** button (Maestro / ADE Explorer, ADE L or a
-plain schematic window):
-
-- a wire or wire label already selected in the schematic -> its net goes in
-  at once (and the selection is cleared, so the next Select asks for a click);
-- nothing selected -> the schematic comes to the front; click a wire.
-
-In a descended window the path includes the instances, e.g. `/I0/net`.
+In the Calculator: Function Panel -> **calcfn** -> **LOdelay**.  Fields left
+at `nil` / `rising` / `mean` are left out of the expression.  To take the
+signals from the schematic (Calculator opened from Maestro / ADE): press `vt`,
+click the nets in the schematic, then pick them in the Ref / Out signal
+drop-downs -- `buffer` is the last net clicked, earlier ones are listed below
+it.
 
 ## Tests
 
@@ -70,9 +66,8 @@ IC6.1.8 + Spectre 18.1; the scripts expect the Cadence environment in `~/.cshrc`
 cd calcfn/test
 spectre -64 -format psfxl -raw psf tb.scs          # shared test bench (in tcsh)
 ./run.sh LOdelay.ocn                               # 26 cases with known answers
-./run_gui.sh LOdelay_gui.ocn                       # Calculator form -> Buffer (Xvfb)
+./run_gui.sh LOdelay_calc.ocn                      # Function Panel registration (Xvfb)
 ./run_gui.sh mae/LOdelay_mae.ocn                   # builds calcfn_tb/LOdelay + maestro, runs it
-cd mae && ../run_gui.sh LOdelay_pick.ocn           # Select buttons on that schematic
 ```
 
 `mae/` has its own `cds.lib` (analogLib from `$CDSHOME`), so the test library
