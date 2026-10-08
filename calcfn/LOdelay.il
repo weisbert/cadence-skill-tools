@@ -111,28 +111,116 @@
 ; Ref: vivaxlug appendix E; vivaxlskill.pdf p.264-267, p.271;
 ;      ahiCreate*Field as in vivaxlug appendix E (plain hiCreate*Field fields make
 ;      calCreateSpecialFunctionsForm fail: "get/getq: second arg must be a symbol");
-;      skuiref.pdf p.536 hiCreateCyclicField, p.650 hiCreateStringField (same keys),
+;      skuiref.pdf p.536 hiCreateCyclicField, p.650 hiCreateStringField,
+;      p.524 hiCreateButton (same keys),
 ;      p.700 hiFormDone (unmapAfterCB=t => callback must set status t).
 ; ---------------------------------------------------------------------------
 
 (procedure (LOdelay_formInit)
-  (let ((y -30) fields)
-    (foreach spec
+  (let ((y -30) rows)
+    ; one row per entry: (field) gets the full width, (field button) puts a
+    ; "Select" button right of the field
+    (foreach row
       (list
-        (ahiCreateStringField ?name 'refNet ?prompt "Ref signal"  ?value "/in")
-        (ahiCreateStringField ?name 'outNet ?prompt "Out signal"  ?value "/out")
-        (ahiCreateCyclicField ?name 'refEdge ?prompt "Ref edge"   ?choices LOdelay_edgeTypes)
-        (ahiCreateCyclicField ?name 'outEdge ?prompt "Out edge"   ?choices LOdelay_edgeTypes)
-        (ahiCreateStringField ?name 'refThr ?prompt "Ref threshold (blank=mid)" ?value "")
-        (ahiCreateStringField ?name 'outThr ?prompt "Out threshold (blank=mid)" ?value "")
-        (ahiCreateStringField ?name 'tmin   ?prompt "tmin (blank=0)"   ?value "")
-        (ahiCreateStringField ?name 'from   ?prompt "from (blank=start)" ?value "")
-        (ahiCreateStringField ?name 'to     ?prompt "to (blank=end)"   ?value "")
-        (ahiCreateStringField ?name 'skip   ?prompt "skip first N"     ?value "")
-        (ahiCreateCyclicField ?name 'stat   ?prompt "stat"         ?choices LOdelay_stats))
+        (list (ahiCreateStringField ?name 'refNet ?prompt "Ref signal" ?value "/in")
+              (ahiCreateButton ?name 'refPick ?buttonText "Select"
+                               ?callback "LOdelay_pick('refNet \"ref\")"))
+        (list (ahiCreateStringField ?name 'outNet ?prompt "Out signal" ?value "/out")
+              (ahiCreateButton ?name 'outPick ?buttonText "Select"
+                               ?callback "LOdelay_pick('outNet \"out\")"))
+        (list (ahiCreateCyclicField ?name 'refEdge ?prompt "Ref edge" ?choices LOdelay_edgeTypes))
+        (list (ahiCreateCyclicField ?name 'outEdge ?prompt "Out edge" ?choices LOdelay_edgeTypes))
+        (list (ahiCreateStringField ?name 'refThr ?prompt "Ref threshold (blank=mid)" ?value ""))
+        (list (ahiCreateStringField ?name 'outThr ?prompt "Out threshold (blank=mid)" ?value ""))
+        (list (ahiCreateStringField ?name 'tmin   ?prompt "tmin (blank=0)" ?value ""))
+        (list (ahiCreateStringField ?name 'from   ?prompt "from (blank=start)" ?value ""))
+        (list (ahiCreateStringField ?name 'to     ?prompt "to (blank=end)" ?value ""))
+        (list (ahiCreateStringField ?name 'skip   ?prompt "skip first N" ?value ""))
+        (list (ahiCreateCyclicField ?name 'stat   ?prompt "stat" ?choices LOdelay_stats)))
       (setq y (plus y 30))
-      (setq fields (cons (list spec 5:y 420:25 170) fields)))
-    (calCreateSpecialFunctionsForm 'LOdelayForm (reverse fields))))
+      (if (cadr row)
+        (setq rows (cons (list (cadr row) 430:y 70:25)
+                         (cons (list (car row) 5:y 420:25 170) rows)))
+        (setq rows (cons (list (car row) 5:y 495:25 170) rows))))
+    (calCreateSpecialFunctionsForm 'LOdelayForm (reverse rows))))
+
+; "Select" buttons.  Works with Maestro / ADE Explorer, ADE L or a bare
+; schematic (asiSelectNet only knows ADE L sessions, so it is not used):
+;   - a wire or wire label already selected in the schematic -> its net;
+;   - nothing selected -> click a net in the schematic.
+; Descended windows get the instance path, e.g. "/I0/net".
+; Ref: skdfref.pdf p.106 geGetEditCellView, p.109 geGetHierMemInst,
+;      p.185 geGetSelSet, p.172 geDeselectAll, p.221 geSelectPoint;
+;      skuiref.pdf p.945 hiGetWindowList, p.956 hiGetCurrentWindow, p.935 hiRaiseWindow,
+;      p.97 hiSetWindowFocus,
+;      p.1197 enterPoint, p.84 hiRegTimer.
+
+; w~>cellView first: geGetEditCellView on a non-editor window (CIW,
+; Calculator) prints a GE-2067 warning.
+(procedure (LOdelay_isSchWindow w)
+  (let ((cv (and w~>cellView (car (errset (geGetEditCellView w))))))
+    (and cv (equal cv~>cellViewType "schematic"))))
+
+; The current window when it shows a schematic, else the first one that does.
+(procedure (LOdelay_schWindow)
+  (let ((w (hiGetCurrentWindow)))
+    (if (and w (LOdelay_isSchWindow w))
+      w
+      (car (setof x (hiGetWindowList) (LOdelay_isSchWindow x))))))
+
+(procedure (LOdelay_figNet fig)
+  (cond ((and fig~>net fig~>net~>name) fig~>net~>name)
+        ((equal fig~>objType "label") fig~>theLabel)))
+
+; Net path of the first selected wire/label in window w, or nil.
+(procedure (LOdelay_selNet w)
+  (let ((name (car (setof n (mapcar 'LOdelay_figNet (geGetSelSet w)) n)))
+        (pre ""))
+    (when name
+      (foreach p (geGetHierMemInst w) (setq pre (strcat pre "/" (car p)~>name)))
+      (strcat pre "/" name))))
+
+(procedure (LOdelay_setField field value)
+  (let ((f (LOdelay_form)))
+    (when f (putprop (get f field) value 'value))))
+
+(procedure (LOdelay_pick field which)
+  (let ((w (LOdelay_schWindow)) net)
+    (cond
+      ((null w)
+        (warn "LOdelay: open the schematic first, then press Select
+"))
+      ((setq net (LOdelay_selNet w))
+        (LOdelay_setField field net)
+        (geDeselectAll w))                ; so the next Select asks for a click
+      (t
+        ; enterPoint started synchronously from a form button callback never
+        ; arms (the click is not delivered); launch it once the callback returns
+        (setq LOdelay_pickArgs (list field which w))
+        (hiRegTimer "LOdelay_pickLaunch()" 1)))))
+
+(procedure (LOdelay_pickLaunch)
+  (let ((field (car LOdelay_pickArgs)) (which (cadr LOdelay_pickArgs))
+        (w (caddr LOdelay_pickArgs)))
+    (setq LOdelay_pickField field)
+    ; raise + focus, not just hiSetCurrentWindow: otherwise the first click in
+    ; the schematic only activates the window and the pick needs a second one
+    (hiRaiseWindow w)
+    (hiSetWindowFocus w t)
+    (enterPoint ?prompts (list (sprintf nil "Click the %s net in the schematic" which))
+                ?doneProc "LOdelay_pickDone" ?cmdName "LOdelay Select")))
+
+(procedure (LOdelay_pickDone w done pts)
+  (let (net)
+    (when (and done pts)
+      (geDeselectAll w)
+      (geSelectPoint w (car pts))
+      (setq net (LOdelay_selNet w))
+      (geDeselectAll w)
+      (if net
+        (LOdelay_setField LOdelay_pickField net)
+        (warn "LOdelay: no wire at that point -- press Select and click on a wire
+")))))
 
 ; "/net" -> VT("/net"); text containing "(" is already an expression.
 (procedure (LOdelay_sigExpr s)

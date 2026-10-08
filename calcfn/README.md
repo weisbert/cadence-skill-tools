@@ -53,6 +53,15 @@ The Calculator form takes both signals as text (`/net`, or any expression
 such as `VT("/inp")-VT("/inn")`) and writes the finished `LOdelay(...)` call
 into the Buffer -- the same line that goes into a Maestro output.
 
+Each signal field has a **Select** button (Maestro / ADE Explorer, ADE L or a
+plain schematic window):
+
+- a wire or wire label already selected in the schematic -> its net goes in
+  at once (and the selection is cleared, so the next Select asks for a click);
+- nothing selected -> the schematic comes to the front; click a wire.
+
+In a descended window the path includes the instances, e.g. `/I0/net`.
+
 ## Tests
 
 IC6.1.8 + Spectre 18.1; the scripts expect the Cadence environment in `~/.cshrc`.
@@ -63,6 +72,7 @@ spectre -64 -format psfxl -raw psf tb.scs          # shared test bench (in tcsh)
 ./run.sh LOdelay.ocn                               # 26 cases with known answers
 ./run_gui.sh LOdelay_gui.ocn                       # Calculator form -> Buffer (Xvfb)
 ./run_gui.sh mae/LOdelay_mae.ocn                   # builds calcfn_tb/LOdelay + maestro, runs it
+cd mae && ../run_gui.sh LOdelay_pick.ocn           # Select buttons on that schematic
 ```
 
 `mae/` has its own `cds.lib` (analogLib from `$CDSHOME`), so the test library
